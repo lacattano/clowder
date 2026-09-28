@@ -12,21 +12,34 @@ from clowder.topology import (
     inside,
     match_agent,
     sanitise,
+    workspace_for_repo,
 )
 
 
-def agent(name: str, cwd: str, pane: str = "w1:p1") -> AgentInfo:
-    return AgentInfo(name=name, pane_id=pane, cwd=cwd, status="idle")
+def agent(
+    name: str,
+    cwd: str,
+    pane: str = "w1:p1",
+    workspace: str | None = None,
+) -> AgentInfo:
+    return AgentInfo(name=name, pane_id=pane, cwd=cwd, workspace_id=workspace, status="idle")
 
 
 class StubMux:
     """Records what would have been created, without a multiplexer."""
 
-    def __init__(self, agents: list[AgentInfo] | None = None, start_ok: bool = True):
+    def __init__(
+        self,
+        agents: list[AgentInfo] | None = None,
+        start_ok: bool = True,
+        move_ok: bool = True,
+    ):
         self.existing = list(agents or [])
         self.start_ok = start_ok
+        self.move_ok = move_ok
         self.made: list[AgentInfo] = []
         self.actions: list[str] = []
+        self.moves: list[tuple[str, str]] = []
         self.last_cwd = ""
         self.pane = 100
 
@@ -38,6 +51,25 @@ class StubMux:
         self.last_cwd = str(cwd)
         self.pane += 1
         return f"w9:p{self.pane}"
+
+    def move_pane(self, pane_id, workspace_id, focus=False, timeout_s=20.0) -> MuxResult:
+        self.actions.append(f"move {pane_id} --workspace {workspace_id} --new-tab")
+        if not self.move_ok:
+            return MuxResult(
+                argv=("herdr", "pane", "move"),
+                returncode=4,
+                stdout='{"error": {"code": "no_such_workspace", "message": "gone"}}',
+                stderr="",
+                duration_ms=5,
+            )
+        self.moves.append((pane_id, workspace_id))
+        return MuxResult(
+            argv=("herdr", "pane", "move"),
+            returncode=0,
+            stdout="{}",
+            stderr="",
+            duration_ms=5,
+        )
 
     def start_agent(self, name, pane_id, kind="pi", timeout_s=None) -> MuxResult:
         self.actions.append(f"start {name} {kind} {pane_id}")
@@ -271,6 +303,67 @@ class EnsureAgentTest(unittest.TestCase):
         mux = StubMux([])
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         json.dumps(result.as_dict())
+
+
+class PanePlacementTest(unittest.TestCase):
+    """Where a new pane lands: with the repo's peers, or beside the caller."""
+
+    def test_a_new_agent_joins_a_peer_workspace_as_a_new_tab(self) -> None:
+        mux = StubMux([agent("verifier", "C:/code/myrepo", workspace="w1")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertTrue(result.ok)
+        self.assertTrue(result.created)
+        self.assertEqual(mux.moves, [("w9:p101", "w1")])
+        self.assertEqual(
+            mux.actions,
+            [
+                f"split {Path('C:/code/myrepo')}",
+                "move w9:p101 --workspace w1 --new-tab",
+                "start myrepo-maker pi w9:p101",
+            ],
+        )
+
+    def test_no_peer_in_the_repo_keeps_the_caller_split(self) -> None:
+        mux = StubMux([])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertTrue(result.ok)
+        self.assertEqual(mux.moves, [])
+        self.assertNotIn("move", " ".join(mux.actions))
+
+    def test_a_peer_in_another_repo_does_not_draw_the_pane_over(self) -> None:
+        mux = StubMux([agent("other-maker", "C:/code/other", workspace="w7")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertTrue(result.ok)
+        self.assertEqual(mux.moves, [])
+
+    def test_a_peer_with_no_workspace_reported_keeps_the_caller_split(self) -> None:
+        # An older multiplexer may report no workspace. Split rather than guess.
+        mux = StubMux([agent("verifier", "C:/code/myrepo")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertTrue(result.ok)
+        self.assertEqual(mux.moves, [])
+
+    def test_a_failed_move_is_reported_and_the_agent_is_not_started(self) -> None:
+        mux = StubMux([agent("verifier", "C:/code/myrepo", workspace="w1")], move_ok=False)
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertFalse(result.ok)
+        self.assertIn("could not move", result.reason or "")
+        self.assertIn("no_such_workspace", result.reason or "")
+        self.assertNotIn("start", " ".join(mux.actions))
+
+    def test_the_workspace_choice_is_stable_when_two_peers_report_one(self) -> None:
+        agents = [
+            agent("zebra", "C:/code/myrepo", workspace="w2"),
+            agent("alpha", "C:/code/myrepo", workspace="w1"),
+        ]
+        self.assertEqual(workspace_for_repo(agents, "C:/code/myrepo"), "w1")
+
+    def test_a_peer_with_no_workspace_is_passed_over_for_one_that_has_it(self) -> None:
+        agents = [
+            agent("alpha", "C:/code/myrepo"),
+            agent("beta", "C:/code/myrepo", workspace="w3"),
+        ]
+        self.assertEqual(workspace_for_repo(agents, "C:/code/myrepo"), "w3")
 
 
 if __name__ == "__main__":

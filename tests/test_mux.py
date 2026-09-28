@@ -57,11 +57,14 @@ class ParseAgentListTest(unittest.TestCase):
         agents = parse_agent_list(REAL_PAYLOAD)
         self.assertEqual([a.name for a in agents], ["verifier", "maker"])
         self.assertEqual(agents[0].pane_id, "w1:p2")
+        self.assertEqual(agents[0].workspace_id, "w1")
         self.assertEqual(agents[0].status, "idle")
         self.assertTrue(agents[0].session_path is not None)
         self.assertTrue(agents[0].session_path.endswith("x.jsonl"))
         self.assertEqual(agents[1].status, "working")
         self.assertTrue(agents[1].focused)
+        # The second record has no workspace_id, so it stays unset.
+        self.assertIsNone(agents[1].workspace_id)
 
     def test_a_different_wrapper_still_works(self) -> None:
         payload = '{"data": {"nested": {"agents": [{"name": "solo"}]}}}'
@@ -197,6 +200,54 @@ class RealProcessTest(unittest.TestCase):
             with self.assertRaises(MuxError) as caught:
                 self.make_mux().split_pane(cwd="C:/code/myrepo")
         self.assertIn("no_state", str(caught.exception))
+
+    # -- moving a pane into a workspace -------------------------------------
+
+    def test_move_pane_records_a_new_tab_without_focus(self) -> None:
+        env = self.mux_env()
+        with clean_env(**env):
+            mux = self.make_mux()
+            pane_id = mux.split_pane(cwd="C:/code/myrepo")
+            result = mux.move_pane(pane_id, "w1")
+        self.assertTrue(result.ok, result.error_text())
+        state = json.loads(Path(str(env["CLOWDER_FAKE_STATE"])).read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["moves"],
+            [
+                {
+                    "pane_id": pane_id,
+                    "workspace_id": "w1",
+                    "new_tab": True,
+                    "focus": False,
+                }
+            ],
+        )
+
+    def test_move_pane_never_asks_for_focus(self) -> None:
+        log = Path(self.tmp.name) / "moves.jsonl"
+        with clean_env(**self.mux_env(CLOWDER_FAKE_LOG=str(log))):
+            self.make_mux().move_pane("w9:p2", "w1")
+        argv = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(
+            argv,
+            ["pane", "move", "w9:p2", "--workspace", "w1", "--new-tab", "--no-focus"],
+        )
+
+    def test_an_agent_started_after_a_move_reports_that_workspace(self) -> None:
+        with clean_env(**self.mux_env()):
+            mux = self.make_mux()
+            pane_id = mux.split_pane(cwd="C:/code/myrepo")
+            mux.move_pane(pane_id, "w1")
+            mux.start_agent("myrepo-maker", pane_id)
+            agents = mux.list_agents()
+        made = next(a for a in agents if a.name == "myrepo-maker")
+        self.assertEqual(made.workspace_id, "w1")
+
+    def test_moving_with_no_way_to_record_it_fails(self) -> None:
+        with clean_env():
+            result = self.make_mux().move_pane("w9:p2", "w1")
+        self.assertFalse(result.ok)
+        self.assertIn("no_state", result.error_text())
 
 
 if __name__ == "__main__":
