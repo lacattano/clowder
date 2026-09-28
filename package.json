@@ -2,9 +2,10 @@
   "name": "clowder",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi package manifest for clowder: the front-door skill.",
+  "description": "Pi package manifest for clowder: the front-door skill and the diff reviewer.",
   "keywords": ["pi-package"],
   "pi": {
+    "extensions": ["./extensions"],
     "skills": ["./skills"]
   }
 }

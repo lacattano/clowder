@@ -441,6 +441,11 @@ conversation; none is fixed by the queue work.
   installing or running suites at once is the pattern that crashed this box on 2026-09-25.
   Fix: a load check before a heavy step, and one heavy step open at a time across the crew.
 
+- AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
+  gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi
+  package is now the source of truth for both, so those two local files must be deleted once the
+  package is installed, or `/diff` registers twice in one session.
+
 ## Prior art
 
 [Firstmate](https://github.com/kunchenguid/firstmate) is the clearest statement of the

@@ -87,6 +87,18 @@ class PackageTest(unittest.TestCase):
             self.assertTrue(path.is_dir(), f"{pattern} is not a directory")
             self.assertTrue((path / "front-door" / "SKILL.md").is_file())
 
+    def test_the_package_ships_the_diff_viewer_and_its_skill(self) -> None:
+        manifest = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
+        roots = [REPO / pattern.replace("./", "") for pattern in manifest["pi"]["extensions"]]
+        self.assertTrue(
+            any((root / "diff.ts").is_file() for root in roots),
+            f"no diff.ts under {[str(root) for root in roots]}",
+        )
+        source = (REPO / "extensions" / "diff.ts").read_text(encoding="utf-8")
+        self.assertIn('registerCommand("diff"', source)
+        source = (REPO / "skills" / "diff-review" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(frontmatter(source).get("name"), "diff-review")
+
 
 class AsciiTest(unittest.TestCase):
     def test_every_text_file_in_the_repo_is_ascii(self) -> None:
