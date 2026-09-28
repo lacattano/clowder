@@ -127,6 +127,8 @@ class BoardData:
     generated_at: str = ""
     live_ok: bool = True
     note: str | None = None
+    # The front door's own name, for text that means it and not the owner.
+    front_door_name: str | None = None
     # Task ids whose commit is on no branch, so the work exists only in one folder.
     stranded: set[str] = field(default_factory=set)
 
@@ -155,8 +157,17 @@ def recent_answers(tasks: Sequence[Task], limit: int = 12) -> list[Task]:
     return list(reversed(answered))[:limit]
 
 
+def front_door_label(data: BoardData) -> str:
+    """The front door's own name, or a plain phrase when none is configured."""
+    return data.front_door_name or "the front door"
+
+
 def waiting_on_you(data: BoardData) -> list[str]:
-    """The three things the page exists for: decisions, finished reviews, risk."""
+    """Only what the owner must do: a decision, a review to merge, work at risk.
+
+    The front door's own to-do list is not here. A queued item or a step with no
+    answer is chased by the front door, and lives in `waiting_for_worker`.
+    """
     lines: list[str] = []
 
     for task in data.tasks:
@@ -167,14 +178,6 @@ def waiting_on_you(data: BoardData) -> list[str]:
                 f"<span class='why'>asked by {_e(task.agent)} about "
                 f"{_e(_clip(task.question, 120))}</span>"
             )
-
-    for item in data.queued:
-        lines.append(
-            f"<b>queued</b> <span class='id'>{_e(item.id)}</span> "
-            f"for {_e(item.target)} in {_e(item.repo)} "
-            f"<span class='why'>{_e(_clip(item.why, 160))} - "
-            f"{_e(_clip(item.question or item.brief, 120))}</span>"
-        )
 
     for task in data.tasks:
         if task.id in data.stranded:
@@ -196,6 +199,24 @@ def waiting_on_you(data: BoardData) -> list[str]:
                 f"<span class='why'>{_e(job.label)}; merging is your step, and the "
                 f"tool will not do it</span>"
             )
+
+    return lines
+
+
+def waiting_for_worker(data: BoardData) -> list[str]:
+    """The front door's own list: queued items, and steps with no answer yet.
+
+    None of these needs the owner, so none is counted under "Waiting on you".
+    """
+    lines: list[str] = []
+
+    for item in data.queued:
+        lines.append(
+            f"<b>queued</b> <span class='id'>{_e(item.id)}</span> "
+            f"for {_e(item.target)} in {_e(item.repo)} "
+            f"<span class='why'>{_e(_clip(item.why, 160))} - "
+            f"{_e(_clip(item.question or item.brief, 120))}</span>"
+        )
 
     for task in open_tasks(data.tasks):
         if task.age_seconds < QUIET_AFTER_SECONDS:
@@ -250,6 +271,16 @@ def render_board(data: BoardData) -> str:
         needs_html = "<ul>" + "".join(f"<li>{line}</li>" for line in needs) + "</ul>"
     else:
         needs_html = _nothing("Nothing is waiting on you.")
+
+    worker = waiting_for_worker(data)
+    if worker:
+        listed = "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
+        worker_html = (
+            "<p class='why'>These wait for a worker, not for you. "
+            f"{_e(front_door_label(data))} chases them.</p>{listed}"
+        )
+    else:
+        worker_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
 
     open_rows = [
         [
@@ -350,6 +381,7 @@ def render_board(data: BoardData) -> str:
 <h1>{_e(TITLE)}</h1>
 <p class="meta">What is queued, what is underway, and what is waiting on you.</p>
 {_section("Waiting on you", len(needs), needs_html, css="needs")}
+{_section("Waiting for a worker", len(worker), worker_html)}
 {_section("Open steps", len(open_rows), open_html)}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
 {_section("Answers", len(answer_rows), answers_html)}

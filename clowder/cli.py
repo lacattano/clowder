@@ -1325,6 +1325,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         generated_at=now_stamp(),
         live_ok=live_ok,
         note=note,
+        front_door_name=config.front_door_name,
         stranded=stranded,
     )
 
