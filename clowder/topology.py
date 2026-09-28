@@ -182,12 +182,32 @@ def ensure_agent(
     branch on the space; finishing it takes the branch off again.
     """
     agents = mux.list_agents()
-    matched = match_agent(agents, repo_path, repo_name, role)
-    if matched is not None:
-        return EnsureResult(agent=matched, created=False, worktree=matched.cwd)
-
     candidates = sorted(agent.name for agent in agents_in_repo(agents, repo_path))
-    wanted = requested_name(name) if name else derive_name(repo_name, role)
+
+    if name:
+        # An explicit name means exactly that name. Do not fall back to a role
+        # match: "make me tancat-maker" must not hand back the maker.
+        wanted = requested_name(name)
+        found = next((agent for agent in agents if agent.name == wanted), None)
+        if found is not None:
+            if inside(found.cwd, repo_path):
+                return EnsureResult(agent=found, created=False, worktree=found.cwd)
+            # A live name is never reused from another repo: that pane serves the
+            # other repo, and a brief sent to it would be refused anyway.
+            return EnsureResult(
+                agent=None,
+                created=False,
+                reason=(
+                    f"an agent named {wanted} already exists, in "
+                    f"{found.cwd or 'an unknown directory'}"
+                ),
+                candidates=candidates,
+            )
+    else:
+        wanted = derive_name(repo_name, role)
+        matched = match_agent(agents, repo_path, repo_name, role)
+        if matched is not None:
+            return EnsureResult(agent=matched, created=False, worktree=matched.cwd)
 
     # Never make a second agent under a name that is already live. Two panes with
     # one name would make the transport ambiguous, which is the failure this tool

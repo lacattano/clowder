@@ -194,6 +194,29 @@ class EnsureAgentTest(unittest.TestCase):
         self.assertIn("not a git repository", result.note or "")
         self.assertEqual(len(mux.actions), 2)
 
+    def test_an_explicit_name_is_made_even_when_the_role_is_already_taken(self) -> None:
+        # The bug a real run found: "make me tancat-maker" handed back the maker.
+        mux = StubMux([agent("maker", "C:/code/myrepo")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker", name="myrepo-wt")
+        self.assertTrue(result.ok)
+        self.assertTrue(result.created)
+        assert result.agent is not None
+        self.assertEqual(result.agent.name, "myrepo-wt")
+        self.assertTrue(mux.actions, "it made a space of its own")
+
+    def test_an_explicit_name_that_already_exists_is_reused(self) -> None:
+        mux = StubMux([agent("myrepo-wt", "C:/code/myrepo")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker", name="myrepo-wt")
+        self.assertTrue(result.ok)
+        self.assertFalse(result.created)
+        self.assertEqual(mux.actions, [])
+
+    def test_an_explicit_name_in_another_repo_is_not_reused(self) -> None:
+        mux = StubMux([agent("myrepo-wt", "C:/code/elsewhere")])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker", name="myrepo-wt")
+        self.assertFalse(result.ok)
+        self.assertIn("already exists", result.reason or "")
+
     def test_a_bad_explicit_name_is_refused(self) -> None:
         mux = StubMux([])
         with self.assertRaises(UsageError) as caught:
