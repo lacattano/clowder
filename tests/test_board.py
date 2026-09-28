@@ -91,6 +91,15 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("http://", html.split("<body>")[0], "no external assets")
         self.assertNotIn("src=", html)
 
+    def test_the_page_reloads_itself(self) -> None:
+        html = render_board(data())
+        self.assertIn('<meta http-equiv="refresh" content="30">', html)
+        self.assertIn(
+            '<meta http-equiv="refresh" content="30">',
+            html.split("<body>")[0],
+            "the reload belongs in the head",
+        )
+
     def test_every_section_is_present_even_when_empty(self) -> None:
         html = render_board(data())
         for heading in (

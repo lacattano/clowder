@@ -53,6 +53,11 @@ NEEDS_HUMAN = 3
 # arrives later, on the worker's own turn.
 DEFAULT_TIMEOUT_S = 60.0
 
+# A board refresh follows a command that already changed state, so it must not
+# hold that command up. The live list is read with this timeout; when it does not
+# answer, the page is written from state alone.
+BOARD_REFRESH_MUX_TIMEOUT_S = 3.0
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -125,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--dry-run", action="store_true", help="print the command, send nothing")
     send.add_argument("--json", action="store_true", help="machine-readable output")
-    send.set_defaults(handler=cmd_dispatch)
+    send.set_defaults(handler=cmd_dispatch, refreshes_board=True)
 
     list_tasks = sub.add_parser("tasks", help="list tasks and their state", parents=[common])
     list_tasks.add_argument("--status", choices=STATUSES)
@@ -147,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--verbose", action="store_true", help="show the usage breakdown")
     show.add_argument("--json", action="store_true")
-    show.set_defaults(handler=cmd_report)
+    show.set_defaults(handler=cmd_report, refreshes_board=True)
 
     make = sub.add_parser(
         "ensure",
@@ -171,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-create", action="store_true", help="report what is missing, make nothing"
     )
     make.add_argument("--json", action="store_true")
-    make.set_defaults(handler=cmd_ensure)
+    make.set_defaults(handler=cmd_ensure, refreshes_board=True)
 
     roster = sub.add_parser(
         "agents", help="list live agents (the roster is the tool's)", parents=[common]
@@ -216,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="switch anyway, on a dirty tree or in the main checkout",
     )
     j_open.add_argument("--json", action="store_true")
-    j_open.set_defaults(handler=cmd_job_open)
+    j_open.set_defaults(handler=cmd_job_open, refreshes_board=True)
 
     j_close = job_parser("close", "return the worktree to the agent's branch")
     j_close.add_argument("id")
@@ -227,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     j_close.add_argument("--force", action="store_true")
     j_close.add_argument("--json", action="store_true")
-    j_close.set_defaults(handler=cmd_job_close)
+    j_close.set_defaults(handler=cmd_job_close, refreshes_board=True)
 
     j_list = job_parser("list", "jobs, and where their branches live")
     j_list.add_argument("--all", action="store_true", help="closed jobs too")
@@ -247,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
     j_hand.add_argument("--force", action="store_true")
     j_hand.add_argument("--json", action="store_true")
-    j_hand.set_defaults(handler=cmd_job_handover)
+    j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
 
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
@@ -1115,9 +1120,14 @@ def cmd_agents(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_board(args: argparse.Namespace) -> int:
-    config, store = _context(args)
-    agents, live_ok, note = _board_agents(config)
+def _board_path(store: StateStore) -> Path:
+    """Where the page lives when nobody asked for a different place."""
+    return store.path.parent / "board.html"
+
+
+def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
+    """Everything the page is drawn from."""
+    agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
 
     tasks = store.all()
     stranded = {
@@ -1126,7 +1136,7 @@ def cmd_board(args: argparse.Namespace) -> int:
         if task.commit and task.worktree and not gitcmd.is_reachable(task.worktree, task.commit)
     }
 
-    data = BoardData(
+    return BoardData(
         tasks=tasks,
         jobs=store.all_jobs(),
         agents=agents,
@@ -1137,36 +1147,41 @@ def cmd_board(args: argparse.Namespace) -> int:
         stranded=stranded,
     )
 
-    target = Path(args.out).expanduser() if args.out else store.path.parent / "board.html"
+
+def cmd_board(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    data = _board_data(config, store)
+
+    target = Path(args.out).expanduser() if args.out else _board_path(store)
     written = write_board(data, target)
 
     if args.json:
         _emit_json(
             {
                 "board": str(written),
-                "tasks": len(tasks),
-                "open": len(open_tasks(tasks)),
+                "tasks": len(data.tasks),
+                "open": len(open_tasks(data.tasks)),
                 "jobs": len(data.jobs),
-                "agents": len(agents),
-                "live_ok": live_ok,
-                "stranded": sorted(stranded),
+                "agents": len(data.agents),
+                "live_ok": data.live_ok,
+                "stranded": sorted(data.stranded),
             }
         )
         return 0
 
     print(written)
-    if not live_ok and note:
-        print(f"{PROGRAM}: note: {note}", file=sys.stderr)
+    if not data.live_ok and data.note:
+        print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
     return 0
 
 
-def _board_agents(config: Config):
+def _board_agents(config: Config, timeout_s: float = 15.0):
     """The live agents and their spaces. Best effort: the page works with none."""
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
     try:
-        live = mux.list_agents()
+        live = mux.list_agents(timeout_s)
     except MuxError as exc:
         return (
             [],
@@ -1191,6 +1206,21 @@ def _board_agents(config: Config):
             )
         )
     return agents, True, None
+
+
+def _refresh_board(args: argparse.Namespace) -> None:
+    """Rewrite the page after a command that changed state.
+
+    Best effort by design: when the page cannot be written it warns on stderr and
+    the command still succeeds. The live list is read with a short timeout, so a
+    slow multiplexer costs a state-only page rather than a slow dispatch.
+    """
+    try:
+        config, store = _context(args)
+        data = _board_data(config, store, mux_timeout_s=BOARD_REFRESH_MUX_TIMEOUT_S)
+        write_board(data, _board_path(store))
+    except Exception as exc:  # the board must never fail the command it follows
+        print(f"{PROGRAM}: could not refresh the board: {exc}", file=sys.stderr)
 
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -1220,14 +1250,22 @@ def cmd_config(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    code = 1
     try:
-        return args.handler(args)
-    except ClowderError as exc:
-        print(f"{PROGRAM}: {exc}", file=sys.stderr)
-        return exc.exit_code
-    except KeyboardInterrupt:
-        print(f"{PROGRAM}: interrupted", file=sys.stderr)
-        return 130
+        try:
+            code = args.handler(args)
+        except ClowderError as exc:
+            print(f"{PROGRAM}: {exc}", file=sys.stderr)
+            code = exc.exit_code
+        except KeyboardInterrupt:
+            print(f"{PROGRAM}: interrupted", file=sys.stderr)
+            code = 130
+    finally:
+        # A command that changes state rewrites the page, whichever way it ended,
+        # so an open tab never shows a stale board. It never fails the command.
+        if getattr(args, "refreshes_board", False):
+            _refresh_board(args)
+    return code
 
 
 if __name__ == "__main__":

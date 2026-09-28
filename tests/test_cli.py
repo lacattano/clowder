@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from clowder import cli, gitcmd
 from tests.support import (
@@ -1317,6 +1318,48 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         html = Path(out.strip()).read_text(encoding="utf-8")
         self.assertIn("Nothing is waiting on you.", html)
+
+    def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
+        # The page is a byproduct of the command, not a step a human remembers.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        page = self.root / "board.html"
+        self.assertTrue(page.is_file(), "dispatch wrote the page next to the state file")
+        html = page.read_text(encoding="utf-8")
+        self.assertIn("t-0001", html)
+        self.assertIn("add the refund page", html)
+        self.assertIn("Waiting on you", html, "the page keeps its first section")
+
+    def test_a_board_that_cannot_be_written_does_not_fail_the_command(self) -> None:
+        with mock.patch.object(cli, "write_board", side_effect=OSError("disk full")):
+            code, out, err = self.cli(
+                "dispatch",
+                "maker",
+                "myrepo",
+                "ship: add the refund page",
+                env=self.fake_env(),
+            )
+        self.assertEqual(code, 0, "the page is a byproduct, not the command")
+        self.assertIn("t-0001 sent to maker", out)
+        self.assertIn("could not refresh the board", err)
+        self.assertIn("disk full", err)
+
+    def test_only_state_changing_commands_refresh_the_board(self) -> None:
+        parser = cli.build_parser()
+
+        def refreshes(*argv: str) -> bool:
+            return bool(getattr(parser.parse_args(list(argv)), "refreshes_board", False))
+
+        self.assertTrue(refreshes("dispatch", "maker", "myrepo", "ship: x"))
+        self.assertTrue(refreshes("report", "t-0001"))
+        self.assertTrue(refreshes("ensure", "myrepo"))
+        self.assertTrue(refreshes("job", "open", "myrepo", "--label", "x"))
+        self.assertTrue(refreshes("job", "close", "j-0001"))
+        self.assertTrue(refreshes("job", "handover", "j-0001"))
+        self.assertFalse(refreshes("tasks"))
+        self.assertFalse(refreshes("agents"))
+        self.assertFalse(refreshes("board"))
+        self.assertFalse(refreshes("job", "list"))
+        self.assertFalse(refreshes("config"))
 
     def test_state_can_be_given_after_the_subcommand(self) -> None:
         other = self.root / "elsewhere.json"
