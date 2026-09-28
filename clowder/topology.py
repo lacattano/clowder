@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import gitcmd
 from .errors import UsageError
-from .mux import AgentInfo, Mux
+from .mux import AgentInfo, Mux, reply_pane_id
 
 DEFAULT_KIND = "pi"
 DEFAULT_ROLE = "maker"
@@ -281,6 +281,21 @@ def ensure_agent(
                 ),
                 candidates=candidates,
             )
+        # A move gives the pane a new id in the target workspace, so the id the
+        # split returned no longer exists. Start in the pane the move reports.
+        moved_id = reply_pane_id(moved)
+        if moved_id is None:
+            return EnsureResult(
+                agent=None,
+                created=False,
+                reason=(
+                    f"moved pane {pane_id} for {wanted} into workspace "
+                    f"{workspace_id}, but the move did not report the pane's new "
+                    "id, so the agent cannot be started in it"
+                ),
+                candidates=candidates,
+            )
+        pane_id = moved_id
     started = mux.start_agent(wanted, pane_id, kind=kind)
     if not started.ok:
         return EnsureResult(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -63,10 +64,14 @@ class StubMux:
                 duration_ms=5,
             )
         self.moves.append((pane_id, workspace_id))
+        # A move gives the pane a new id in the target workspace, exactly as the
+        # real multiplexer does. Holding the split's id afterwards would be stale.
+        self.pane += 1
+        moved = f"{workspace_id}:p{self.pane}"
         return MuxResult(
             argv=("herdr", "pane", "move"),
             returncode=0,
-            stdout="{}",
+            stdout=json.dumps({"result": {"pane": {"pane_id": moved}}}),
             stderr="",
             duration_ms=5,
         )
@@ -319,9 +324,13 @@ class PanePlacementTest(unittest.TestCase):
             [
                 f"split {Path('C:/code/myrepo')}",
                 "move w9:p101 --workspace w1 --new-tab",
-                "start myrepo-maker pi w9:p101",
+                # The move renumbers the pane, so the agent starts in the new id,
+                # not the id the split returned.
+                "start myrepo-maker pi w1:p102",
             ],
         )
+        assert result.agent is not None
+        self.assertEqual(result.agent.pane_id, "w1:p102")
 
     def test_no_peer_in_the_repo_keeps_the_caller_split(self) -> None:
         mux = StubMux([])

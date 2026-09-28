@@ -524,6 +524,24 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("(already live)", out)
 
+    def test_ensure_starts_the_agent_in_the_pane_the_move_created(self) -> None:
+        # A move gives the pane a new id (seen in a real run: wB:p8 became w1:p7),
+        # so the id `pane split` returned is stale. Starting the agent in it fails
+        # with agent_pane_not_found, which blocked creating any agent in a repo
+        # that already had one.
+        self.seed_mux([{"name": "verifier", "cwd": str(self.repo_path), "workspace_id": "w1"}])
+        code, out, err = self.cli("ensure", "myrepo", "--role", "maker", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("myrepo-maker serves myrepo (made)", out)
+        self.assertIn("pane w1:p", out)
+
+        state = json.loads((self.root / "mux-state.json").read_text(encoding="utf-8"))
+        split_id = state["moves"][0]["pane_id"]
+        made = next(a for a in state["agents"] if a["name"] == "myrepo-maker")
+        self.assertNotEqual(made["pane_id"], split_id, "the agent is in the moved pane")
+        self.assertTrue(made["pane_id"].startswith("w1:p"), made["pane_id"])
+        self.assertEqual(made["workspace_id"], "w1")
+
     def test_ensure_reports_what_is_missing_without_creating(self) -> None:
         self.seed_mux([])
         code, _, err = self.cli(

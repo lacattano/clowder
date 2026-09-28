@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from clowder.errors import MuxError
-from clowder.mux import Mux, parse_agent_list
+from clowder.mux import Mux, parse_agent_list, reply_pane_id
 from tests.support import clean_env, make_mux_launcher, write_fake_state
 
 # Captured from `herdr agent list`, trimmed to two agents.
@@ -237,11 +237,17 @@ class RealProcessTest(unittest.TestCase):
         with clean_env(**self.mux_env()):
             mux = self.make_mux()
             pane_id = mux.split_pane(cwd="C:/code/myrepo")
-            mux.move_pane(pane_id, "w1")
-            mux.start_agent("myrepo-maker", pane_id)
+            moved = mux.move_pane(pane_id, "w1")
+            self.assertTrue(moved.ok, moved.error_text())
+            moved_id = reply_pane_id(moved)
+            self.assertIsNotNone(moved_id, "a move reports the pane's new id")
+            assert moved_id is not None
+            self.assertNotEqual(moved_id, pane_id, "the move renumbers the pane")
+            mux.start_agent("myrepo-maker", moved_id)
             agents = mux.list_agents()
         made = next(a for a in agents if a.name == "myrepo-maker")
         self.assertEqual(made.workspace_id, "w1")
+        self.assertEqual(made.pane_id, moved_id)
 
     def test_moving_with_no_way_to_record_it_fails(self) -> None:
         with clean_env():
