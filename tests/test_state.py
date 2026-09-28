@@ -10,6 +10,7 @@ from clowder.state import (
     DISPATCHED,
     REPORTED,
     SCHEMA_VERSION,
+    Queued,
     StateStore,
     Task,
 )
@@ -28,6 +29,18 @@ def make_task(task_id: str = "t-0001", **overrides: object) -> Task:
     }
     base.update(overrides)
     return Task(**base)  # type: ignore[arg-type]
+
+
+def make_queued(item_id: str = "q-0001", **overrides: object) -> Queued:
+    base: dict[str, object] = {
+        "id": item_id,
+        "brief": "ship: add the refund page",
+        "repo": "myrepo",
+        "why": "the maker's space holds an open job",
+        "agent": "maker",
+    }
+    base.update(overrides)
+    return Queued(**base)  # type: ignore[arg-type]
 
 
 class StateStoreTest(unittest.TestCase):
@@ -143,6 +156,69 @@ class StateStoreTest(unittest.TestCase):
             dispatched_at="2026-09-27T10:00:00Z", reported_at="2026-09-27T10:00:14Z"
         )
         self.assertAlmostEqual(task.age_seconds, 14.0, places=3)
+
+
+class QueuedTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "state.json"
+
+    def test_a_queued_item_survives_a_reload(self) -> None:
+        store = StateStore(self.path)
+        item = make_queued(shape="scout", job="j-0001", question="the refund page?")
+        store.add_queued(item)
+        store.save()
+
+        reloaded = StateStore(self.path).get_queued("q-0001")
+        self.assertEqual(reloaded.brief, item.brief)
+        self.assertEqual(reloaded.repo, "myrepo")
+        self.assertEqual(reloaded.agent, "maker")
+        self.assertEqual(reloaded.role, None)
+        self.assertEqual(reloaded.why, item.why)
+        self.assertEqual(reloaded.shape, "scout")
+        self.assertEqual(reloaded.job, "j-0001")
+        self.assertEqual(reloaded.question, "the refund page?")
+        self.assertEqual(reloaded.target, "maker")
+
+    def test_a_role_only_item_targets_the_role(self) -> None:
+        store = StateStore(self.path)
+        store.add_queued(make_queued(agent=None, role="verifier"))
+        store.save()
+        reloaded = StateStore(self.path).get_queued("q-0001")
+        self.assertEqual(reloaded.target, "verifier")
+
+    def test_next_queue_id_increments_and_survives_reload(self) -> None:
+        store = StateStore(self.path)
+        first = store.next_queue_id()
+        store.add_queued(make_queued(first))
+        store.save()
+
+        second_store = StateStore(self.path)
+        second = second_store.next_queue_id()
+        self.assertEqual(first, "q-0001")
+        self.assertEqual(second, "q-0002")
+
+    def test_removing_a_queued_item_survives_reload(self) -> None:
+        store = StateStore(self.path)
+        store.add_queued(make_queued())
+        store.save()
+
+        again = StateStore(self.path)
+        again.remove_queued("q-0001")
+        again.save()
+        self.assertEqual(StateStore(self.path).all_queued(), [])
+
+    def test_unknown_queued_field_is_refused(self) -> None:
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "seq": 0,
+            "queued": {"q-0001": {"id": "q-0001", "surprise": 1}},
+        }
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(StateError) as caught:
+            StateStore(self.path).load()
+        self.assertIn("unknown fields", str(caught.exception))
 
 
 if __name__ == "__main__":

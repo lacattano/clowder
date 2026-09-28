@@ -1355,11 +1355,150 @@ class CliTest(unittest.TestCase):
         self.assertTrue(refreshes("job", "open", "myrepo", "--label", "x"))
         self.assertTrue(refreshes("job", "close", "j-0001"))
         self.assertTrue(refreshes("job", "handover", "j-0001"))
+        self.assertTrue(
+            refreshes("queue", "add", "myrepo", "ship: x", "--agent", "maker", "--why", "w")
+        )
+        self.assertTrue(refreshes("queue", "send", "q-0001"))
         self.assertFalse(refreshes("tasks"))
         self.assertFalse(refreshes("agents"))
         self.assertFalse(refreshes("board"))
         self.assertFalse(refreshes("job", "list"))
+        self.assertFalse(refreshes("queue", "list"))
         self.assertFalse(refreshes("config"))
+
+    # -- queue -------------------------------------------------------------
+
+    def queue_add(self, *extra: str, env: dict[str, object] | None = None):
+        return self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "ship: add the refund page",
+            "--why",
+            "the space holds an open job",
+            *extra,
+            env=env or self.fake_env(),
+        )
+
+    def test_queue_add_records_a_decided_item(self) -> None:
+        code, out, err = self.queue_add("--agent", "maker")
+        self.assertEqual(code, 0, err)
+        self.assertIn("q-0001 queued for maker", out)
+
+        item = json.loads(self.state.read_text(encoding="utf-8"))["queued"]["q-0001"]
+        self.assertEqual(item["brief"], "ship: add the refund page")
+        self.assertEqual(item["repo"], "myrepo")
+        self.assertEqual(item["agent"], "maker")
+        self.assertEqual(item["role"], None)
+        self.assertEqual(item["why"], "the space holds an open job")
+        self.assertIsNotNone(item["created_at"])
+
+    def test_queue_add_needs_exactly_one_target_and_a_why(self) -> None:
+        code, _, err = self.queue_add()
+        self.assertNotEqual(code, 0)
+        self.assertIn("exactly one agent or role", err)
+
+        code, _, err = self.queue_add("--agent", "maker", "--role", "maker")
+        self.assertNotEqual(code, 0)
+        self.assertIn("exactly one agent or role", err)
+
+        code, _, err = self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "ship: add the refund page",
+            "--agent",
+            "maker",
+            "--why",
+            "   ",
+            env=self.fake_env(),
+        )
+        self.assertNotEqual(code, 0, "a blank --why is refused")
+        self.assertIn("--why", err)
+
+    def test_queue_list_shows_the_item_on_a_later_run(self) -> None:
+        self.queue_add("--role", "maker")
+        code, out, err = self.cli("queue", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("q-0001", out)
+        self.assertIn("myrepo", out)
+        self.assertIn("maker", out)
+        self.assertIn("open job", out)
+        self.assertIn("refund page", out)
+
+    def test_queue_list_on_an_empty_queue(self) -> None:
+        code, out, _ = self.cli("queue", "list", env=self.fake_env())
+        self.assertEqual(code, 0)
+        self.assertIn("the queue is empty", out)
+
+    def test_a_queued_item_survives_a_reload(self) -> None:
+        self.queue_add("--agent", "maker")
+        # A fresh store, as the next command builds: the item is still there.
+        from clowder.state import StateStore
+
+        item = StateStore(self.state).get_queued("q-0001")
+        self.assertEqual(item.brief, "ship: add the refund page")
+        self.assertEqual(item.why, "the space holds an open job")
+
+    def test_a_queued_item_appears_on_the_board(self) -> None:
+        self.queue_add("--agent", "maker")
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("q-0001", html)
+        self.assertIn("the space holds an open job", html)
+
+    def test_queue_send_dispatches_and_removes_the_item(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, out, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0001 sent to maker", out)
+        self.assertIn("q-0001 sent and removed from the queue", out)
+
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(payload["queued"], {})
+        self.assertIn("t-0001", payload["tasks"])
+
+    def test_queue_send_resolves_a_role_to_a_live_agent(self) -> None:
+        self.queue_add("--role", "maker")
+        code, out, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+
+    def test_queue_send_keeps_the_item_when_the_dispatch_fails(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, _, _ = self.cli(
+            "queue", "send", "q-0001", env=self.fake_env(CLOWDER_FAKE_PROMPT_FAIL="1")
+        )
+        self.assertEqual(code, 2)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"], "a failed send stays in the queue")
+
+    def test_queue_send_by_role_with_no_such_agent_refuses(self) -> None:
+        self.queue_add("--role", "verifier")
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 2)
+        self.assertIn("no agent in myrepo plays 'verifier'", err)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"])
+
+    def test_queue_send_respects_the_cross_repo_guard(self) -> None:
+        other = self.workspace / "other"
+        other.mkdir()
+        self.queue_add("--agent", "maker")
+        code, _, err = self.cli(
+            "queue", "send", "q-0001", env=self.fake_env(CLOWDER_FAKE_CWD=str(other))
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("which is not", err)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"])
+
+    def test_queue_send_dry_run_sends_nothing_and_keeps_the_item(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, out, err = self.cli("queue", "send", "q-0001", "--dry-run", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("would run:", out)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"])
 
     def test_state_can_be_given_after_the_subcommand(self) -> None:
         other = self.root / "elsewhere.json"

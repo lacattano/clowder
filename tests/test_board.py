@@ -13,7 +13,7 @@ from clowder.board import (
     waiting_on_you,
     write_board,
 )
-from clowder.state import CLOSED, REPORTED, Job, Task
+from clowder.state import CLOSED, REPORTED, Job, Queued, Task
 from clowder.timeutil import now_iso
 
 
@@ -50,6 +50,18 @@ def job(job_id: str = "j-0001", **overrides: object) -> Job:
     }
     base.update(overrides)
     return Job(**base)  # type: ignore[arg-type]
+
+
+def queued(item_id: str = "q-0001", **overrides: object) -> Queued:
+    base: dict[str, object] = {
+        "id": item_id,
+        "brief": "ship: add the refund page",
+        "repo": "myrepo",
+        "why": "the space holds an open job",
+        "agent": "maker",
+    }
+    base.update(overrides)
+    return Queued(**base)  # type: ignore[arg-type]
 
 
 def old_task(task_id: str = "t-0001", **overrides: object) -> Task:
@@ -135,6 +147,14 @@ class RenderTest(unittest.TestCase):
         self.assertIn("closed", html)
         self.assertIn("refund", html)
 
+    def test_a_queued_item_appears_on_the_page(self) -> None:
+        html = render_board(data(queued=[queued()]))
+        self.assertIn("queued", html)
+        self.assertIn("q-0001", html)
+        self.assertIn("the space holds an open job", html)
+        self.assertIn("add the refund page", html)
+        self.assertNotIn("Nothing is waiting on you.", html)
+
 
 class WaitingTest(unittest.TestCase):
     def test_a_decision_waits_on_the_human(self) -> None:
@@ -191,6 +211,14 @@ class WaitingTest(unittest.TestCase):
             waiting_on_you(data(tasks=[task(dispatched_at=now_iso())], agents=[agent()])),
             [],
         )
+
+    def test_a_queued_item_waits(self) -> None:
+        waiting = waiting_on_you(data(queued=[queued()]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("queued", waiting[0])
+        self.assertIn("q-0001", waiting[0])
+        self.assertIn("maker", waiting[0])
+        self.assertIn("open job", waiting[0])
 
     def test_a_closed_job_never_waits(self) -> None:
         closed = job(status=CLOSED, reviewer="verifier", review_commit="a" * 40)

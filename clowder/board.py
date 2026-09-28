@@ -16,7 +16,7 @@ from html import escape
 from pathlib import Path
 
 from .report import format_cost, format_tokens
-from .state import CLOSED, Job, Task
+from .state import CLOSED, Job, Queued, Task
 from .timeutil import human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
@@ -121,6 +121,7 @@ class BoardData:
 
     tasks: list[Task] = field(default_factory=list)
     jobs: list[Job] = field(default_factory=list)
+    queued: list[Queued] = field(default_factory=list)
     agents: list[BoardAgent] = field(default_factory=list)
     state_path: str = ""
     generated_at: str = ""
@@ -166,6 +167,14 @@ def waiting_on_you(data: BoardData) -> list[str]:
                 f"<span class='why'>asked by {_e(task.agent)} about "
                 f"{_e(_clip(task.question, 120))}</span>"
             )
+
+    for item in data.queued:
+        lines.append(
+            f"<b>queued</b> <span class='id'>{_e(item.id)}</span> "
+            f"for {_e(item.target)} in {_e(item.repo)} "
+            f"<span class='why'>{_e(_clip(item.why, 160))} - "
+            f"{_e(_clip(item.question or item.brief, 120))}</span>"
+        )
 
     for task in data.tasks:
         if task.id in data.stranded:

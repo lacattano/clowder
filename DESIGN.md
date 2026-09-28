@@ -411,6 +411,36 @@ scraped.
   whether re-running is cheap enough there, or whether that repo wants fewer spaces, more
   sharing, or a cleanup step between jobs.
 
+Eight defects found while using the tool on 2026-09-28. Recorded here so they outlive the
+conversation; none is fixed by the queue work.
+
+- **A task with no place.** A task sent without `--job` or `--worktree` records no working
+  directory, so a report names the wrong place and skips the "commit on no branch" check.
+  Seen: t-0007 says "main checkout" while its worker was in `.worktrees/clowder-maker`. Fix:
+  record the agent's live directory at dispatch, or require a place.
+- **One answer per agent, not per task.** `report` reads the last thing an agent said, so a
+  later task by the same agent overwrites an earlier task's answer. Seen: t-0006 showed a
+  publish task's text as its own. Fix: scope the answer to the task's dispatch window.
+- **A send preempts an open job.** A task sent to an agent that already has an open job takes
+  the newest message and stops the older work. Seen: it happened today, and j-0004 had to be
+  re-sent. Fix: refuse or queue a dispatch to an agent whose space holds an open job, unless
+  it is that job.
+- **Last-write-wins state.** The state file has no lock, and concurrent commands are normal.
+  Seen: t-0005 was recorded reported, then read back dispatched; a second read fixed it. Fix:
+  a lock or compare-and-swap on save, so overlapping saves cannot silently drop one.
+- **A stale base.** A job's base comes from the local branch, which is behind after a merge
+  elsewhere. Seen: both merges today left local main behind until the front door pulled. Fix:
+  fetch before resolving a base, and refuse a base that is behind its remote.
+- **No landed state.** A merged branch still reads as merely closed, so the board cannot show
+  what has actually landed. Seen: after today's two merges. Fix: a landed state set when the
+  branch's commit is reachable from the base, and shown on the board.
+- **A scout gets a full space.** Reading does not need isolation, yet a read-only scout still
+  gets a checkout of its own. Seen: spaces made for investigation. Fix: give a scout the main
+  checkout or a shared read-only copy, and make a space only for work that changes code.
+- **No load check.** Nothing checks machine load before a heavy step. Seen: two agents
+  installing or running suites at once is the pattern that crashed this box on 2026-09-25.
+  Fix: a load check before a heavy step, and one heavy step open at a time across the crew.
+
 ## Prior art
 
 [Firstmate](https://github.com/kunchenguid/firstmate) is the clearest statement of the

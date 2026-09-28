@@ -24,6 +24,9 @@ clowder job close <job-id> [--delete-branch]
 clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT]
+clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
+clowder queue list
+clowder queue send <q-id>
 clowder agents
 clowder board [--open] [--out PATH]
 clowder config
@@ -184,6 +187,26 @@ Re: <the question it answers>
 - `--json` is for reading fields, not for showing the user.
 - `--open-decision TEXT` records the one decision with the task.
 
+## The queue
+
+A queue item is a decision you have made but cannot send yet - the space holds an open job, or
+no agent serves the repo. Keep it in the tool, not in your words: a context refresh would lose
+it from your words and not from the tool.
+
+```
+clowder queue add myrepo "ship: add the refund page" --role maker --why "space holds an open job"
+clowder queue list
+clowder queue send q-0001
+```
+
+- `queue add` records the brief, the repo, the agent or role it is for, and why it waits. Give
+  exactly one of `--agent` or `--role`, and always a `--why`.
+- `queue list` reads them back in a fresh context. The board shows them too, in the section on
+  what is waiting.
+- `queue send` goes through the normal dispatch path, so the cross-repo guard and the marker
+  still apply. A role is resolved to a live agent; it never makes one. On success the item
+  leaves the queue; on any failure it stays, so nothing is lost.
+
 ## The board
 
 The board is a page, not a panel. Run it when the user asks what is going on, what is waiting,
@@ -195,8 +218,9 @@ clowder board --open
 
 It writes one HTML file next to the state file and prints the path. It needs no server, and it
 still works when the multiplexer cannot be read, because it falls back to the state file. Its
-first section is what is waiting on the user: a decision, a review that is ready to merge, or
-work that is on no branch. Relay those in words. Do not paste the HTML at the user.
+first section is what is waiting on the user: a decision, a review that is ready to merge, a
+queued item whose block has not cleared, or work that is on no branch. Relay those in words. Do
+not paste the HTML at the user.
 
 ## Rules that hold every time
 
