@@ -1,0 +1,1217 @@
+"""The command line. This is the spine the front door calls.
+
+Three commands carry the state: dispatch, tasks, report. Two more explain the
+setup: agents, config.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import webbrowser
+from pathlib import Path
+
+from . import __version__, gitcmd
+from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
+from .config import BUILT_DELIVERY_MODES, Config, load_config
+from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
+from .marker import DEFAULT_SENDER, apply_marker
+from .mux import Mux
+from .report import INDENT, build_report, usage_breakdown
+from .sessions import read_answer, read_usage
+from .state import (
+    CLOSED,
+    DISPATCHED,
+    FAILED,
+    REPORTED,
+    SHAPES,
+    STATUSES,
+    Job,
+    StateStore,
+    Task,
+)
+from .timeutil import human_age, now_iso, to_epoch
+from .topology import (
+    DEFAULT_DIRECTION,
+    DEFAULT_KIND,
+    DEFAULT_ROLE,
+    ROLES,
+    ensure_agent,
+    inside,
+    normalise,
+    sanitise,
+)
+
+PROGRAM = "clowder"
+
+# Exit code for "a human has to decide": no agent serves that repo, and none was
+# made. The front door branches on this instead of reading prose.
+NEEDS_HUMAN = 3
+
+# The multiplexer is the transport. Submission is async by design: the report
+# arrives later, on the worker's own turn.
+DEFAULT_TIMEOUT_S = 60.0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROGRAM,
+        description="Dispatch and state for a crew of coding agents.",
+    )
+    parser.add_argument("--version", action="version", version=f"{PROGRAM} {__version__}")
+    parser.add_argument("--config", metavar="PATH", help="config file to use")
+    parser.add_argument("--state", metavar="PATH", help="state file to use (beats the config)")
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    send = sub.add_parser("dispatch", help="send a brief to an agent and record it")
+    send.add_argument("agent", help="agent name, as the multiplexer knows it")
+    send.add_argument("repo", help="repo name under the workspace root, or a path")
+    send.add_argument(
+        "brief",
+        nargs="*",
+        help="the brief; every remaining word is joined into one message",
+    )
+    send.add_argument("--brief-file", metavar="PATH", help="read the brief from a file instead")
+    send.add_argument(
+        "--question",
+        metavar="TEXT",
+        help="the question this task answers, if it is not the brief's first line",
+    )
+    send.add_argument("--worktree", metavar="PATH", help="working directory for the task")
+    send.add_argument(
+        "--job",
+        metavar="ID",
+        help="the line of work this step belongs to; sets the directory and branch",
+    )
+    send.add_argument("--shape", choices=SHAPES, default="ship", help="default: ship")
+    send.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, metavar="SECONDS")
+    send.add_argument(
+        "--wait", action="store_true", help="block until the agent is idle or blocked"
+    )
+    send.add_argument(
+        "--until",
+        action="append",
+        default=[],
+        choices=["idle", "working", "blocked", "done", "unknown"],
+        metavar="STATE",
+        help="with --wait, the state to wait for; repeatable",
+    )
+    send.add_argument(
+        "--from",
+        dest="sender",
+        metavar="NAME",
+        help="who is dispatching; goes into the marker (default: the front door)",
+    )
+    send.add_argument(
+        "--no-marker",
+        action="store_true",
+        help="send the bare brief, with no job marker line",
+    )
+    send.add_argument(
+        "--force",
+        action="store_true",
+        help="send even if the multiplexer does not list this agent",
+    )
+    send.add_argument("--dry-run", action="store_true", help="print the command, send nothing")
+    send.add_argument("--json", action="store_true", help="machine-readable output")
+    send.set_defaults(handler=cmd_dispatch)
+
+    list_tasks = sub.add_parser("tasks", help="list tasks and their state")
+    list_tasks.add_argument("--status", choices=STATUSES)
+    list_tasks.add_argument("--agent")
+    list_tasks.add_argument("--repo")
+    list_tasks.add_argument("--open", action="store_true", help="only tasks with no answer yet")
+    list_tasks.add_argument("--json", action="store_true")
+    list_tasks.set_defaults(handler=cmd_tasks)
+
+    show = sub.add_parser("report", help="read one task's report")
+    show.add_argument("id", help="task id, e.g. t-0001")
+    show.add_argument(
+        "--no-save", action="store_true", help="print only; do not update the record"
+    )
+    show.add_argument(
+        "--open-decision",
+        metavar="TEXT",
+        help="record the one decision this task leaves open",
+    )
+    show.add_argument("--verbose", action="store_true", help="show the usage breakdown")
+    show.add_argument("--json", action="store_true")
+    show.set_defaults(handler=cmd_report)
+
+    make = sub.add_parser(
+        "ensure",
+        help="make sure an agent serves a repo, creating one when there is none",
+    )
+    make.add_argument("repo", help="repo name under the workspace root, or a path")
+    make.add_argument(
+        "--role",
+        default=DEFAULT_ROLE,
+        choices=ROLES,
+        help=f"the part of the crew this agent plays (default: {DEFAULT_ROLE})",
+    )
+    make.add_argument("--kind", default=DEFAULT_KIND, help="agent kind (default: pi)")
+    make.add_argument(
+        "--name",
+        help="ask for this agent name instead of deriving one from the repo and role",
+    )
+    make.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    make.add_argument(
+        "--no-create", action="store_true", help="report what is missing, make nothing"
+    )
+    make.add_argument("--json", action="store_true")
+    make.set_defaults(handler=cmd_ensure)
+
+    roster = sub.add_parser("agents", help="list live agents (the roster is the tool's)")
+    roster.add_argument("--json", action="store_true")
+    roster.set_defaults(handler=cmd_agents)
+
+    board = sub.add_parser(
+        "board", help="write the HTML page of what is queued, underway and waiting"
+    )
+    board.add_argument(
+        "--out",
+        metavar="PATH",
+        help="where to write it (default: next to the state file)",
+    )
+    board.add_argument("--open", action="store_true", help="open it in your browser")
+    board.add_argument("--json", action="store_true")
+    board.set_defaults(handler=cmd_board)
+
+    job = sub.add_parser("job", help="a line of work: one branch in an agent's worktree")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+
+    j_open = job_sub.add_parser("open", help="start a branch for a line of work")
+    j_open.add_argument("repo")
+    j_open.add_argument("--label", required=True, help="what the work is, in a word or three")
+    j_open.add_argument("--role", default=DEFAULT_ROLE, choices=ROLES)
+    j_open.add_argument("--name", help="use or make an agent with this name")
+    j_open.add_argument("--branch", help="branch name (default: job prefix plus label)")
+    j_open.add_argument("--base", help="what to branch from (default: the base branch)")
+    j_open.add_argument("--kind", default=DEFAULT_KIND)
+    j_open.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    j_open.add_argument(
+        "--force",
+        action="store_true",
+        help="switch anyway, on a dirty tree or in the main checkout",
+    )
+    j_open.add_argument("--json", action="store_true")
+    j_open.set_defaults(handler=cmd_job_open)
+
+    j_close = job_sub.add_parser("close", help="return the worktree to the agent's branch")
+    j_close.add_argument("id")
+    j_close.add_argument(
+        "--delete-branch",
+        action="store_true",
+        help="also delete the job branch, if git agrees it is merged",
+    )
+    j_close.add_argument("--force", action="store_true")
+    j_close.add_argument("--json", action="store_true")
+    j_close.set_defaults(handler=cmd_job_close)
+
+    j_list = job_sub.add_parser("list", help="jobs, and where their branches live")
+    j_list.add_argument("--all", action="store_true", help="closed jobs too")
+    j_list.add_argument("--json", action="store_true")
+    j_list.set_defaults(handler=cmd_job_list)
+
+    j_hand = job_sub.add_parser(
+        "handover", help="give a reviewer the job's saved code to check"
+    )
+    j_hand.add_argument("id")
+    j_hand.add_argument(
+        "--to",
+        default="verifier",
+        choices=ROLES,
+        help="the role that checks it (default: verifier)",
+    )
+    j_hand.add_argument("--name", help="use or make a reviewer with this name")
+    j_hand.add_argument("--kind", default=DEFAULT_KIND)
+    j_hand.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    j_hand.add_argument("--force", action="store_true")
+    j_hand.add_argument("--json", action="store_true")
+    j_hand.set_defaults(handler=cmd_job_handover)
+
+    paths = sub.add_parser("config", help="show resolved settings and paths")
+    paths.add_argument("--json", action="store_true")
+    paths.set_defaults(handler=cmd_config)
+
+    return parser
+
+
+# -- helpers ---------------------------------------------------------------
+
+
+def _context(args: argparse.Namespace) -> tuple[Config, StateStore]:
+    config = load_config(args.config)
+    state_path = args.state or config.state_path
+    return config, StateStore(state_path)
+
+
+def _read_brief(args: argparse.Namespace) -> str:
+    if args.brief_file:
+        if args.brief:
+            raise UsageError("pass a brief or --brief-file, not both")
+        path = Path(args.brief_file)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise UsageError(f"cannot read {path}: {exc}") from exc
+        if not text.strip():
+            raise UsageError(f"{path} is empty")
+        return text.strip()
+    if not args.brief:
+        raise UsageError("a brief is required. Pass words, or --brief-file PATH")
+    return " ".join(args.brief).strip()
+
+
+def _first_line(text: str, limit: int = 120) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped if len(stripped) <= limit else stripped[: limit - 1] + "..."
+    return text[:limit]
+
+
+def _clip(text: str, width: int) -> str:
+    text = text.replace("\n", " ").strip()
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - 1)] + "..."
+
+
+def _column(rows: list[list[str]], gap: str = "  ") -> str:
+    if not rows:
+        return ""
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    lines = []
+    for row in rows:
+        cells = [row[i].ljust(widths[i]) for i in range(len(row))]
+        lines.append(gap.join(cells).rstrip())
+    return "\n".join(lines)
+
+
+def _emit_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True))
+
+
+# -- commands --------------------------------------------------------------
+
+
+def cmd_dispatch(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    brief = _read_brief(args)
+    question = (args.question or "").strip() or _first_line(brief)
+
+    repo_path = config.resolve_repo(args.repo)
+    worktree = str(Path(args.worktree).expanduser().absolute()) if args.worktree else None
+    if worktree and not Path(worktree).is_dir():
+        raise UsageError(f"worktree is not a directory: {worktree}")
+
+    job = None
+    if args.job:
+        if args.worktree:
+            raise UsageError("pass --job or --worktree, not both; a job knows its directory")
+        job = store.get_job(args.job)
+        if not job.is_open:
+            raise DispatchError(
+                f"{job.id} is closed. Open a job for this work, or dispatch without --job."
+            )
+        who = [name for name in (job.agent, job.reviewer) if name]
+        if args.agent not in who:
+            checked = f", checked by {job.reviewer}" if job.reviewer else ""
+            raise DispatchError(
+                f"{job.id} is {job.agent}'s job{checked}, and you named "
+                f"{args.agent}. The writer and its reviewer take the steps."
+            )
+        worktree = job.worktree
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+
+    agent_info = None
+    if not args.force and not args.dry_run:
+        agent_info = _lookup_agent(mux, args.agent)
+        _refuse_cross_repo(args, agent_info, repo_path)
+        if job is not None:
+            _refuse_outside_job(args, agent_info, job, store)
+
+    task = Task(
+        id=store.next_id(),
+        question=question,
+        brief=brief,
+        shape=args.shape,
+        agent=args.agent,
+        repo=args.repo,
+        repo_path=str(repo_path),
+        worktree=worktree,
+        pane_id=agent_info.pane_id if agent_info else None,
+        agent_session=agent_info.session_path if agent_info else None,
+    )
+    if job is not None:
+        task.job = job.id
+        task.branch = job.branch
+        # The folder the step actually ran in. For the writer that is the job's own
+        # space; for a reviewer it is the reviewer's space, holding the pinned save.
+        # A report reads this folder, so recording the wrong one reads the wrong code.
+        if agent_info is not None and agent_info.cwd:
+            task.worktree = agent_info.cwd
+        if job.reviewer == args.agent and job.review_commit:
+            # A review is about one save, so it names that save, not wherever the
+            # writer has moved on to since.
+            where = agent_info.cwd if agent_info is not None else job.worktree
+            task.commit = gitcmd.commit_of(where, job.review_commit, short=True)
+        else:
+            task.commit = gitcmd.head_commit(task.worktree or job.worktree)
+
+    # The marker is composed here, not by the front door, so it cannot be forgotten.
+    sender = (args.sender or config.front_door_name or DEFAULT_SENDER).strip()
+    use_marker = config.dispatch_marker and not args.no_marker
+    task.sender = sender if use_marker else None
+    message = (
+        apply_marker(brief, task.id, args.shape, args.repo, sender) if use_marker else brief
+    )
+
+    if args.dry_run:
+        argv = mux.build_prompt_argv(args.agent, message)
+        task.mux_argv = argv
+        if args.json:
+            _emit_json({"dry_run": True, "argv": argv, "task": task.to_dict()})
+        else:
+            print(f"would run:\n{INDENT}{_quote(argv)}")
+            print(f"repo: {repo_path}")
+            print(f"worktree: {worktree or '(main checkout)'}")
+        return 0
+
+    if args.shape.lower() not in brief.lower():
+        print(
+            f"{PROGRAM}: note: the brief does not say {args.shape!r}. "
+            "Every brief states ship or scout.",
+            file=sys.stderr,
+        )
+
+    result = mux.prompt(
+        args.agent,
+        message,
+        timeout_s=args.timeout,
+        wait=args.wait,
+        until=args.until,
+    )
+    task.mux_argv = list(result.argv)
+    task.mux_returncode = result.returncode
+    task.dispatched_at = now_iso()
+    if result.ok:
+        task.status = DISPATCHED
+    else:
+        task.status = FAILED
+        task.mux_error = result.error_text()
+
+    store.add(task)
+    store.save()
+
+    if args.json:
+        _emit_json({"task": task.to_dict(), "ok": result.ok})
+    elif result.ok:
+        print(
+            f"{task.id} sent to {task.agent} "
+            f"({task.repo}, {_where(task)}), asked: {_clip(task.question, 70)}"
+        )
+    else:
+        print(
+            f"{PROGRAM}: dispatch failed: {result.error_text()}",
+            file=sys.stderr,
+        )
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        print(f"{PROGRAM}: recorded as {task.id} ({FAILED})", file=sys.stderr)
+
+    return 0 if result.ok else 2
+
+
+def _where(task: Task) -> str:
+    return f"worktree {Path(task.worktree).name}" if task.worktree else "main checkout"
+
+
+def _lookup_agent(mux: Mux, name: str):
+    """Refuse to send into the void. A wrong name must fail loudly, not silently."""
+    try:
+        agents = mux.list_agents()
+    except MuxError as exc:
+        print(
+            f"{PROGRAM}: warning: cannot read the live agent list ({exc}); sending anyway",
+            file=sys.stderr,
+        )
+        return None
+    for agent in agents:
+        if agent.name == name:
+            return agent
+    live = ", ".join(sorted(a.name for a in agents)) or "none"
+    raise DispatchError(
+        f"no agent named {name!r}. Live agents: {live}. "
+        f"Run `{PROGRAM} ensure <repo> --role <role>` to make one in a repo."
+    )
+
+
+def _refuse_cross_repo(args: argparse.Namespace, agent, repo_path) -> None:
+    """An agent serves the repo its pane was opened in, and no other.
+
+    A pane's directory is fixed when the pane is made, so its shell, its context
+    files and its skills all belong to that repo. Sending a repo B job to a repo A
+    pane can only produce a wrong answer, so it is refused before anything is sent.
+    """
+    if agent is None or not agent.cwd:
+        return
+    if inside(agent.cwd, repo_path):
+        return
+    raise DispatchError(
+        f"{args.agent} is in {agent.cwd}, which is not {repo_path}. "
+        f"A pane serves the repo it was opened in. Run "
+        f"`{PROGRAM} ensure {args.repo} --role {DEFAULT_ROLE}` to make an agent "
+        f"there, or pass --force if you know better."
+    )
+
+
+def _refuse_outside_job(args: argparse.Namespace, agent, job, store: StateStore) -> None:
+    """A step runs on the job's code: the writer's branch, or a handed-over save.
+
+    One branch lives in one folder, so a reviewer cannot hold the writer's branch.
+    It holds the exact save instead, and this checks that it really does before a
+    brief goes out. A step sent to a folder holding different code would produce a
+    report about code the job never had.
+    """
+    if agent is not None and agent.cwd:
+        on_the_branch = inside(agent.cwd, job.worktree)
+        at_the_save = bool(
+            job.review_commit and gitcmd.commit_of(agent.cwd, "HEAD") == job.review_commit
+        )
+        if not (on_the_branch or at_the_save):
+            handed = f" ({job.review_commit[:7]})" if job.review_commit else ""
+            raise DispatchError(
+                f"{args.agent} is in {agent.cwd}, which holds neither {job.id}'s "
+                f"branch ({job.worktree}) nor its handed-over save{handed}. Run "
+                f"`{PROGRAM} job handover {job.id} --to {args.agent}` to give it the "
+                "code to check."
+            )
+    open_steps = [task for task in store.all() if task.job == job.id and task.is_open]
+    if open_steps:
+        listed = ", ".join(f"{task.id} ({task.agent})" for task in open_steps)
+        raise DispatchError(
+            f"{job.id} already has an open step: {listed}. Wait for it to report "
+            "before sending another; two steps at once in one checkout is how two "
+            "heavy runs start at once."
+        )
+
+
+def _quote(argv: list[str]) -> str:
+    out = []
+    for part in argv:
+        if part == "" or " " in part or "\n" in part:
+            out.append("'" + part.replace("'", "'\\''") + "'")
+        else:
+            out.append(part)
+    return " ".join(out)
+
+
+def cmd_tasks(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    tasks = store.select(
+        status=args.status, agent=args.agent, repo=args.repo, open_only=args.open
+    )
+
+    if args.json:
+        _emit_json({"tasks": [t.to_dict() for t in tasks], "count": len(tasks)})
+        return 0
+
+    if not tasks:
+        print("no tasks")
+        return 0
+
+    rows = [["ID", "STATUS", "JOB", "AGENT", "REPO", "AGE", "QUESTION"]]
+    for task in tasks:
+        rows.append(
+            [
+                task.id,
+                task.status,
+                task.job or "-",
+                task.agent,
+                _clip(task.repo, 22),
+                human_age(task.age_seconds),
+                _clip(task.question, 40),
+            ]
+        )
+    print(_column(rows))
+    open_count = sum(1 for t in tasks if t.is_open)
+    unanswered = sum(1 for t in tasks if not t.answer)
+    print(f"\n{len(tasks)} task(s), {open_count} still open, {unanswered} with no answer")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    task = store.get(args.id)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+
+    session_path, agent_status = _resolve_session(mux, task)
+    since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
+
+    usage = read_usage(session_path, since) if session_path else None
+    answer = task.answer or (read_answer(session_path, since) if session_path else None)
+
+    if task.answer:
+        source = task.answer_source or "record"
+    elif answer:
+        source = "session"
+    else:
+        source = None
+
+    if args.open_decision:
+        task.open_decision = args.open_decision
+
+    # An answer only counts as a report when the worker is no longer working.
+    settled = agent_status in (None, "idle", "done")
+    stranded = False
+    if not args.no_save:
+        changed = False
+        if usage is not None:
+            task.usage = usage.to_dict()
+            changed = True
+        # The directory means different code at different times, so the commit is
+        # what a report is really about.
+        if task.worktree and gitcmd.is_repo(task.worktree):
+            head = gitcmd.head_commit(task.worktree)
+            if head and head != task.commit:
+                task.commit = head
+                changed = True
+        # The reachability gate, where a worker makes its claim. A commit that is on
+        # no branch exists only in that folder, and reusing the folder destroys it.
+        if task.commit and task.worktree:
+            stranded = not gitcmd.is_reachable(task.worktree, task.commit)
+        if answer and (task.answer != answer or task.status != REPORTED) and settled:
+            task.answer = answer
+            task.answer_source = source or "session"
+            task.reported_at = now_iso()
+            task.status = REPORTED
+            changed = True
+        if session_path and task.agent_session != session_path:
+            task.agent_session = session_path
+            changed = True
+        if args.open_decision:
+            changed = True
+        if changed:
+            store.save()
+
+    if args.json:
+        _emit_json(
+            {
+                "task": task.to_dict(),
+                "usage": usage.to_dict() if usage else None,
+                "answer": answer,
+                "answer_source": source,
+                "agent_status": agent_status,
+                "session_file": session_path,
+                "commit_on_no_branch": stranded,
+            }
+        )
+        return 0
+
+    print(build_report(task, usage, answer))
+    if agent_status == "working":
+        print(INDENT + "(the agent is working; this may not be its final word)")
+    if stranded:
+        print(
+            INDENT
+            + f"warning: commit {task.commit} is on no branch. It lives only in "
+            + f"{task.worktree}, and reusing that space would lose it. Put it on a "
+            + f'branch: git -C "{task.worktree}" branch <name> {task.commit}'
+        )
+    if args.verbose:
+        print()
+        print(INDENT + "usage:")
+        print(usage_breakdown(usage) if usage else INDENT + "no session turns found")
+        if session_path:
+            print(INDENT + f"session: {session_path}")
+    return 0
+
+
+def _resolve_session(mux: Mux, task: Task) -> tuple[str | None, str | None]:
+    """Prefer the live answer, because a pane can be reset to a new session."""
+    try:
+        agent = mux.find_agent(task.agent)
+    except MuxError:
+        return task.agent_session, None
+    if agent is None:
+        return task.agent_session, None
+    return agent.session_path or task.agent_session, agent.status
+
+
+def cmd_ensure(args: argparse.Namespace) -> int:
+    config, _ = _context(args)
+    repo_path = config.resolve_repo(args.repo)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+
+    result = _ensure(
+        config,
+        mux,
+        repo_path,
+        repo_name=args.repo,
+        role=args.role,
+        kind=args.kind,
+        direction=args.direction,
+        name=args.name,
+        create=not args.no_create,
+    )
+
+    if args.json:
+        _emit_json(
+            {
+                **result.as_dict(),
+                "repo": args.repo,
+                "repo_path": str(repo_path),
+                "role": args.role,
+            }
+        )
+        return 0 if result.ok else NEEDS_HUMAN
+
+    if result.ok:
+        assert result.agent is not None
+        how = "made" if result.created else "already live"
+        print(f"{result.agent.name} serves {args.repo} ({how}), pane {result.agent.pane_id}")
+        print(f"{INDENT}working directory: {result.agent.cwd or '(unreported)'}")
+        if result.note:
+            print(f"{PROGRAM}: note: {result.note}", file=sys.stderr)
+        return 0
+
+    print(f"{PROGRAM}: {result.reason}", file=sys.stderr)
+    if result.candidates:
+        print(
+            f"{PROGRAM}: agents in that repo: {', '.join(result.candidates)}. "
+            "Dispatch to one of those by name.",
+            file=sys.stderr,
+        )
+    elif args.no_create:
+        print(f"{PROGRAM}: run without --no-create to start one there.", file=sys.stderr)
+    return NEEDS_HUMAN
+
+
+def _ensure(
+    config: Config,
+    mux: Mux,
+    repo_path,
+    *,
+    repo_name: str,
+    role: str,
+    kind: str,
+    direction: str,
+    name: str | None = None,
+    create: bool = True,
+):
+    """One place where an agent for a repo is found or made."""
+    return ensure_agent(
+        mux,
+        repo_name,
+        repo_path,
+        role=role,
+        kind=kind,
+        direction=direction,
+        create=create,
+        name=name,
+        worktree_dir=config.worktree_dir,
+        base=config.worktree_base,
+        setup=config.worktree_setup,
+    )
+
+
+def cmd_job_open(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    repo_path = config.resolve_repo(args.repo)
+    if not gitcmd.is_repo(repo_path):
+        raise GitError(
+            f"{repo_path} is not a git repository. A job is a branch, so it needs one."
+        )
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+
+    if config.delivery_mode not in BUILT_DELIVERY_MODES:
+        raise UsageError(
+            f"worktree.delivery is {config.delivery_mode!r}, and only "
+            f"{', '.join(BUILT_DELIVERY_MODES)} is built. Nothing merges or pushes "
+            "here yet, so a mode that promises more would be a lie."
+        )
+
+    ensured = _ensure(
+        config,
+        mux,
+        repo_path,
+        repo_name=args.repo,
+        role=args.role,
+        kind=args.kind,
+        direction=args.direction,
+        name=args.name,
+        create=True,
+    )
+    if not ensured.ok:
+        print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)
+        if ensured.candidates:
+            print(
+                f"{PROGRAM}: agents in that repo: {', '.join(ensured.candidates)}",
+                file=sys.stderr,
+            )
+        return NEEDS_HUMAN
+
+    agent = ensured.agent
+    assert agent is not None
+    worktree = agent.cwd or str(repo_path)
+    if ensured.note:
+        print(f"{PROGRAM}: note: {ensured.note}", file=sys.stderr)
+
+    top = gitcmd.toplevel(repo_path)
+    if top and normalise(worktree) == normalise(top) and not args.force:
+        raise GitError(
+            f"{agent.name} works in the main checkout ({worktree}). Switching branches "
+            "there would disturb your own work. Make an agent with its own worktree: "
+            f"`{PROGRAM} ensure {args.repo} --role {args.role} --name <name>`, or pass "
+            "--force."
+        )
+
+    base_ref = gitcmd.resolve_base(repo_path, args.base or config.worktree_base)
+    label = args.label.strip()
+    branch = args.branch or f"{config.job_branch_prefix}{sanitise(label)}"
+
+    # One open job per worktree. Two would mean the second switching a branch out
+    # from under the first, which is state no report could be trusted against.
+    here = next(
+        (job for job in store.open_jobs() if normalise(job.worktree) == normalise(worktree)),
+        None,
+    )
+    if here is not None and here.branch == branch:
+        if args.json:
+            _emit_json({"job": here.to_dict(), "agent": agent.name, "already_open": True})
+        else:
+            print(f"{here.id} already open: {here.branch} in {here.worktree}")
+        return 0
+    if here is not None and not args.force:
+        raise GitError(
+            f"{here.id} is still open on this worktree: {here.branch} ({here.label}). "
+            f"Close it before starting {branch} here, or pass --force to abandon it."
+        )
+
+    dirty = gitcmd.status_entries(worktree)
+    if dirty and not args.force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
+        more = ", and more" if len(dirty) > 5 else ""
+        raise GitError(
+            f"{worktree} is not clean: {shown}{more}. A job starts from a clean tree, "
+            "or the branch carries someone else's half-finished work. Commit, stash, "
+            "or pass --force."
+        )
+
+    on = gitcmd.current_branch(worktree)
+    if on == branch:
+        pass
+    elif gitcmd.branch_exists(worktree, branch):
+        gitcmd.switch_branch(worktree, branch)
+    else:
+        gitcmd.switch_new_branch(worktree, branch, base_ref)
+
+    job = Job(
+        id=store.next_job_id(),
+        label=label,
+        repo=args.repo,
+        repo_path=str(repo_path),
+        worktree=worktree,
+        branch=branch,
+        base=base_ref,
+        agent=agent.name,
+        commit=gitcmd.head_commit(worktree),
+    )
+    store.add_job(job)
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict(), "agent": agent.name, "created": ensured.created})
+        return 0
+
+    print(f"{job.id} open: {job.branch} in {job.worktree}")
+    print(f"{INDENT}{agent.name} | {job.repo} | from {job.base} | {job.commit or 'no commit'}")
+    return 0
+
+
+def cmd_job_close(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    worktree = job.worktree
+
+    open_steps = [task for task in store.all() if task.job == job.id and task.is_open]
+    if open_steps and not args.force:
+        listed = ", ".join(f"{task.id} ({task.agent})" for task in open_steps)
+        raise StateError(
+            f"{job.id} still has open steps: {listed}. Closing now would leave work "
+            "in flight on a branch nobody is holding. Wait for it to report, or pass "
+            "--force."
+        )
+
+    dirty = gitcmd.status_entries(worktree)
+    if dirty and not args.force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
+        more = ", and more" if len(dirty) > 5 else ""
+        raise GitError(
+            f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
+            "ready for the next one, so this is refused. Commit, stash, or pass --force."
+        )
+
+    on = gitcmd.current_branch(worktree)
+    if on != job.branch and not args.force:
+        raise GitError(
+            f"{worktree} is on {on or 'a detached HEAD'}, not {job.branch}. "
+            "Nothing was switched. Close the job from its own branch."
+        )
+    if on == job.branch:
+        job.commit = gitcmd.head_commit(worktree)
+
+    # Release the space: no branch name on it, sitting on the current base, clean.
+    # Its install and caches stay, which is the whole point of keeping the space.
+    base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
+    gitcmd.detach_at(worktree, base_ref)
+
+    deleted = False
+    if args.delete_branch:
+        gitcmd.delete_branch(worktree, job.branch)
+        deleted = True
+
+    job.status = CLOSED
+    job.closed_at = now_iso()
+    job.released_at = now_iso()
+    store.save()
+
+    if args.json:
+        _emit_json(
+            {
+                "job": job.to_dict(),
+                "returned_to": base_ref,
+                "branch_deleted": deleted,
+                "space": "free",
+            }
+        )
+        return 0
+
+    print(f"{job.id} closed: {job.branch} kept, space free again on {base_ref}")
+    print(f"{INDENT}{worktree}")
+    if deleted:
+        print(f"{INDENT}the job branch was deleted")
+    return 0
+
+
+def cmd_job_handover(args: argparse.Namespace) -> int:
+    """Give a reviewer the writer's saved code, pinned to one commit.
+
+    The reviewer's folder is filled with the writer's files at that save, with no
+    branch name on it. So the reviewer checks the real code, and the writer keeps
+    the branch and can carry on.
+    """
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    if not job.is_open:
+        raise StateError(f"{job.id} is closed, so there is nothing to hand over.")
+
+    writer = job.worktree
+    pending = gitcmd.status_entries(writer)
+    if pending and not args.force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in pending[:5])
+        more = ", and more" if len(pending) > 5 else ""
+        raise GitError(
+            f"{job.agent} has work that is not saved in {writer}: {shown}{more}. "
+            "A reviewer checks a save, not a folder. Save it, or pass --force."
+        )
+
+    if gitcmd.count_commits(writer, f"{job.base}..HEAD") == 0:
+        raise GitError(
+            f"nothing has been saved on {job.branch} yet, so there is nothing to "
+            "hand over. A reviewer needs a save to look at."
+        )
+    commit = gitcmd.head_commit(writer, short=False)
+    if commit is None:
+        raise GitError(f"cannot read a commit in {writer}")
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    ensured = _ensure(
+        config,
+        mux,
+        job.repo_path,
+        repo_name=job.repo,
+        role=args.to,
+        kind=args.kind,
+        direction=args.direction,
+        name=args.name,
+        create=True,
+    )
+    if not ensured.ok:
+        print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)
+        if ensured.candidates:
+            print(
+                f"{PROGRAM}: agents in that repo: {', '.join(ensured.candidates)}",
+                file=sys.stderr,
+            )
+        return NEEDS_HUMAN
+
+    reviewer = ensured.agent
+    assert reviewer is not None
+    folder = reviewer.cwd or ""
+    if ensured.note:
+        print(f"{PROGRAM}: note: {ensured.note}", file=sys.stderr)
+
+    top = gitcmd.toplevel(job.repo_path)
+    if top and normalise(folder) == normalise(top) and not args.force:
+        raise GitError(
+            f"{reviewer.name} works in the main checkout ({folder}). Pinning that to a "
+            "commit would move your own work. Make a reviewer with a copy of its own: "
+            f"`{PROGRAM} ensure {job.repo} --role {args.to} --name <name>`."
+        )
+    if not folder or not gitcmd.is_repo(folder):
+        raise GitError(
+            f"{reviewer.name}'s folder is not a git repository "
+            f"({folder or 'unknown'}), so it cannot hold the code to check."
+        )
+
+    busy = next(
+        (
+            other
+            for other in store.open_jobs()
+            if other.id != job.id and normalise(other.worktree) == normalise(folder)
+        ),
+        None,
+    )
+    if busy is not None and not args.force:
+        raise StateError(
+            f"{busy.id} is still open on {reviewer.name}'s folder. Close it first."
+        )
+
+    unsaved = gitcmd.status_entries(folder)
+    if unsaved and not args.force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in unsaved[:5])
+        raise GitError(
+            f"{reviewer.name} has work that is not saved in {folder}: {shown}. "
+            "Pinning the folder would write over it. Save it, or pass --force."
+        )
+
+    gitcmd.switch_to_commit(folder, commit)
+    job.reviewer = reviewer.name
+    job.review_commit = commit
+    job.handed_over_at = now_iso()
+    job.commit = commit
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict(), "reviewer": reviewer.name, "commit": commit})
+        return 0
+
+    print(f"{job.id} handed over: {job.branch} @ {commit[:7]}")
+    print(f"{INDENT}{reviewer.name} checks it in {folder}")
+    print(
+        f"{INDENT}send the review step with: {PROGRAM} dispatch {reviewer.name} "
+        f"{job.repo} --job {job.id}"
+    )
+    return 0
+
+
+def cmd_job_list(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    jobs = store.all_jobs() if args.all else store.open_jobs()
+
+    if args.json:
+        _emit_json({"jobs": [job.to_dict() for job in jobs], "count": len(jobs)})
+        return 0
+
+    if not jobs:
+        print("no jobs" if args.all else "no open jobs")
+        return 0
+
+    rows = [["ID", "STATUS", "REPO", "BRANCH", "AGENT", "AGE", "LABEL"]]
+    for job in jobs:
+        rows.append(
+            [
+                job.id,
+                job.status,
+                _clip(job.repo, 20),
+                _clip(job.branch, 28),
+                job.agent,
+                human_age(job.age_seconds),
+                _clip(job.label, 30),
+            ]
+        )
+    print(_column(rows))
+    return 0
+
+
+def cmd_agents(args: argparse.Namespace) -> int:
+    config, _ = _context(args)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    agents = mux.list_agents()
+
+    if args.json:
+        described: list[dict[str, object]] = []
+        for agent in agents:
+            copy = gitcmd.describe_copy(agent.cwd) if agent.cwd else None
+            described.append(
+                {
+                    "name": agent.name,
+                    "pane_id": agent.pane_id,
+                    "cwd": agent.cwd,
+                    "status": agent.status,
+                    "session_file": agent.session_path,
+                    "focused": agent.focused,
+                    "copy": (
+                        {
+                            "branch": copy.branch,
+                            "commit": copy.commit,
+                            "saved": not copy.dirty,
+                            "detached": copy.detached,
+                            "main_checkout": copy.main_checkout,
+                            "path": copy.path,
+                        }
+                        if copy and copy.is_repo
+                        else None
+                    ),
+                }
+            )
+        _emit_json({"agents": described})
+        return 0
+
+    if not agents:
+        print("no agents")
+        return 0
+    rows = [["NAME", "PANE", "STATUS", "COPY", "FOLDER"]]
+    for agent in agents:
+        copy = gitcmd.describe_copy(agent.cwd) if agent.cwd else None
+        rows.append(
+            [
+                agent.name,
+                agent.pane_id or "-",
+                agent.status or "-",
+                copy.label() if copy else "-",
+                _clip(agent.cwd or "-", 44),
+            ]
+        )
+    print(_column(rows))
+    print(
+        "\nA space is a folder on disk that keeps its install. Each agent needs one "
+        "of its own; `clowder ensure` makes one."
+    )
+    return 0
+
+
+def cmd_board(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    agents, live_ok, note = _board_agents(config)
+
+    tasks = store.all()
+    stranded = {
+        task.id
+        for task in tasks
+        if task.commit and task.worktree and not gitcmd.is_reachable(task.worktree, task.commit)
+    }
+
+    data = BoardData(
+        tasks=tasks,
+        jobs=store.all_jobs(),
+        agents=agents,
+        state_path=str(store.path),
+        generated_at=now_stamp(),
+        live_ok=live_ok,
+        note=note,
+        stranded=stranded,
+    )
+
+    target = Path(args.out).expanduser() if args.out else store.path.parent / "board.html"
+    written = write_board(data, target)
+
+    if args.json:
+        _emit_json(
+            {
+                "board": str(written),
+                "tasks": len(tasks),
+                "open": len(open_tasks(tasks)),
+                "jobs": len(data.jobs),
+                "agents": len(agents),
+                "live_ok": live_ok,
+                "stranded": sorted(stranded),
+            }
+        )
+        return 0
+
+    print(written)
+    if not live_ok and note:
+        print(f"{PROGRAM}: note: {note}", file=sys.stderr)
+    if args.open:
+        webbrowser.open(written.resolve().as_uri())
+    return 0
+
+
+def _board_agents(config: Config):
+    """The live agents and their spaces. Best effort: the page works with none."""
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    try:
+        live = mux.list_agents()
+    except MuxError as exc:
+        return (
+            [],
+            False,
+            f"The agent list could not be read ({exc}), so this page shows state only.",
+        )
+
+    agents: list[BoardAgent] = []
+    for agent in live:
+        copy = gitcmd.describe_copy(agent.cwd) if agent.cwd else None
+        agents.append(
+            BoardAgent(
+                name=agent.name,
+                pane_id=agent.pane_id,
+                status=agent.status,
+                space=agent.cwd,
+                branch=copy.branch if copy else None,
+                commit=copy.commit if copy else None,
+                saved=(not copy.dirty) if copy else True,
+                main_checkout=copy.main_checkout if copy else False,
+                detached=copy.detached if copy else False,
+            )
+        )
+    return agents, True, None
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    payload = config.as_dict()
+    payload["state_path"] = str(store.path)
+
+    if args.json:
+        _emit_json(payload)
+        return 0
+
+    rows = [["SETTING", "VALUE"]]
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            if not value:
+                rows.append([key, "(none)"])
+            for name, path in value.items():
+                rows.append([f"{key}.{name}", str(path)])
+        else:
+            rows.append([key, str(value) if value is not None else "(unset)"])
+    print(_column(rows))
+    if not store.path.exists():
+        print(f"\nstate file does not exist yet: {store.path}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.handler(args)
+    except ClowderError as exc:
+        print(f"{PROGRAM}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except KeyboardInterrupt:
+        print(f"{PROGRAM}: interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

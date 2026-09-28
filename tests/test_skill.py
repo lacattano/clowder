@@ -1,0 +1,108 @@
+"""Guards for the shipped skill and package manifest.
+
+The skill is a product surface with a format contract, and it drifts from the CLI
+the moment someone adds a command. These tests fail on the drift.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unittest
+from pathlib import Path
+
+from clowder.cli import build_parser
+from clowder.marker import marker_line
+
+REPO = Path(__file__).resolve().parent.parent
+SKILL = REPO / "skills" / "front-door" / "SKILL.md"
+NAME_RULE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+TEXT_SUFFIXES = {".md", ".py", ".toml", ".json", ".cfg", ".txt"}
+TEXT_NAMES = {".gitignore", ".python-version"}
+
+
+def read_skill() -> str:
+    return SKILL.read_text(encoding="utf-8")
+
+
+def frontmatter(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AssertionError("SKILL.md must open with frontmatter")
+    fields: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return fields
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+    raise AssertionError("frontmatter is never closed")
+
+
+class SkillTest(unittest.TestCase):
+    def test_frontmatter_meets_the_spec(self) -> None:
+        fields = frontmatter(read_skill())
+        name = fields.get("name", "")
+        self.assertEqual(name, SKILL.parent.name, "the name must match its directory")
+        self.assertRegex(name, NAME_RULE)
+        self.assertLessEqual(len(name), 64)
+        description = fields.get("description", "")
+        self.assertTrue(description, "a skill without a description is not loaded")
+        self.assertLessEqual(len(description), 1024)
+        self.assertIn("Use when", description, "say when to reach for it")
+
+    def test_every_cli_command_is_documented(self) -> None:
+        parser = build_parser()
+        commands: list[str] = []
+        for action in parser._subparsers._group_actions:  # type: ignore[attr-defined]
+            commands.extend(action.choices)  # type: ignore[attr-defined]
+        self.assertGreater(len(commands), 3)
+        text = read_skill()
+        for command in commands:
+            self.assertIn(f"clowder {command}", text, f"{command} is missing from the skill")
+
+    def test_the_marker_in_the_skill_is_the_marker_in_the_code(self) -> None:
+        expected = marker_line("t-0004", "ship", "myrepo", "topcat")
+        self.assertIn(expected, read_skill())
+
+    def test_the_report_shape_is_documented(self) -> None:
+        text = read_skill()
+        self.assertIn("Re: <the question it answers>", text)
+        self.assertIn("Open decision:", text)
+        self.assertIn("exactly one", text.lower())
+
+    def test_the_skill_forbids_doing_the_work(self) -> None:
+        text = read_skill().lower()
+        for rule in ("you do not build", "comes first", "not approval", "heavy run"):
+            self.assertIn(rule, text, f"a core rule is missing: {rule}")
+
+
+class PackageTest(unittest.TestCase):
+    def test_manifest_points_at_a_real_skill_directory(self) -> None:
+        manifest = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
+        self.assertIn("pi", manifest)
+        for pattern in manifest["pi"]["skills"]:
+            path = (REPO / pattern.replace("./", "")).resolve()
+            self.assertTrue(path.is_dir(), f"{pattern} is not a directory")
+            self.assertTrue((path / "front-door" / "SKILL.md").is_file())
+
+
+class AsciiTest(unittest.TestCase):
+    def test_every_text_file_in_the_repo_is_ascii(self) -> None:
+        offenders: list[str] = []
+        for path in sorted(REPO.rglob("*")):
+            if ".git" in path.parts or not path.is_file():
+                continue
+            if path.suffix not in TEXT_SUFFIXES and path.name not in TEXT_NAMES:
+                continue
+            raw = path.read_bytes()
+            try:
+                raw.decode("ascii")
+            except UnicodeDecodeError:
+                offenders.append(str(path.relative_to(REPO)))
+        self.assertEqual(offenders, [], "non-ASCII characters found")
+
+
+if __name__ == "__main__":
+    unittest.main()

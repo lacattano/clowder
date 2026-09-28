@@ -36,6 +36,31 @@ Re: does the site need a refund policy before the review?
 The question comes first, so a late answer still knows what it answers. Every task runs in its
 own git worktree, so parallel changes to one repo cannot collide.
 
+### Checkouts and branches
+
+Each agent gets a space of its own, `<repo>/.worktrees/<agent>`, which keeps its install and its
+caches. A space is free (no branch on it, sitting on the base) or in use (on one job's branch).
+A job is one branch, so a dependency install is paid once per agent instead of once per job.
+
+The tool refuses a job on a dirty space, refuses to switch branches in the main checkout, and
+keeps the branch when a job closes. One job is a whole chain - research, spec, change, tests,
+eval, docs - with one step open at a time, so two heavy runs cannot start together.
+
+Every agent gets a space of its own that keeps its install, so it is reused instead of rebuilt.
+`clowder agents` shows what each space holds, so you can tell them apart. When a writer has
+saved, hand the save to a reviewer, which checks that exact commit in its own space. Nothing is
+pushed between agents; pushing is publishing, and it happens at the end. The tool never commits,
+pushes or merges for you.
+
+Add `.worktrees/` to each repo's `.gitignore`.
+
+### The board
+
+`clowder board --open` writes one HTML file next to the state file and opens it. It leads with
+what is waiting on you - a decision, a finished review, or work that is on no branch - then open
+steps, agents and their spaces, answers, and jobs. It needs no server, and it still works when
+the multiplexer cannot be read.
+
 ## What this is not
 
 - **Not a new agent runtime.** The agents are [Pi](https://github.com/earendil-works/pi)
@@ -52,8 +77,47 @@ own git worktree, so parallel changes to one repo cannot collide.
 
 ## Status
 
-**Draft. Nothing is built yet.** The design, the decisions and the reasoning are in
-[DESIGN.md](DESIGN.md).
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 269
+tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
+in [DESIGN.md](DESIGN.md).
+
+### Use it
+
+Needs Python 3.14. Nothing to install:
+
+```
+py -3.14 -m clowder --help
+py -3.14 -m clowder config          # what the tool resolved
+py -3.14 -m clowder agents          # the live roster, from the multiplexer
+py -3.14 -m clowder ensure myrepo --role verifier   # or make one there
+py -3.14 -m clowder job open myrepo --label refund --role maker
+py -3.14 -m clowder job handover j-0001 --to verifier
+py -3.14 -m clowder job list
+py -3.14 -m clowder job close j-0001
+py -3.14 -m clowder tasks           # what is queued, underway, unanswered
+py -3.14 -m clowder board --open    # the page: what is waiting on you
+py -3.14 -m clowder dispatch myrepo-maker myrepo "ship: add the refund page" --job j-0001
+py -3.14 -m clowder report t-0001
+```
+
+Copy [clowder.example.toml](clowder.example.toml) to `~/.clowder/clowder.config.toml` first,
+and set the workspace root. The tool ships no repo name, no path and no agent name.
+
+Tests, also nothing to install:
+
+```
+py -3.14 -m unittest discover -s tests -t .
+```
+
+### The front-door skill
+
+[`skills/front-door/SKILL.md`](skills/front-door/SKILL.md) tells one agent how to act as the
+front door: when to dispatch, how to write a brief, how to report an answer back, and the
+rules that must hold every time. Install it as a Pi package:
+
+```
+pi install ./clowder
+```
 
 ## Licence
 

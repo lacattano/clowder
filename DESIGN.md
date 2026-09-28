@@ -64,7 +64,8 @@ against, and it has bitten a real project.
 
 `<mux> agent prompt <name> "<brief>"`. Names are stable across reloads; internal session
 addresses are not. The live agent list gives name, pane and status, so **there is no roster to
-maintain**.
+maintain**. It also hands back each agent's Pi session file, so a report reads the right
+session without guessing.
 
 ### 6. Agent and model choice is a natural-language rules file
 
@@ -78,9 +79,11 @@ So nothing goes to waste, and so the mapping can be measured rather than guessed
 
 ### 8. Pending decisions are a generated HTML board
 
-Not a sidebar panel. It shows what is queued, what is underway, and the decisions waiting on
-the human. A browser page shows far more than a terminal, and it is a file, so it survives a
-fresh context.
+Not a sidebar panel. Built in step 4: `clowder board` writes one file, so it survives a fresh
+context and needs no server. It opens with what is waiting on the human - a decision, a finished
+review, or work on no branch - then open steps, agents and their spaces, answers, and jobs. It
+works with the multiplexer unreadable, because the state file is enough to be useful, and every
+word that came from a worker is escaped.
 
 ### 9. Hide tool-call noise in the front-door pane
 
@@ -104,6 +107,257 @@ neither shareable nor safe to publish.
 The tool ships a front door; what you call it is yours. (Naming it after someone else's
 product is worth avoiding for the same reason the multiplexer's name is kept out of the
 project name.)
+
+### 13. The CLI is Python, pinned to 3.14
+
+Decided before step 1, as required. Stdlib only - `tomllib`, `subprocess`, `json`, `argparse` -
+so there is no build step, no lockfile and no dependency to audit. Python 3.13 is what bare
+`python` resolves to on this machine, so the tool names its interpreter: `py -3.14`, or the
+`3.14` in `.python-version`.
+
+The alternatives were weighed, not skipped. Rust, Go and Zig each buy a single binary and
+speed, and this work is glue: spawn one process, read JSONL, write one file. None is
+CPU-bound, and each costs a new toolchain. Zig is pre-1.0 with a thin JSON story. Bun was the
+only credible rival - TypeScript, near-instant startup, `bun build --compile` - and it stays
+available: if `/calm` ever wants code shared with a Pi extension, the CLI is small enough to
+move.
+
+### 14. A brief carries a marker
+
+Decided. A plain prompt is not enough. A worker's pane receives text, and without a marker it
+cannot tell a peer job from its owner typing - and those two need different answers. The tool
+adds the line at dispatch time, so the front door cannot forget it:
+
+```
+[clowder job t-0004 | ship | myrepo | from topcat]
+```
+
+Four things in one line: that this is a job, which job, which repo, and who sent it. The repo
+is there on purpose - it is what a worker checks against `git rev-parse --show-toplevel`
+before it edits, when its pane happens to be sitting in a different repo. `--from` names the
+sender; `dispatch.marker = false` turns the line off.
+
+### 15. The front door creates the agent, and never closes a pane
+
+Decided. When a job arrives for a repo with no agent, the front door makes one:
+`pane split --cwd <repo>`, then `agent start <name> --kind pi`. A pane is given its directory
+when it is made and cannot be moved later, so making the pane is the only way to get a correct
+working directory. It is also why the worktree and the pane are made together.
+
+This reverses the note that agents only talk to panes the human started. That note described
+what was impossible before `agent start` existed, not what was undesirable. The fear behind it -
+a roster living in someone's head, a brief sent to a pane that is not there - is answered by
+reading the live list every time, and by confirming the new name before the brief goes out.
+
+Panes are never closed, by the front door or by anyone: a worker that has reported can still
+answer a follow-up, and its context can be reset if a clean one is wanted.
+
+Four rules keep it bounded:
+
+- Create only when no live agent's directory is inside that repo. Reuse that one.
+- One name per repo and role, `<repo>-<role>`, sanitised to the multiplexer's charset.
+- Never make a second agent under a name that is already live.
+- Never steal focus, and confirm the name in the live list before dispatching.
+
+### 16. A space per agent, a branch per job
+
+First written as one worktree per task, then per agent on a branch of its own. Both were wrong.
+Firstmate, after years of this, keeps a pool of reusable worktrees with the install and the build
+cache kept, lends one to a task, and takes it back. Their worktree tool exists for the exact
+reason we hit: agents "losing all your installed dependencies and build cache each time".
+
+So: one space per agent, at `<repo>/.worktrees/<agent>`. A space is either
+
+- **free** - clean, with no branch name on it, sitting on the current base, or
+- **in use** - on one job's branch.
+
+Finishing a job takes the branch off and leaves the space free. The install and the caches stay
+in the folder, so they are paid for once instead of once per job.
+
+Two things fall out of "free means detached":
+
+- Nothing has to be handed back, and no branch is held hostage. Two spaces can sit on the base at
+  once, which the per-agent-branch model could not do.
+- Taking a space gives a fresh base, because a free space is re-pointed at the base when work
+  starts. A job cannot accidentally begin from a stale checkout.
+
+What a switch does **not** do is clean up. Untracked files survive it, which is the point (they
+are the install) and also the risk (they can be yesterday's artifacts). Four rules keep it shut:
+
+- A job starts from a clean space. Dirt is refused, with the file names.
+- One open job per space.
+- One open step per job, so two heavy runs cannot start at once.
+- A branch is kept when a job closes, and deleted only when git agrees it is merged. The branch
+  is the record of the work; the folder is not.
+
+The gate: a commit that is on no branch exists only in one folder's HEAD, and reusing that folder
+destroys it silently. `report` names that case for what it is.
+
+### 17. A job is a chain of ordered steps, and only one step is open at a time
+
+Decided by the shape of the work. The real request is rarely one change. It is: research the
+update, work out how to implement it, write a spec, implement, run the unit tests, run the eval
+for proof, commit, rerun graphify, update the docs. Every one of those speaks about the same
+code, so they are one job: one repo, one branch, one checkout, many steps.
+
+The steps are sequential and dependent, so the tool holds the order. A step cannot be dispatched
+while another step in the same job has no answer. That rule is not tidiness: it is what stops a
+unit test run and an eval starting at the same time in one checkout, which is how this box
+crashed on 2026-09-25.
+
+`dispatch --job <id>` records the job, the branch and the commit on the step, so a report can
+name the code it is about. The commit is read when the report is read, not remembered from
+dispatch, so a commit made during the step is the one reported.
+
+The commit step is a human gate. A job's chain stops there and hands over the diff.
+
+### 18. The handoff is a save, and a reviewer gets a pinned copy
+
+Decided. Nothing is pushed between agents. A hand over is a **commit**, on the writer's branch,
+on the same disk. The verifier's own copy is then filled with the writer's files at that one
+save, with no branch name on it. So the writer keeps its branch, the reviewer holds the exact
+code it checked, and one branch never sits in two folders.
+
+Why the reviewer gets the commit and not the branch: a test result only means something if it
+names the exact code it ran on. If the reviewer followed a branch the writer was still editing,
+the tests could pass on code that no longer exists, and nothing would say so. Pinning the copy
+is what makes the proof reproducible, and naming the commit in the report is what makes it
+checkable later.
+
+Two consequences worth keeping:
+
+- A handover needs a save. Unsaved work is refused, by name, because a reviewer checks a save
+  and not a folder.
+- This puts the gate at **merge**, not at commit. The writer must save for a review to be
+  possible at all, so a rule that forbids any commit before a human has read the diff cannot
+  hold. What the human gated is the change reaching `main`.
+
+Pushing stays where it was. It is publishing, not handing over, and it happens at the end.
+
+### 19. What Firstmate settled, and what we left
+
+Read from their architecture doc, not guessed:
+
+- **A pooled, reusable space rather than a fresh checkout per task.** Decision 16.
+- **Worker spaces sit at detached HEAD, not on a branch.** Their rule: the operating checkout is
+  healthy on its default branch, and worker checkouts are healthy detached. That one idea
+  removes the branch-can-only-be-held-once problem this design spent three turns working around.
+- **A delivery mode per task.** They name three - `no-mistakes`, `direct-PR`, `local-only`. We
+  take `local-only` and refuse the other two by name until they exist, so a config cannot promise
+  what the code does not do.
+- **The reachability gate**, at the point where a worker claims it is finished.
+- **A slow check on a button.** Their eval harness runs only when asked, which is what a
+  verifier's step should press.
+
+Left on purpose:
+
+- **Their merge automation.** Their doc carries locks, ownership proofs, teardown proofs and
+  TOCTOU reasoning, because their tool merges to main. That is the price of the tool merging.
+  Ours stops at "the branch is ready", and the merge is the human's.
+- **Prose and shell scripts as the spine.** They are an agent distro: instructions, skills and
+  helper scripts. We chose a tested CLI plus a skill, so the rules that can be checked in code
+  are checked in code.
+
+## What step 1 built
+
+`src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
+a checkout with nothing installed.
+
+| File | Holds |
+|---|---|
+| `cli.py` | the arg surface: `dispatch`, `tasks`, `report`, `agents`, `config` |
+| `state.py` | the one state file, written atomically |
+| `mux.py` | the multiplexer adapter, by agent name |
+| `sessions.py` | usage, cost and the answer, read from Pi session files |
+| `report.py` | the report block |
+| `config.py` | workspace config; no personal path ships |
+
+Two deviations from the sketch in Build order, both deliberate:
+
+- `dispatch <agent> <repo> <brief>` with `--worktree PATH`, not `dispatch <agent> <repo>
+  [worktree] <brief>`. A third positional cannot be told from the first word of a brief.
+- `--shape ship|scout` is a flag. The tool warns when the brief does not say the shape, and
+  does not fail: the brief is the front door's job, the flag is the record's.
+
+Two facts found while building, which change what was assumed:
+
+- `herdr agent list` returns each agent's Pi session file path. So decision 5 is stronger than
+  written: the live list is the roster *and* the pointer to the right session. No guessing by
+  mtime, no slug arithmetic.
+- `herdr` already has `worktree create|open|remove`. Whatever decision 2 settles, the front
+  door will not be writing git plumbing.
+
+Not built yet at this point: the front door skill (step 2), the worktree helper (step 3), the
+board (step 4), `/calm` (step 5).
+
+## What step 2 built
+
+`skills/front-door/SKILL.md`, shipped as a Pi package by `package.json`. The skill holds the
+part of this design that code cannot: when to dispatch, the five parts of a brief, the report
+shape, and the rules that must hold every time - say when you dispatch, ask for exactly one
+decision, a report is not approval, never overlap heavy runs.
+
+Two tests keep the prose honest. One fails when a CLI command is added and the skill is not
+updated. Another fails when the marker in the skill stops matching the marker in the code.
+Prose that drifts is worse than no prose.
+
+Install it with `pi install ./clowder` from this repo, or copy `skills/front-door/` into
+`~/.pi/agent/skills/`.
+
+## What step 3 built
+
+The first half of step 3: `ensure`, and the guard that refuses a cross-repo dispatch.
+
+`clowder ensure <repo> --role <role>` finds the agent that serves a repo, or makes one there.
+The matching is deliberately conservative: the name this tool would have made, then a name that
+is the role or ends in it (a hand-made crew is usually named `maker`, not `tancat-maker`), then
+the only agent in the repo. Anything less certain stops and asks. Guessing which of four agents
+should get a job is the bookkeeping this tool exists to remove, not something it should do
+quietly.
+
+The refusal is the important part. `dispatch` now refuses a brief for a pane whose directory is
+not inside the target repo. It costs nothing, and it turns a silently wrong answer into a message
+that names the fix:
+
+```
+clowder: maker is in C:\Users\me\code\repo-a, which is not C:\Users\me\code\repo-b.
+A pane serves the repo it was opened in. Run `clowder ensure repo-b --role maker` to make an
+agent there, or pass --force if you know better.
+```
+
+Exit code 3 means a human has to decide, so the front door branches on a number instead of
+reading prose.
+
+The second half of step 3 is the worktree and branch machinery from decision 16: `ensure` now
+makes a new agent's checkout, and `job open` / `job close` / `job list` switch branches inside
+it. Git is called directly (`gitcmd.py`) and never commits, pushes or merges.
+
+Step 3 is finished: a step records its job, its branch and its commit; only one step is open per
+job; a reviewer can be given the writer's save; a space goes free again when a job closes; and a
+report says when a commit is on no branch at all.
+
+## What step 4 built
+
+`clowder board` writes one HTML file next to the state file, and prints the path. `--open` opens
+it. It is a file, not a panel: it survives a fresh context, it holds far more than a terminal,
+and it needs no server and no network.
+
+The page opens with **waiting on you**, because that is the only part with a deadline:
+
+- a decision a worker left open,
+- a review that is finished, where the merge is the human's step,
+- work that is on no branch, so it would be lost when the space is reused,
+- a step that has gone quiet while its agent is idle, or an agent that is not in the live list at
+  all.
+
+Then open steps, agents and their spaces, recent answers with usage, and jobs.
+
+The page is a pure function of the state, the live agent list and a few git reads, so it is tested
+without a browser. The agent list is best effort: when the multiplexer cannot be read the page says
+so and shows the state anyway, which is what makes it useful during a restart. Text that came from
+a worker is escaped, because a report is data and not markup.
+
+Step 5 remains: `/calm`, if the front-door pane turns out to be noisy.
 
 ## Layout
 
@@ -142,15 +396,20 @@ scraped.
 
 ## Open
 
-- The implementation language for the CLI. Python was the original ask (Windows, no bash);
-  TypeScript would match a harness extension if one is ever needed. Decide before step 1.
-- Whether the front door creates worktrees or only uses ones you made. Leaning: it creates
-  them, because that is mechanical.
 - Whether reports come from a file the worker writes, or from its final message read out of
   its session file. The file is more robust; the session file needs no discipline.
-- What happens when a task's worktree conflicts with the main checkout after the fact.
-- Whether a plain prompt is enough for dispatch, or whether a job needs a marker so a worker
-  can tell a peer job from the human typing.
+- What happens when a job's branch and the main checkout have both moved, and the merge at the
+  end does not apply cleanly. Nothing merges yet, so nothing decides this yet.
+- Whether the tool should read CI status into a report, and fire the manual eval workflow. Your
+  repos have `gh`, a `ci.yml` that runs on pull requests into main, and an `eval-harness.yml`
+  that only runs when a button is pressed. Reading CI would put a robot's verdict next to the
+  verifier's, and firing the eval would make the verifier's slow check one command.
+- How a repo whose development needs accumulated local state works with a space per agent.
+  `AI-Playwright-Test-Generator` keeps 7.8 GB of test-run output and a 1.8 GB install that git
+  ignores; four spaces keep four of those. The baseline a run is compared against is committed
+  (`fixtures/golden_package/evidence/`), which is what makes a new space usable at all. Untested:
+  whether re-running is cheap enough there, or whether that repo wants fewer spaces, more
+  sharing, or a cleanup step between jobs.
 
 ## Prior art
 

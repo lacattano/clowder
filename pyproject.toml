@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clowder"
+version = "0.1.0"
+description = "One front door for a crew of coding agents: dispatch and state."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { file = "LICENSE" }
+keywords = ["agents", "dispatch", "worktree", "pi"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Build Tools",
+]
+dependencies = []
+
+[project.scripts]
+clowder = "clowder.cli:main"
+
+[tool.setuptools]
+packages = ["clowder"]
+
+[tool.ruff]
+# The code is written for readable lines rather than the 88-character default.
+line-length = 96
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

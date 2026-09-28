@@ -1,0 +1,61 @@
+# clowder config - example.
+#
+# Copy to clowder.config.toml next to the tool, or to
+# %USERPROFILE%\.clowder\clowder.config.toml, and edit.
+#
+# Search order:
+#   1. --config PATH
+#   2. $CLOWDER_CONFIG
+#   3. ./clowder.config.toml, then ./clowder.toml   (current directory)
+#   4. <home>/clowder.config.toml, then <home>/clowder.toml
+#
+# Nothing in this file ships with the tool. Repos, paths and agent names are
+# yours, and belong outside the repo.
+#
+# Windows paths: single quotes need no escaping. Use root = 'C:\Users\you\code'
+# rather than double quotes, which would read \U as an escape.
+
+[workspace]
+# Repo names in `dispatch` are resolved against this root. Set it, or pass a
+# repo as a path instead.
+root = 'C:\Users\you\code'
+
+[mux]
+# The multiplexer binary. Transport is its own names, so this is all it takes.
+bin = "herdr"
+# How a brief is submitted. {agent} and {brief} are substituted. If the template
+# has no {brief}, the brief is appended as the last argument.
+prompt_argv = ["agent", "prompt", "{agent}", "{brief}"]
+
+[sessions]
+# Where Pi keeps its session files. Usage, cost, provider and model are read from
+# these, never scraped from the screen.
+root = 'C:\Users\you\.pi\agent\sessions'
+
+[state]
+# One file holds every task. Default: next to the config file.
+path = 'C:\Users\you\.clowder\state.json'
+
+[dispatch]
+# Add a marker line to every brief, so a worker can tell a peer job from you
+# typing in its pane. The line looks like:
+#   [clowder job t-0004 | ship | myrepo | from topcat]
+marker = true
+
+[worktree]
+# A space per agent: <repo>/.worktrees/<agent>. A free space has no branch name on
+# it and sits on the base branch; a job puts a branch on it and finishing the job
+# takes the branch off again. The install and caches stay in the space, so they are
+# paid for once instead of once per job.
+dir = ".worktrees"
+job_prefix = "task/"
+# How finished work reaches the world. `local-only` keeps it on this machine until
+# you merge. `direct-PR` and `no-mistakes` are named but not built yet.
+delivery = "local-only"
+# base is left out, so the tool picks the first of main, master, trunk or develop.
+# cat-tan-trading is on master, the other two are on main.
+# setup: one command run once per new space, to pay the install once - for example
+# setup = "uv sync". No shell operators.
+
+[repos]
+my-app = 'D:\work\my-app'

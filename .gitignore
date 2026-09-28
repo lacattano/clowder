@@ -15,9 +15,20 @@ build/
 *.tsbuildinfo
 
 # Local config (yours, never committed)
+clowder.config.toml
+clowder.toml
 clowder.config.json
 .clowder/
+state.json
+state.json.tmp
 crew-dispatch.json
+
+# Agent checkouts. git worktrees live here, and the directory itself would
+# otherwise show up as untracked in the main checkout.
+.worktrees/
+
+# Local agent registration for this machine, not part of the tool.
+.pi/
 
 # OS / editor
 .DS_Store
