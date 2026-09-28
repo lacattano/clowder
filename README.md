@@ -131,11 +131,17 @@ pushes or merges anything on your behalf - delivery is `local-only`, and the mer
 
 [`skills/front-door/SKILL.md`](skills/front-door/SKILL.md) tells one agent how to act as the
 front door: when to dispatch, how to write a brief, how to report an answer back, and the
-rules that must hold every time. Install it as a Pi package:
+rules that must hold every time. Install it as a Pi package, pointing at the **repo root**:
 
 ```
-pi install ./clowder
+cd C:\path\to\clowder
+pi install .
 ```
+
+Then `/reload` in any open Pi session. The trait to avoid: `pi install ./clowder` from inside the
+repo resolves to the Python package, not the repo, and that folder holds no `package.json` and no
+skills. Pi accepts it silently and loads nothing. The repo root is the folder holding
+`package.json` and `skills/`.
 
 ## Licence
 
