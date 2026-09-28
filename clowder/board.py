@@ -25,6 +25,9 @@ QUIET_AFTER_SECONDS = 120.0
 
 TITLE = "clowder board"
 
+# An open tab follows along on its own: no server, no script, no network.
+REFRESH_SECONDS = 30
+
 STYLE = """
 :root {
   --ink: #1b1b1f; --muted: #6b6b76; --line: #e2e2e8; --bg: #fbfbfd;
@@ -329,6 +332,7 @@ def render_board(data: BoardData) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{REFRESH_SECONDS}">
 <title>{_e(TITLE)}</title>
 <style>{STYLE}</style>
 </head>
