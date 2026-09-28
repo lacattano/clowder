@@ -1461,8 +1461,11 @@ class CliTest(unittest.TestCase):
     def test_a_queued_item_appears_on_the_board(self) -> None:
         self.queue_add("--agent", "maker")
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        self.assertIn("q-0001", html)
-        self.assertIn("the space holds an open job", html)
+        owner, worker = html.split("Waiting on you", 1)[1].split("Waiting for a worker")
+        self.assertIn("class='count'>0", owner, "the owner's count stays honest")
+        self.assertNotIn("q-0001", owner, "a queued item is the front door's, not the owner's")
+        self.assertIn("q-0001", worker)
+        self.assertIn("the space holds an open job", worker)
 
     def test_queue_send_dispatches_and_removes_the_item(self) -> None:
         self.queue_add("--agent", "maker")

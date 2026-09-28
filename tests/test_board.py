@@ -10,6 +10,7 @@ from clowder.board import (
     open_tasks,
     recent_answers,
     render_board,
+    waiting_for_worker,
     waiting_on_you,
     write_board,
 )
@@ -116,6 +117,7 @@ class RenderTest(unittest.TestCase):
         html = render_board(data())
         for heading in (
             "Waiting on you",
+            "Waiting for a worker",
             "Open steps",
             "Agents and spaces",
             "Answers",
@@ -123,6 +125,7 @@ class RenderTest(unittest.TestCase):
         ):
             self.assertIn(heading, html)
         self.assertIn("Nothing is waiting on you.", html)
+        self.assertIn("Nothing is waiting for the front door.", html)
 
     def test_an_open_step_is_shown(self) -> None:
         html = render_board(data(tasks=[task()], agents=[agent()]))
@@ -147,13 +150,22 @@ class RenderTest(unittest.TestCase):
         self.assertIn("closed", html)
         self.assertIn("refund", html)
 
-    def test_a_queued_item_appears_on_the_page(self) -> None:
+    def test_the_worker_section_is_marked_apart_from_the_owner(self) -> None:
         html = render_board(data(queued=[queued()]))
-        self.assertIn("queued", html)
-        self.assertIn("q-0001", html)
-        self.assertIn("the space holds an open job", html)
-        self.assertIn("add the refund page", html)
-        self.assertNotIn("Nothing is waiting on you.", html)
+        self.assertIn("Nothing is waiting on you.", html, "the owner has nothing to do")
+        self.assertIn("Waiting for a worker", html)
+        owner, worker = html.split("Waiting on you", 1)[1].split("Waiting for a worker")
+        self.assertNotIn("q-0001", owner, "a queued item is not the owner's work")
+        self.assertIn("q-0001", worker)
+        self.assertIn("the space holds an open job", worker)
+
+    def test_the_worker_section_names_the_front_door(self) -> None:
+        html = render_board(data(front_door_name="topcat"))
+        self.assertIn("Nothing is waiting for topcat.", html)
+
+    def test_the_front_door_name_is_used_when_its_list_is_not_empty(self) -> None:
+        html = render_board(data(queued=[queued()], front_door_name="topcat"))
+        self.assertIn("topcat chases them", html)
 
 
 class WaitingTest(unittest.TestCase):
@@ -183,7 +195,7 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("on no branch", waiting[0])
 
     def test_a_quiet_agent_is_called_out(self) -> None:
-        waiting = waiting_on_you(
+        waiting = waiting_for_worker(
             data(tasks=[old_task()], agents=[agent("verifier", status="idle")])
         )
         self.assertEqual(len(waiting), 1)
@@ -191,34 +203,43 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("idle", waiting[0])
 
     def test_a_quiet_agent_that_is_working_does_not(self) -> None:
-        waiting = waiting_on_you(
+        waiting = waiting_for_worker(
             data(tasks=[old_task()], agents=[agent("verifier", status="working")])
         )
         self.assertEqual(waiting, [], "working is not stuck")
 
     def test_an_agent_that_vanished_is_called_out(self) -> None:
-        waiting = waiting_on_you(data(tasks=[old_task()], agents=[]))
+        waiting = waiting_for_worker(data(tasks=[old_task()], agents=[]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("gone quiet", waiting[0])
         self.assertIn("not in the live agent list", waiting[0])
 
     def test_a_vanished_agent_is_not_blamed_when_the_list_is_unreadable(self) -> None:
-        waiting = waiting_on_you(data(tasks=[old_task()], agents=[], live_ok=False))
+        waiting = waiting_for_worker(data(tasks=[old_task()], agents=[], live_ok=False))
         self.assertEqual(waiting, [], "no crying wolf when the list cannot be read")
 
     def test_a_fresh_step_does_not(self) -> None:
         self.assertEqual(
-            waiting_on_you(data(tasks=[task(dispatched_at=now_iso())], agents=[agent()])),
+            waiting_for_worker(data(tasks=[task(dispatched_at=now_iso())], agents=[agent()])),
             [],
         )
 
     def test_a_queued_item_waits(self) -> None:
-        waiting = waiting_on_you(data(queued=[queued()]))
+        waiting = waiting_for_worker(data(queued=[queued()]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("queued", waiting[0])
         self.assertIn("q-0001", waiting[0])
         self.assertIn("maker", waiting[0])
         self.assertIn("open job", waiting[0])
+
+    def test_a_queued_item_does_not_wait_on_the_owner(self) -> None:
+        self.assertEqual(waiting_on_you(data(queued=[queued()])), [])
+
+    def test_a_quiet_agent_does_not_wait_on_the_owner(self) -> None:
+        waiting = waiting_on_you(
+            data(tasks=[old_task()], agents=[agent("verifier", status="idle")])
+        )
+        self.assertEqual(waiting, [], "the front door chases a quiet worker")
 
     def test_a_closed_job_never_waits(self) -> None:
         closed = job(status=CLOSED, reviewer="verifier", review_commit="a" * 40)
