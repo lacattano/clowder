@@ -258,6 +258,26 @@ Left on purpose:
   helper scripts. We chose a tested CLI plus a skill, so the rules that can be checked in code
   are checked in code.
 
+### 20. The front door writes for the owner, not the crew
+
+Decided after the owner asked three times what one report meant. The tool needs handles: job,
+task and queue ids name records, and a dispatch carries them on the command line. The owner
+does not need them. So the front door translates, and three rules keep the translation honest:
+
+1. **Names, not handles.** Name the thing in his words first ("the B-097 branch", "the case
+   study page", "the waiting list"), and put a handle in brackets after it, only where he has
+   to type it. Never open a sentence with a handle, and never ask him to choose between two.
+   This is a language rule, not a removal: the ids stay in the tool and in every brief.
+2. **A question must stand on its own.** A decision put to him says what it is, what changes
+   for him, and what it costs, without a lookup.
+3. **Say where it happens.** Name the place when the action is his - this chat, a pull-request
+   page, a pane, a file. Do not put a crew-only step in front of him, and do not count one
+   under "waiting on you".
+
+The board and the report shape already separate what waits on him. This rule covers the prose
+around them, which no test can reach, so it lives in the skill and is guarded there only by the
+examples it must carry.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
