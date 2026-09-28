@@ -6,6 +6,7 @@ Mimics only what clowder reads, and only the commands it runs:
     agent prompt <target> <text>
     pane split --current --cwd <path> ...
     agent start <name> --kind <kind> --pane <id>
+    pane move <pane_id> --workspace <id> --new-tab
 
 Without CLOWDER_FAKE_STATE the fake is stateless: `agent list` reports one agent
 built from the environment, and the creating commands fail. With a state file it
@@ -15,6 +16,7 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_AGENT        stateless agent name (default: maker)
     CLOWDER_FAKE_CWD          stateless agent directory (default: cwd)
     CLOWDER_FAKE_STATUS       agent status (default: idle)
+    CLOWDER_FAKE_WORKSPACE    stateless agent workspace id (default: empty)
     CLOWDER_FAKE_STATE        json file holding agents and panes
     CLOWDER_FAKE_SESSION_DIR  where a created agent's session file is recorded
     CLOWDER_FAKE_LIST_FAIL    "1" makes the agent list fail
@@ -51,6 +53,7 @@ def _stateless_agent() -> dict[str, object]:
         "cwd": os.environ.get("CLOWDER_FAKE_CWD") or os.getcwd(),
         "status": os.environ.get("CLOWDER_FAKE_STATUS", "idle"),
         "session_file": os.environ.get("CLOWDER_FAKE_SESSION", ""),
+        "workspace_id": os.environ.get("CLOWDER_FAKE_WORKSPACE", ""),
     }
 
 
@@ -121,6 +124,38 @@ def main(argv: list[str]) -> int:
             {"id": "cli:pane:split", "result": {"pane": {"pane_id": pane_id, "cwd": cwd}}}
         )
 
+    if argv[:2] == ["pane", "move"]:
+        if _state_path() is None:
+            return _fail("no_state", "the fake has no state file to record a move in", 6)
+        pane_id = argv[2] if len(argv) > 2 else ""
+        workspace_id = ""
+        for index, item in enumerate(argv):
+            if item == "--workspace" and index + 1 < len(argv):
+                workspace_id = argv[index + 1]
+        state = _load()
+        moves = state.setdefault("moves", [])
+        assert isinstance(moves, list)
+        moves.append(
+            {
+                "pane_id": pane_id,
+                "workspace_id": workspace_id,
+                "new_tab": "--new-tab" in argv,
+                "focus": "--focus" in argv,
+            }
+        )
+        # Remember which workspace the pane sits in, so a later `agent start`
+        # reports it and `agent list` looks like the real thing.
+        workspaces = state.setdefault("pane_workspaces", {})
+        assert isinstance(workspaces, dict)
+        workspaces[pane_id] = workspace_id
+        _save(state)
+        return _emit(
+            {
+                "id": "cli:pane:move",
+                "result": {"pane": {"pane_id": pane_id, "workspace_id": workspace_id}},
+            }
+        )
+
     if argv[:2] == ["agent", "start"]:
         if os.environ.get("CLOWDER_FAKE_START_FAIL") == "1":
             return _fail("agent_not_ready", "the agent blocked during startup")
@@ -140,6 +175,8 @@ def main(argv: list[str]) -> int:
         if pane_id not in panes:
             return _fail("no_such_pane", f"pane {pane_id} is not available", 5)
         cwd = str(panes[pane_id])
+        workspaces = state.get("pane_workspaces") or {}
+        assert isinstance(workspaces, dict)
         session_dir = os.environ.get("CLOWDER_FAKE_SESSION_DIR")
         session_file = str(Path(session_dir) / f"{name}.jsonl") if session_dir else ""
         agent = {
@@ -149,6 +186,7 @@ def main(argv: list[str]) -> int:
             "status": "idle",
             "kind": kind,
             "session_file": session_file,
+            "workspace_id": workspaces.get(pane_id, ""),
         }
         agents = state.setdefault("agents", [])
         assert isinstance(agents, list)

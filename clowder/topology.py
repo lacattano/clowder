@@ -73,6 +73,20 @@ def agents_in_repo(agents: list[AgentInfo], repo_path: str | Path) -> list[Agent
     return [agent for agent in agents if inside(agent.cwd, repo_path)]
 
 
+def workspace_for_repo(agents: list[AgentInfo], repo_path: str | Path) -> str | None:
+    """The workspace an agent already in this repo lives in, if one is known.
+
+    A repo keeps its agents as tabs in one workspace, so a new agent joins the
+    first peer that reports a workspace. Names are sorted so the choice does not
+    depend on the order the multiplexer happens to list agents in. None means no
+    peer reported a workspace, and the caller falls back to splitting.
+    """
+    for agent in sorted(agents_in_repo(agents, repo_path), key=lambda item: item.name):
+        if agent.workspace_id:
+            return agent.workspace_id
+    return None
+
+
 def role_of(name: str) -> str | None:
     """Which role a name is playing, when the name says so.
 
@@ -249,7 +263,24 @@ def ensure_agent(
 
     workdir, note = _prepare_worktree(repo_path, wanted, worktree_dir, base, setup)
 
+    # A repo's agents are tabs in one workspace. When a peer is already there, the
+    # new pane joins it as a new tab instead of landing beside whoever asked. A
+    # peer with no workspace reported (or no peer at all) keeps the old split.
+    workspace_id = workspace_for_repo(agents, repo_path)
+
     pane_id = mux.split_pane(cwd=str(workdir), direction=direction)
+    if workspace_id:
+        moved = mux.move_pane(pane_id, workspace_id)
+        if not moved.ok:
+            return EnsureResult(
+                agent=None,
+                created=False,
+                reason=(
+                    f"made pane {pane_id} for {wanted}, but could not move it into "
+                    f"workspace {workspace_id}: {moved.error_text()}"
+                ),
+                candidates=candidates,
+            )
     started = mux.start_agent(wanted, pane_id, kind=kind)
     if not started.ok:
         return EnsureResult(

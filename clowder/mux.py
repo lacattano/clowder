@@ -31,6 +31,7 @@ class AgentInfo:
     name: str
     pane_id: str | None = None
     cwd: str | None = None
+    workspace_id: str | None = None
     status: str | None = None
     session_path: str | None = None
     focused: bool = False
@@ -198,6 +199,30 @@ class Mux:
             )
         return pane_id
 
+    def move_pane(
+        self,
+        pane_id: str,
+        workspace_id: str,
+        focus: bool = False,
+        timeout_s: float = 20.0,
+    ) -> MuxResult:
+        """Move a pane into a workspace as a new tab.
+
+        The pane keeps its working directory. `--no-focus` is the default and is
+        passed explicitly, so making a pane never pulls the human's view to it.
+        """
+        argv = [
+            self.binary,
+            "pane",
+            "move",
+            pane_id,
+            "--workspace",
+            workspace_id,
+            "--new-tab",
+            "--focus" if focus else "--no-focus",
+        ]
+        return self._run(argv, timeout_s)
+
     def start_agent(
         self,
         name: str,
@@ -278,6 +303,7 @@ def parse_agent_list(output: str) -> list[AgentInfo]:
                 name=name,
                 pane_id=_opt_str(record.get("pane_id")),
                 cwd=_opt_str(record.get("cwd")),
+                workspace_id=_opt_str(record.get("workspace_id")),
                 status=_opt_str(record.get("agent_status") or record.get("status")),
                 session_path=_session_path(record),
                 focused=bool(record.get("focused", False)),

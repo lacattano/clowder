@@ -97,6 +97,8 @@ def write_fake_state(
                 "cwd": agent.get("cwd", ""),
                 "status": agent.get("status", "idle"),
                 "session_file": agent.get("session_file", ""),
+                "workspace_id": agent.get("workspace_id", ""),
+                "tab_id": agent.get("tab_id", ""),
             }
             for agent in (agents or [])
         ],
