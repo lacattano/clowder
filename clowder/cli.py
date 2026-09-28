@@ -28,6 +28,7 @@ from .state import (
     SHAPES,
     STATUSES,
     Job,
+    Queued,
     StateStore,
     Task,
 )
@@ -39,6 +40,7 @@ from .topology import (
     ROLES,
     ensure_agent,
     inside,
+    match_agent,
     normalise,
     sanitise,
 )
@@ -254,6 +256,40 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
 
+    queue = sub.add_parser(
+        "queue",
+        help="decided-but-unsent work, kept where a restart cannot lose it",
+        parents=[common],
+    )
+    queue_sub = queue.add_subparsers(dest="queue_command", required=True)
+
+    def queue_parser(name: str, help_text: str) -> argparse.ArgumentParser:
+        return queue_sub.add_parser(name, help=help_text, parents=[common])
+
+    q_add = queue_parser("add", "record something decided but not sent yet")
+    q_add.add_argument("repo")
+    q_add.add_argument("brief", nargs="*", help="the brief; every remaining word is joined")
+    q_add.add_argument("--brief-file", metavar="PATH")
+    q_add.add_argument("--agent", help="the agent it is for")
+    q_add.add_argument("--role", choices=ROLES, help="the role it is for")
+    q_add.add_argument("--why", required=True, help="why it is not sent yet")
+    q_add.add_argument("--question", metavar="TEXT")
+    q_add.add_argument("--shape", choices=SHAPES, default="ship")
+    q_add.add_argument("--job", metavar="ID", help="the job it belongs to, if any")
+    q_add.add_argument("--json", action="store_true")
+    q_add.set_defaults(handler=cmd_queue_add, refreshes_board=True)
+
+    q_list = queue_parser("list", "what is decided and still waiting to go")
+    q_list.add_argument("--json", action="store_true")
+    q_list.set_defaults(handler=cmd_queue_list)
+
+    q_send = queue_parser("send", "send one queued item, once its block has cleared")
+    q_send.add_argument("id")
+    q_send.add_argument("--force", action="store_true")
+    q_send.add_argument("--dry-run", action="store_true")
+    q_send.add_argument("--json", action="store_true")
+    q_send.set_defaults(handler=cmd_queue_send, refreshes_board=True)
+
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
@@ -322,6 +358,10 @@ def _emit_json(payload: object) -> None:
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
     config, store = _context(args)
+    return _dispatch(args, config, store)
+
+
+def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> int:
     brief = _read_brief(args)
     question = (args.question or "").strip() or _first_line(brief)
 
@@ -1063,6 +1103,146 @@ def cmd_job_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_queue_add(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    if bool(args.agent) == bool(args.role):
+        raise UsageError(
+            "a queued item is for exactly one agent or role: pass --agent or --role"
+        )
+    brief = _read_brief(args)
+    question = (args.question or "").strip() or _first_line(brief)
+    why = args.why.strip()
+    if not why:
+        raise UsageError("--why must say why the item is not sent yet")
+    config.resolve_repo(args.repo)  # refuse a bad repo now, not at send time
+
+    item = Queued(
+        id=store.next_queue_id(),
+        brief=brief,
+        question=question,
+        repo=args.repo,
+        agent=args.agent,
+        role=args.role,
+        why=why,
+        shape=args.shape,
+        job=args.job,
+    )
+    store.add_queued(item)
+    store.save()
+
+    if args.json:
+        _emit_json({"queued": item.to_dict()})
+        return 0
+    print(f"{item.id} queued for {item.target} in {item.repo}: {_clip(item.why, 70)}")
+    return 0
+
+
+def cmd_queue_list(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    items = store.all_queued()
+
+    if args.json:
+        _emit_json({"queued": [item.to_dict() for item in items], "count": len(items)})
+        return 0
+
+    if not items:
+        print("the queue is empty")
+        return 0
+
+    rows = [["ID", "FOR", "REPO", "AGE", "WHY", "BRIEF"]]
+    for item in items:
+        rows.append(
+            [
+                item.id,
+                item.target,
+                _clip(item.repo, 20),
+                human_age(item.age_seconds),
+                _clip(item.why, 40),
+                _clip(item.question or item.brief, 60),
+            ]
+        )
+    print(_column(rows))
+    return 0
+
+
+def cmd_queue_send(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    item = store.get_queued(args.id)
+    agent = _queue_target_agent(config, item)
+    dispatch_args = _queued_dispatch_args(
+        item,
+        agent,
+        force=args.force,
+        dry_run=args.dry_run,
+        json=args.json,
+    )
+    code = _dispatch(dispatch_args, config, store)
+    if code == 0 and not args.dry_run:
+        # One store, so one save writes both the task and the removal. A second
+        # store would be a stale copy and would drop the task.
+        store.remove_queued(item.id)
+        store.save()
+        if not args.json:
+            print(f"{item.id} sent and removed from the queue")
+    return code
+
+
+def _queue_target_agent(config: Config, item: Queued) -> str:
+    """Resolve a queued item to an agent name. It never makes an agent."""
+    if item.agent:
+        return item.agent
+    if not item.role:
+        raise StateError(f"queued item {item.id} names neither an agent nor a role")
+    role = item.role
+    repo_path = config.resolve_repo(item.repo)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    try:
+        agents = mux.list_agents()
+    except MuxError as exc:
+        raise DispatchError(
+            f"cannot read the live agent list to resolve role {role!r}: {exc}"
+        ) from exc
+    matched = match_agent(agents, repo_path, item.repo, role)
+    if matched is None:
+        raise DispatchError(
+            f"no agent in {item.repo} plays {role!r}. Run "
+            f"`{PROGRAM} ensure {item.repo} --role {role}` first, or queue it "
+            "with --agent."
+        )
+    return matched.name
+
+
+def _queued_dispatch_args(
+    item: Queued,
+    agent: str,
+    *,
+    force: bool,
+    dry_run: bool,
+    json: bool,
+) -> argparse.Namespace:
+    """The shape `dispatch` parses, so a queued send takes the same path."""
+    return argparse.Namespace(
+        config=None,
+        state=None,
+        repo=item.repo,
+        worktree=None,
+        job=item.job,
+        agent=agent,
+        brief=[item.brief],
+        brief_file=None,
+        question=item.question,
+        shape=item.shape,
+        timeout=DEFAULT_TIMEOUT_S,
+        wait=False,
+        until=[],
+        sender=None,
+        no_marker=False,
+        force=force,
+        dry_run=dry_run,
+        json=json,
+    )
+
+
 def cmd_agents(args: argparse.Namespace) -> int:
     config, _ = _context(args)
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
@@ -1139,6 +1319,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     return BoardData(
         tasks=tasks,
         jobs=store.all_jobs(),
+        queued=store.all_queued(),
         agents=agents,
         state_path=str(store.path),
         generated_at=now_stamp(),
@@ -1163,6 +1344,7 @@ def cmd_board(args: argparse.Namespace) -> int:
                 "open": len(open_tasks(data.tasks)),
                 "jobs": len(data.jobs),
                 "agents": len(data.agents),
+                "queued": len(data.queued),
                 "live_ok": data.live_ok,
                 "stranded": sorted(data.stranded),
             }

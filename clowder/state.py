@@ -134,6 +134,50 @@ class Job:
         return asdict(self)
 
 
+@dataclass
+class Queued:
+    """A decided-but-unsent piece of work.
+
+    It is not a task: nothing has been sent and no agent has seen it. It exists so
+    a block that clears later does not take the decision with it when the front
+    door's context is refreshed.
+    """
+
+    id: str
+    brief: str
+    repo: str
+    why: str
+    agent: str | None = None
+    role: str | None = None
+    shape: str = "ship"
+    question: str | None = None
+    job: str | None = None
+    created_at: str = field(default_factory=now_iso)
+
+    @property
+    def target(self) -> str:
+        """Who it is for: a named agent, or the role a send must resolve."""
+        return self.agent or self.role or "?"
+
+    @property
+    def age_seconds(self) -> float:
+        return elapsed_seconds(self.created_at, None)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Queued:
+        known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
+        unknown = set(data) - known
+        if unknown:
+            raise StateError(f"queued record has unknown fields: {sorted(unknown)}")
+        try:
+            return cls(**data)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise StateError(f"queued record is malformed: {exc}") from exc
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class StateStore:
     """Read and write the state file. One instance per command run."""
 
@@ -141,8 +185,10 @@ class StateStore:
         self.path = Path(path)
         self._seq = 0
         self._job_seq = 0
+        self._queue_seq = 0
         self._tasks: dict[str, Task] = {}
         self._jobs: dict[str, Job] = {}
+        self._queued: dict[str, Queued] = {}
         self._loaded = False
 
     # -- io ----------------------------------------------------------------
@@ -183,6 +229,11 @@ class StateStore:
             raise StateError(f"{self.path}: job_seq must be an integer")
         self._job_seq = job_seq
 
+        queue_seq = raw.get("queue_seq", 0)
+        if not isinstance(queue_seq, int):
+            raise StateError(f"{self.path}: queue_seq must be an integer")
+        self._queue_seq = queue_seq
+
         jobs = raw.get("jobs", {})
         if not isinstance(jobs, dict):
             raise StateError(f"{self.path}: jobs must be an object")
@@ -200,6 +251,15 @@ class StateStore:
                 raise StateError(f"{self.path}: task {task_id} is not an object")
             record.setdefault("id", task_id)
             self._tasks[str(task_id)] = Task.from_dict(record)
+
+        queued = raw.get("queued", {})
+        if not isinstance(queued, dict):
+            raise StateError(f"{self.path}: queued must be an object")
+        for item_id, record in queued.items():
+            if not isinstance(record, dict):
+                raise StateError(f"{self.path}: queued item {item_id} is not an object")
+            record.setdefault("id", item_id)
+            self._queued[str(item_id)] = Queued.from_dict(record)
         self._loaded = True
         return self
 
@@ -209,8 +269,10 @@ class StateStore:
             "schema": SCHEMA_VERSION,
             "seq": self._seq,
             "job_seq": self._job_seq,
+            "queue_seq": self._queue_seq,
             "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
             "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
+            "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
         }
         text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         temp = self.path.with_name(self.path.name + ".tmp")
@@ -237,6 +299,36 @@ class StateStore:
         self.load()
         self._job_seq += 1
         return f"j-{self._job_seq:04d}"
+
+    def next_queue_id(self) -> str:
+        self.load()
+        self._queue_seq += 1
+        return f"q-{self._queue_seq:04d}"
+
+    def add_queued(self, item: Queued) -> Queued:
+        self.load()
+        if item.id in self._queued:
+            raise StateError(f"queued item {item.id} already exists")
+        self._queued[item.id] = item
+        return item
+
+    def get_queued(self, item_id: str) -> Queued:
+        self.load()
+        item = self._queued.get(item_id)
+        if item is None:
+            raise StateError(f"no queued item {item_id!r} in {self.path}")
+        return item
+
+    def all_queued(self) -> list[Queued]:
+        self.load()
+        return sorted(self._queued.values(), key=lambda item: item.created_at)
+
+    def remove_queued(self, item_id: str) -> Queued:
+        self.load()
+        item = self._queued.pop(item_id, None)
+        if item is None:
+            raise StateError(f"no queued item {item_id!r} in {self.path}")
+        return item
 
     def add_job(self, job: Job) -> Job:
         self.load()
