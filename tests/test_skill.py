@@ -72,6 +72,25 @@ class SkillTest(unittest.TestCase):
         self.assertIn("Open decision:", text)
         self.assertIn("exactly one", text.lower())
 
+    def test_the_three_writing_rules_are_documented(self) -> None:
+        # Whitespace is flattened so the skill may wrap its prose naturally.
+        text = " ".join(read_skill().split())
+        self.assertIn("Write for the owner, not for the crew", text)
+        self.assertIn("Names, not handles", text)
+        self.assertIn("never ask him to choose between two handles", text)
+        self.assertIn("A question must stand on its own", text)
+        self.assertIn("what changes for him, and what it costs", text)
+        self.assertIn("Say where it happens", text)
+        self.assertIn('do not count it under "waiting on you"', text)
+        # Both examples, so the rule cannot drift into an abstraction.
+        self.assertIn("shall I start q-0001 or clear the queue first?", text)
+        good = (
+            "In AI-Playwright, a bug stops a second agent being created in a repo that "
+            "already has one. The fix is small. Do that first, or clear your other clowder "
+            "items first?"
+        )
+        self.assertIn(good, text)
+
     def test_the_skill_forbids_doing_the_work(self) -> None:
         text = read_skill().lower()
         for rule in ("you do not build", "comes first", "not approval", "heavy run"):

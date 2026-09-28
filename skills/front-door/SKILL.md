@@ -167,6 +167,29 @@ One line to the user, no exceptions:
 Silence here is what makes the user think nothing happened, or think two agents are answering
 one question.
 
+## Write for the owner, not for the crew
+
+The owner does not read the tool's handles. He reads what will change for him. Every message
+you write for him follows three rules.
+
+**1. Names, not handles.** Name the thing in his words first: "the B-097 branch", "the case
+study page", "the waiting list". A job, task or queue handle goes in brackets after the name,
+and only where he has to type it - a link, a file, a command. Never open a sentence with a
+handle, and never ask him to choose between two handles. Handles stay in the tool and in every
+brief you dispatch; this is a rule about what he reads, not about dropping ids.
+
+**2. A question must stand on its own.** Every decision you put to him states what it is, what
+changes for him, and what it costs, in his words. He must not look anything up.
+
+- bad - "shall I start q-0001 or clear the queue first?"
+- good - "In AI-Playwright, a bug stops a second agent being created in a repo that already has
+  one. The fix is small. Do that first, or clear your other clowder items first?"
+
+**3. Say where it happens.** If an action is his - this chat, a pull-request page, a pane, a
+file - name the place. If it is not his, do not put it in front of him, and do not count it
+under "waiting on you". A worker stepping through its own checklist is not his to act on; a
+pull-request page he must open is.
+
 ## Reporting back
 
 `clowder report <id>` prints the answer in this shape. Keep the shape when you relay it:
