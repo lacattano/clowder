@@ -63,9 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", metavar="PATH", help="config file to use")
     parser.add_argument("--state", metavar="PATH", help="state file to use (beats the config)")
 
+    # The same two options on every subcommand, so `clowder tasks --state x` works
+    # as well as `clowder --state x tasks`. SUPPRESS matters: without it the
+    # subparser's default would overwrite a value given before the subcommand.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", metavar="PATH", default=argparse.SUPPRESS)
+    common.add_argument("--state", metavar="PATH", default=argparse.SUPPRESS)
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    send = sub.add_parser("dispatch", help="send a brief to an agent and record it")
+    send = sub.add_parser(
+        "dispatch", help="send a brief to an agent and record it", parents=[common]
+    )
     send.add_argument("agent", help="agent name, as the multiplexer knows it")
     send.add_argument("repo", help="repo name under the workspace root, or a path")
     send.add_argument(
@@ -118,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--json", action="store_true", help="machine-readable output")
     send.set_defaults(handler=cmd_dispatch)
 
-    list_tasks = sub.add_parser("tasks", help="list tasks and their state")
+    list_tasks = sub.add_parser("tasks", help="list tasks and their state", parents=[common])
     list_tasks.add_argument("--status", choices=STATUSES)
     list_tasks.add_argument("--agent")
     list_tasks.add_argument("--repo")
@@ -126,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_tasks.add_argument("--json", action="store_true")
     list_tasks.set_defaults(handler=cmd_tasks)
 
-    show = sub.add_parser("report", help="read one task's report")
+    show = sub.add_parser("report", help="read one task's report", parents=[common])
     show.add_argument("id", help="task id, e.g. t-0001")
     show.add_argument(
         "--no-save", action="store_true", help="print only; do not update the record"
@@ -143,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     make = sub.add_parser(
         "ensure",
         help="make sure an agent serves a repo, creating one when there is none",
+        parents=[common],
     )
     make.add_argument("repo", help="repo name under the workspace root, or a path")
     make.add_argument(
@@ -163,12 +173,16 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--json", action="store_true")
     make.set_defaults(handler=cmd_ensure)
 
-    roster = sub.add_parser("agents", help="list live agents (the roster is the tool's)")
+    roster = sub.add_parser(
+        "agents", help="list live agents (the roster is the tool's)", parents=[common]
+    )
     roster.add_argument("--json", action="store_true")
     roster.set_defaults(handler=cmd_agents)
 
     board = sub.add_parser(
-        "board", help="write the HTML page of what is queued, underway and waiting"
+        "board",
+        help="write the HTML page of what is queued, underway and waiting",
+        parents=[common],
     )
     board.add_argument(
         "--out",
@@ -179,10 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
     board.add_argument("--json", action="store_true")
     board.set_defaults(handler=cmd_board)
 
-    job = sub.add_parser("job", help="a line of work: one branch in an agent's worktree")
+    job = sub.add_parser(
+        "job", help="a line of work: one branch in an agent's worktree", parents=[common]
+    )
     job_sub = job.add_subparsers(dest="job_command", required=True)
 
-    j_open = job_sub.add_parser("open", help="start a branch for a line of work")
+    def job_parser(name: str, help_text: str) -> argparse.ArgumentParser:
+        return job_sub.add_parser(name, help=help_text, parents=[common])
+
+    j_open = job_parser("open", "start a branch for a line of work")
     j_open.add_argument("repo")
     j_open.add_argument("--label", required=True, help="what the work is, in a word or three")
     j_open.add_argument("--role", default=DEFAULT_ROLE, choices=ROLES)
@@ -199,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     j_open.add_argument("--json", action="store_true")
     j_open.set_defaults(handler=cmd_job_open)
 
-    j_close = job_sub.add_parser("close", help="return the worktree to the agent's branch")
+    j_close = job_parser("close", "return the worktree to the agent's branch")
     j_close.add_argument("id")
     j_close.add_argument(
         "--delete-branch",
@@ -210,14 +229,12 @@ def build_parser() -> argparse.ArgumentParser:
     j_close.add_argument("--json", action="store_true")
     j_close.set_defaults(handler=cmd_job_close)
 
-    j_list = job_sub.add_parser("list", help="jobs, and where their branches live")
+    j_list = job_parser("list", "jobs, and where their branches live")
     j_list.add_argument("--all", action="store_true", help="closed jobs too")
     j_list.add_argument("--json", action="store_true")
     j_list.set_defaults(handler=cmd_job_list)
 
-    j_hand = job_sub.add_parser(
-        "handover", help="give a reviewer the job's saved code to check"
-    )
+    j_hand = job_parser("handover", "give a reviewer the job's saved code to check")
     j_hand.add_argument("id")
     j_hand.add_argument(
         "--to",
@@ -232,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover)
 
-    paths = sub.add_parser("config", help="show resolved settings and paths")
+    paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
 

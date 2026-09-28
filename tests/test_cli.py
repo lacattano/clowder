@@ -1318,6 +1318,28 @@ class CliTest(unittest.TestCase):
         html = Path(out.strip()).read_text(encoding="utf-8")
         self.assertIn("Nothing is waiting on you.", html)
 
+    def test_state_can_be_given_after_the_subcommand(self) -> None:
+        other = self.root / "elsewhere.json"
+        code, out, _ = self.cli("config", "--json", "--state", str(other), env=self.fake_env())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["state_path"], str(other))
+
+    def test_a_state_given_before_the_subcommand_is_not_clobbered(self) -> None:
+        # The subparser also carries --state, and its default must not overwrite a
+        # value given earlier in the command line.
+        code, out, _ = self.cli(
+            "--state", str(self.state), "config", "--json", env=self.fake_env()
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["state_path"], str(self.state))
+
+    def test_config_can_be_given_after_the_subcommand(self) -> None:
+        code, out, _ = self.cli(
+            "config", "--json", "--config", str(self.config), env=self.fake_env()
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["config_source"], str(self.config))
+
     # -- agents and config -------------------------------------------------
 
     def test_agents_lists_the_live_roster(self) -> None:

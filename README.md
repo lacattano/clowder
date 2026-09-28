@@ -109,6 +109,24 @@ Tests, also nothing to install:
 py -3.14 -m unittest discover -s tests -t .
 ```
 
+### Developing clowder
+
+One command runs every gate, locally and in CI, so the list cannot drift between what you run
+and what the robot runs:
+
+```
+py -3.14 scripts/check.py          # every gate
+py -3.14 scripts/check.py --list   # what they are
+```
+
+The gates are **smoke** (the CLI runs with no multiplexer), **lint** (`ruff check`), **format**
+(`ruff format --check`), **type** (`mypy clowder`) and **tests** (the whole suite). `ruff` and
+`mypy` are fetched with `uvx`, so nothing needs installing first.
+
+The flow for a change: run the gates, commit, push to `main`. CI runs the same five gates as
+separate checks (`.github/workflows/ci.yml`), so a red one names itself. The tool never commits,
+pushes or merges anything on your behalf - delivery is `local-only`, and the merge is yours.
+
 ### The front-door skill
 
 [`skills/front-door/SKILL.md`](skills/front-door/SKILL.md) tells one agent how to act as the
