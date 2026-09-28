@@ -268,6 +268,17 @@ def _dig(node: object, *keys: str) -> object | None:
     return current
 
 
+def reply_pane_id(result: MuxResult) -> str | None:
+    """The pane id a multiplexer reply names, if it names one.
+
+    A move gives the pane a new id in the target workspace, so the reply is the
+    only place the new id can be read. None means the reply did not carry one.
+    """
+    payload = _first_json(result.stdout)
+    pane_id = _dig(payload, "result", "pane", "pane_id")
+    return pane_id if isinstance(pane_id, str) and pane_id else None
+
+
 def _as_text(value: object) -> str:
     if value is None:
         return ""

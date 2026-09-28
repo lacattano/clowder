@@ -133,6 +133,16 @@ def main(argv: list[str]) -> int:
             if item == "--workspace" and index + 1 < len(argv):
                 workspace_id = argv[index + 1]
         state = _load()
+        # A real move gives the pane a new id in the target workspace, and the old
+        # id stops existing. Anything holding the old id must read the new one
+        # from this reply, or its next command fails with pane-not-found.
+        panes = state.get("panes") or {}
+        assert isinstance(panes, dict)
+        prefix = workspace_id or "w1"
+        new_pane_id = f"{prefix}:p{state.get('next_pane', 2)}"
+        state["next_pane"] = int(state.get("next_pane", 2)) + 1  # type: ignore[arg-type]
+        if pane_id in panes:
+            panes[new_pane_id] = panes.pop(pane_id)
         moves = state.setdefault("moves", [])
         assert isinstance(moves, list)
         moves.append(
@@ -147,12 +157,13 @@ def main(argv: list[str]) -> int:
         # reports it and `agent list` looks like the real thing.
         workspaces = state.setdefault("pane_workspaces", {})
         assert isinstance(workspaces, dict)
-        workspaces[pane_id] = workspace_id
+        workspaces.pop(pane_id, None)
+        workspaces[new_pane_id] = workspace_id
         _save(state)
         return _emit(
             {
                 "id": "cli:pane:move",
-                "result": {"pane": {"pane_id": pane_id, "workspace_id": workspace_id}},
+                "result": {"pane": {"pane_id": new_pane_id, "workspace_id": workspace_id}},
             }
         )
 
