@@ -1745,12 +1745,14 @@ class CliTest(unittest.TestCase):
         self.assertIn(str(self.config), out)
         self.assertIn("state file does not exist yet", out)
 
-    def test_state_is_a_single_file(self) -> None:
+    def test_state_leaves_no_temp_fragments(self) -> None:
         self.dispatch("maker", "myrepo", "ship: add the refund page")
         self.session_turns()
         self.cli("report", "t-0001", env=self.fake_env())
         siblings = sorted(p.name for p in self.root.iterdir() if p.name.startswith("state"))
-        self.assertEqual(siblings, ["state.json"])
+        # state.json and its lock. A leftover writer temp would be named
+        # state.json.<pid>.<thread>.<token>.tmp and would fail this check.
+        self.assertEqual(siblings, ["state.json", "state.json.lock"])
 
     def test_env_state_beats_the_config(self) -> None:
         other = self.root / "other-state.json"

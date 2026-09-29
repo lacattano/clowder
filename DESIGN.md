@@ -332,6 +332,22 @@ job that was already merged, and he asked "is this right?". Three fixes:
 - The page prints when it was generated, in the body, and says that a tab keeps what it loaded.
   It reloads itself, but only a command rewrites the file, so an old time is the staleness.
 
+### 23. State saves serialize, and a lost update is refused
+
+Seen on 2026-09-28: two `clowder report` runs at once left the state file as valid JSON followed
+by a fragment, and every command failed until it was repaired by hand. `StateStore.save` wrote a
+fixed temp path `<state>.tmp`, so two writers shared one temp file, and either could replace the
+state with the other's half-written file.
+
+Now:
+
+- The temp file carries the pid, the thread and a random token, so no two writers share a path.
+- A lock file beside the state serializes a load-modify-save across processes; the OS releases
+  it on exit.
+- The payload carries a `rev`. A save that finds a newer `rev` folds the other writer's records
+  in. A record changed by both since load is refused loudly, never overwritten. A lost update is
+  never silent.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
@@ -500,9 +516,11 @@ conversation; none is fixed by the queue work.
   the newest message and stops the older work. Seen: it happened today, and j-0004 had to be
   re-sent. Fix: refuse or queue a dispatch to an agent whose space holds an open job, unless
   it is that job.
-- **Last-write-wins state.** The state file has no lock, and concurrent commands are normal.
-  Seen: t-0005 was recorded reported, then read back dispatched; a second read fixed it. Fix:
-  a lock or compare-and-swap on save, so overlapping saves cannot silently drop one.
+- **Last-write-wins state.** (Fixed - decision 23.) The state file had no lock, and concurrent
+  commands are normal. Seen: t-0005 was recorded reported, then read back dispatched; a second
+  read fixed it. Later two `report` runs at once left the file as JSON plus a fragment. Now a
+  lock serializes saves, a unique temp per writer stops the torn file, and a stale save is
+  refused rather than written.
 - **A stale base.** A job's base comes from the local branch, which is behind after a merge
   elsewhere. Seen: both merges today left local main behind until the front door pulled. Fix:
   fetch before resolving a base, and refuse a base that is behind its remote.
