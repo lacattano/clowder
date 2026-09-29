@@ -60,6 +60,7 @@ clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--wo
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
+clowder owner <id> --item TEXT | --clear
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id>
@@ -266,6 +267,11 @@ Re: <the question it answers>
   `clowder job pass`, and a merge word is `clowder job word`.
 - `--decide TEXT` answers that question. The decision then leaves the board's owner section, and
   the record keeps what the answer was.
+- `clowder owner <id> --item TEXT` records one line that waits on the owner when no other field
+  carries it, such as a report you are holding for him. Write it in his words, names first, and
+  say where he does it (this chat, a pull-request page). `--clear` removes it when he answers.
+  Record it the moment you decide to hold something for him; the board's owner section can only
+  show what a command recorded.
 
 ## The queue
 

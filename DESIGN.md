@@ -385,6 +385,19 @@ while the owner gets to it, and the owner should have one review place per repo.
 This depends on the first half, which releases the writer's space and holds the change in a ref;
 until that lands, the commit stays reachable through the writer's branch.
 
+### 26. The owner's section shows what a command recorded, and says so
+
+Seen 2026-09-29: the owner opened the board, read "Nothing is waiting on you.", and was owed two
+things. Neither lived in a job record: a report the front door was holding, and a question it had
+asked in chat. The section could not see them, so it lied.
+
+- A task carries one recorded owner item: `clowder owner <id> --item TEXT` writes one line in his
+  words (names first, and where he does it); `--clear` removes it when he answers. It is the
+  catch-all for anything that waits on him and no other field carries.
+- The merge-word line keys off the recorded pass (`pass_at`), not the reviewer field.
+- The empty line is honest: "Nothing is recorded as waiting on you." It says the tool shows only
+  what a command recorded, so a report held in the front door's words will not appear.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

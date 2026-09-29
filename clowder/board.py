@@ -174,12 +174,20 @@ def waiting_on_you(data: BoardData) -> list[str]:
     """
     lines: list[str] = []
 
+    # What the front door recorded as waiting on him, oldest first. This is the
+    # catch-all for a report it holds, or a question it asked outside a task.
+    waiting = [t for t in data.tasks if t.owner_item and t.status != CLOSED]
+    for task in sorted(waiting, key=lambda item: item.owner_item_at or item.created_at):
+        lines.append(
+            f"<b>your move</b> {_e(_clip(task.owner_item or '', 240))} "
+            f"<span class='why'>[{_e(task.id)}]</span>"
+        )
+
     for task in data.tasks:
         if task.open_decision and task.decision_is_open and task.status != CLOSED:
             lines.append(
-                f"<b>decision</b> <span class='id'>{_e(task.id)}</span> "
-                f"{_e(_clip(task.open_decision, 200))} "
-                f"<span class='why'>asked by {_e(task.agent)} about "
+                f"<b>decision</b> {_e(_clip(task.open_decision, 200))} "
+                f"<span class='why'>[{_e(task.id)}] asked by {_e(task.agent)} about "
                 f"{_e(_clip(task.question, 120))}</span>"
             )
 
@@ -205,22 +213,21 @@ def waiting_on_you(data: BoardData) -> list[str]:
         seconds = elapsed_seconds(job.handed_over_at, None)
         quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
         lines.append(
-            f"<b>held for your review</b> <span class='id'>{_e(job.id)}</span> "
-            f"{_e(job.branch)} was handed to {_e(job.reviewer)} "
-            f"<span class='why'>{_e(job.label)}; waiting {_e(human_age(seconds))}"
-            f"{quiet}. Walk it in the reviewer's space.</span>"
+            f"<b>held for your review</b> {_e(job.branch)} was handed to {_e(job.reviewer)} "
+            f"<span class='why'>[{_e(job.id)}] {_e(job.label)}; waiting "
+            f"{_e(human_age(seconds))}{quiet}. Walk it in the reviewer's space.</span>"
         )
 
     for job in data.jobs:
         if not job.is_open:
             continue
         open_steps = [task for task in data.tasks if task.job == job.id and task.is_open]
-        if job.reviewer and not open_steps and job.has_pass and not job.has_merge_word:
+        if not open_steps and job.has_pass and not job.has_merge_word:
+            reviewed_by = f" was reviewed by {_e(job.reviewer)}" if job.reviewer else ""
             lines.append(
-                f"<b>your word</b> <span class='id'>{_e(job.id)}</span> "
-                f"{_e(job.branch)} was reviewed by {_e(job.reviewer)} "
-                f"<span class='why'>{_e(job.label)}; the front door merges it once "
-                "you give your merge word and the checks are green</span>"
+                f"<b>your word</b> {_e(job.branch)}{reviewed_by} "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.label)}; the front door merges "
+                "it once you give your merge word and the checks are green</span>"
             )
 
     return lines
@@ -293,7 +300,10 @@ def render_board(data: BoardData) -> str:
     if needs:
         needs_html = "<ul>" + "".join(f"<li>{line}</li>" for line in needs) + "</ul>"
     else:
-        needs_html = _nothing("Nothing is waiting on you.")
+        needs_html = _nothing(
+            "Nothing is recorded as waiting on you. The tool shows only what a command "
+            "recorded; a report the front door holds in its words will not appear here."
+        )
 
     worker = waiting_for_worker(data)
     if worker:

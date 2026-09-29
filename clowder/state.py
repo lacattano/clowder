@@ -65,6 +65,10 @@ class Task:
     open_decision: str | None = None
     decision_answer: str | None = None
     decision_answered_at: str | None = None
+    # One line the front door records when something waits on the owner and no
+    # other field carries it, e.g. a report it is holding for him.
+    owner_item: str | None = None
+    owner_item_at: str | None = None
     usage: dict[str, object] | None = None
 
     @property

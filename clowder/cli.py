@@ -167,6 +167,21 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true")
     show.set_defaults(handler=cmd_report, refreshes_board=True)
 
+    owner = sub.add_parser(
+        "owner",
+        help="record or clear one thing that waits on the owner",
+        parents=[common],
+    )
+    owner.add_argument("id", help="task id, e.g. t-0001")
+    owner.add_argument(
+        "--item",
+        metavar="TEXT",
+        help="one line, in his words: what it is and where he does it",
+    )
+    owner.add_argument("--clear", action="store_true", help="he has answered it; remove it")
+    owner.add_argument("--json", action="store_true")
+    owner.set_defaults(handler=cmd_owner, refreshes_board=True)
+
     make = sub.add_parser(
         "ensure",
         help="make sure an agent serves a repo, creating one when there is none",
@@ -807,6 +822,32 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(usage_breakdown(usage) if usage else INDENT + "no session turns found")
         if session_path:
             print(INDENT + f"session: {session_path}")
+    return 0
+
+
+def cmd_owner(args: argparse.Namespace) -> int:
+    """Record or clear one thing that waits on the owner, against a task."""
+    _, store = _context(args)
+    task = store.get(args.id)
+    if bool(args.item) == bool(args.clear):
+        raise UsageError("pass exactly one of --item TEXT or --clear")
+    if args.item:
+        text = args.item.strip()
+        if not text:
+            raise UsageError("--item needs a line of text")
+        task.owner_item = text
+        task.owner_item_at = now_iso()
+        note = f"{task.id}: recorded as waiting on the owner"
+    else:
+        task.owner_item = None
+        task.owner_item_at = None
+        note = f"{task.id}: cleared from what waits on the owner"
+    store.save()
+
+    if args.json:
+        _emit_json({"task": task.to_dict()})
+        return 0
+    print(note)
     return 0
 
 
