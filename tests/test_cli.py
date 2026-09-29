@@ -1027,6 +1027,31 @@ class CliTest(unittest.TestCase):
         job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
         self.assertIsNone(job["pass_at"], "a worker's word is not recorded")
 
+    def test_a_reviewer_cannot_record_the_owner_s_pass_or_word(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff",
+            "--answer",
+            "yes",
+            "--by",
+            "verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("worker role", err)
+        code, _, err = self.cli(
+            "job", "word", job_id, "--word", "merge", "--by", "teacher", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("worker role", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertIsNone(job["pass_at"])
+        self.assertIsNone(job["merge_word_at"])
+
     def test_publish_is_refused_without_a_pass(self) -> None:
         job_id, _ = self.open_a_job()
         code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
@@ -1655,7 +1680,29 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0)
         html = Path(out.strip()).read_text(encoding="utf-8")
-        self.assertIn("Nothing is waiting on you.", html)
+        self.assertIn("Nothing is recorded as waiting on you.", html)
+
+    def test_an_owner_item_shows_and_clears(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        code, out, err = self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "the team-page design is ready to read, in this chat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on the owner", out)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("the team-page design is ready to read", html)
+        self.assertIn("your move", html)
+        self.assertNotIn("Nothing is recorded as waiting on you.", html)
+
+        code, out, err = self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertNotIn("the team-page design is ready to read", html)
+        self.assertIn("Nothing is recorded as waiting on you.", html)
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.

@@ -60,6 +60,7 @@ clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--wo
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
+clowder owner <id> --item TEXT | --clear
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id>
@@ -167,6 +168,15 @@ branch name on it. The writer keeps its branch and can carry on.
 - A step sent to a copy that does not hold the save is refused. Do not work around it. Run
   `job handover` first, so that a report is about the code you think it is about.
 - All of this is on the user's disk. **Nothing is pushed between agents.**
+- One reviewer serves a repo. `job handover` makes one there if the repo has none, and reuses the
+  one it finds. It checks the change and walks the owner through it; the next change waits its turn.
+- The reviewer walks and checks, and nothing else. It may discuss only the change in front of the
+  owner and what he asks about it; it does not take new work, dispatch, route, or answer a
+  research question. If the owner asks it for anything else, it points at you.
+- The reviewer never records the pass or the merge word. Those are the owner's, and you record
+  them on his words. `job pass` and `job word` refuse a worker's name.
+- The board's owner section lists the held changes waiting for him, oldest first, with each one's
+  age. Run `clowder board` so the page is current before you relay it.
 
 ## Before you dispatch
 
@@ -257,6 +267,11 @@ Re: <the question it answers>
   `clowder job pass`, and a merge word is `clowder job word`.
 - `--decide TEXT` answers that question. The decision then leaves the board's owner section, and
   the record keeps what the answer was.
+- `clowder owner <id> --item TEXT` records one line that waits on the owner when no other field
+  carries it, such as a report you are holding for him. Write it in his words, names first, and
+  say where he does it (this chat, a pull-request page). `--clear` removes it when he answers.
+  Record it the moment you decide to hold something for him; the board's owner section can only
+  show what a command recorded.
 
 ## The queue
 

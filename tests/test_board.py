@@ -129,7 +129,7 @@ class RenderTest(unittest.TestCase):
             "Jobs",
         ):
             self.assertIn(heading, html)
-        self.assertIn("Nothing is waiting on you.", html)
+        self.assertIn("Nothing is recorded as waiting on you.", html)
         self.assertIn("Nothing is waiting for the front door.", html)
 
     def test_an_open_step_is_shown(self) -> None:
@@ -165,7 +165,9 @@ class RenderTest(unittest.TestCase):
 
     def test_the_worker_section_is_marked_apart_from_the_owner(self) -> None:
         html = render_board(data(queued=[queued()]))
-        self.assertIn("Nothing is waiting on you.", html, "the owner has nothing to do")
+        self.assertIn(
+            "Nothing is recorded as waiting on you.", html, "the owner has nothing to do"
+        )
         self.assertIn("Waiting for a worker", html)
         owner, worker = html.split("Waiting on you", 1)[1].split("Waiting for a worker")
         self.assertNotIn("q-0001", owner, "a queued item is not the owner's work")
@@ -197,8 +199,39 @@ class WaitingTest(unittest.TestCase):
         )
         self.assertEqual(waiting_on_you(data(tasks=[answered])), [])
 
+    def test_an_owner_item_waits_on_the_human(self) -> None:
+        waiting = waiting_on_you(
+            data(
+                tasks=[
+                    task(
+                        owner_item="the team-page design is ready, in this chat",
+                        owner_item_at=now_iso(),
+                    )
+                ]
+            )
+        )
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("your move", waiting[0])
+        self.assertIn("the team-page design is ready", waiting[0])
+        self.assertIn("[t-0001]", waiting[0])
+        self.assertLess(
+            waiting[0].index("the team-page design"),
+            waiting[0].index("[t-0001]"),
+            "the name comes before the handle",
+        )
+
+    def test_a_cleared_owner_item_does_not_wait(self) -> None:
+        self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
+
+    def test_a_pass_without_a_word_waits_with_no_reviewer(self) -> None:
+        passed = job(pass_at=now_iso())
+        waiting = waiting_on_you(data(jobs=[passed]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("your word", waiting[0])
+        self.assertIn("[j-0001]", waiting[0])
+
     def test_a_reviewed_job_waits_for_the_owner_s_word(self) -> None:
-        reviewed = job(reviewer="verifier", review_commit="a" * 40)
+        reviewed = job(reviewer="verifier", review_commit="a" * 40, pass_at=now_iso())
         waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task(status=REPORTED)]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("your word", waiting[0])
@@ -206,10 +239,32 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("the front door merges it", waiting[0])
         self.assertIn("merge word", waiting[0])
 
+    def test_a_held_change_waits_with_its_age(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("held for your review", waiting[0])
+        self.assertIn("j-0001", waiting[0])
+        self.assertIn("verifier", waiting[0])
+        self.assertIn("waiting", waiting[0])
+        self.assertNotIn("gone quiet", waiting[0], "a fresh hold is not flagged")
+
+    def test_a_held_change_that_has_sat_is_flagged(self) -> None:
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at="2020-01-01T00:00:00Z",
+        )
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("held for your review", waiting[0])
+        self.assertIn("gone quiet", waiting[0])
+
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            pass_at=now_iso(),
             merge_word="merge",
             merge_word_at="2026-09-29T10:00:00Z",
         )
