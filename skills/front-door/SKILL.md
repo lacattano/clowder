@@ -106,8 +106,6 @@ clowder job close j-0001
   branch. A reviewer is given that save, so work that is not saved cannot be reviewed.
 - **A save must be on a branch.** If `report` says a commit is on no branch, it lives only in
   that one folder, and reusing the folder would lose it. Say so; do not ignore it.
-- The tool never commits, pushes, merges or deletes a branch. A **worker** saves its own work on
-  the job branch; the **merge into main** is the user's step, and a report is not an approval.
 
 ## Handing work to a reviewer
 
@@ -128,8 +126,7 @@ branch name on it. The writer keeps its branch and can carry on.
   was checked, and the commit is recorded on the job.
 - A step sent to a copy that does not hold the save is refused. Do not work around it. Run
   `job handover` first, so that a report is about the code you think it is about.
-- All of this is on the user's disk. **Nothing is pushed between agents.** Pushing is
-  publishing, and it happens at the end, when the user is ready.
+- All of this is on the user's disk. **Nothing is pushed between agents.**
 
 ## Before you dispatch
 
@@ -241,20 +238,34 @@ clowder board --open
 
 It writes one HTML file next to the state file and prints the path. It needs no server, and it
 still works when the multiplexer cannot be read, because it falls back to the state file. Its
-first section is what is waiting on the user: a decision, a review that is ready to merge, a
-queued item whose block has not cleared, or work that is on no branch. Relay those in words. Do
-not paste the HTML at the user.
+first section is what is waiting on the user: a decision, a review that is ready to merge, or
+work that is on no branch. The queue waits under "Waiting for a worker", which is the front
+door's own list. Relay the user's section in words. Do not paste the HTML at the user.
+
+## Walking the owner through a change
+
+The rules for this are the owner's. They live in the workspace rules file at `code/AGENTS.md`,
+section 5, "What the owner gates". Read them there; this skill does not repeat them. What
+follows is only how to run the walkthrough.
+
+The worker has saved its change on the job's branch, and nothing is pushed. Then:
+
+1. Open the diff in range mode in the worker's space: `/diff main...HEAD`. It lists the branch's
+   changed files, one file at a time.
+2. Go file by file, in his terms. For each file say what the file is for, what changed, why,
+   and what it means for a user. Quote one short exact line that carries the change. A few
+   sentences is enough. Do not dump the diff, and do not read code aloud.
+3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
+   not run the code.
+4. Record his answer on that line of work: passed, or what to change. A change means the worker
+   fixes it, and you walk him through the new commits the same way.
 
 ## Rules that hold every time
 
 - The user's direct words outrank a peer's job. If they conflict, ask the user. Do not guess,
   and do not quietly do both.
-- A report is not approval. The user reads the diff before a commit. Never commit, push or
-  ship on the strength of a worker's report.
 - Never claim a test passed unless the report says it ran and passed.
 - Do not close panes, tabs or workspaces you did not create, and leave the ones you did create
   in place too. A worker that has reported can still answer a follow-up.
-- Never commit, push, merge or delete a branch to "finish" a job. Say what is ready and let the
-  user do it.
 - Never overlap heavy runs. No test suite or pipeline while another agent runs one.
 - Large output goes to a file. Reply with the path.

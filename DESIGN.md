@@ -209,7 +209,8 @@ crashed on 2026-09-25.
 name the code it is about. The commit is read when the report is read, not remembered from
 dispatch, so a commit made during the step is the one reported.
 
-The commit step is a human gate. A job's chain stops there and hands over the diff.
+What happens after the commit - the walkthrough and everything that follows it - is the owner's
+gate chain, kept in the workspace rules file at `code/AGENTS.md`.
 
 ### 18. The handoff is a save, and a reviewer gets a pinned copy
 
@@ -228,11 +229,10 @@ Two consequences worth keeping:
 
 - A handover needs a save. Unsaved work is refused, by name, because a reviewer checks a save
   and not a folder.
-- This puts the gate at **merge**, not at commit. The writer must save for a review to be
-  possible at all, so a rule that forbids any commit before a human has read the diff cannot
-  hold. What the human gated is the change reaching `main`.
+- A review needs a save to exist at all, and a save is a commit. The gate itself is the owner's
+  chain, in the workspace rules file.
 
-Pushing stays where it was. It is publishing, not handing over, and it happens at the end.
+Pushing is publishing, not handing over.
 
 ### 19. What Firstmate settled, and what we left
 
@@ -253,7 +253,8 @@ Left on purpose:
 
 - **Their merge automation.** Their doc carries locks, ownership proofs, teardown proofs and
   TOCTOU reasoning, because their tool merges to main. That is the price of the tool merging.
-  Ours stops at "the branch is ready", and the merge is the human's.
+  Ours stops at "the branch is ready"; what follows is the owner's gate chain, in the workspace
+  rules file.
 - **Prose and shell scripts as the spine.** They are an agent distro: instructions, skills and
   helper scripts. We chose a tested CLI plus a skill, so the rules that can be checked in code
   are checked in code.
@@ -314,8 +315,9 @@ board (step 4), `/calm` (step 5).
 
 `skills/front-door/SKILL.md`, shipped as a Pi package by `package.json`. The skill holds the
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
-shape, and the rules that must hold every time - say when you dispatch, ask for exactly one
-decision, a report is not approval, never overlap heavy runs.
+shape, the walkthrough procedure, and the rules that must hold every time - say when you
+dispatch, ask for exactly one decision, never overlap heavy runs. The gate chain is not repeated
+here; the skill carries one pointer at the workspace rules file.
 
 Two tests keep the prose honest. One fails when a CLI command is added and the skill is not
 updated. Another fails when the marker in the skill stops matching the marker in the code.
@@ -365,12 +367,12 @@ and it needs no server and no network.
 The page opens with **waiting on you**, because that is the only part with a deadline:
 
 - a decision a worker left open,
-- a review that is finished, where the merge is the human's step,
-- work that is on no branch, so it would be lost when the space is reused,
-- a step that has gone quiet while its agent is idle, or an agent that is not in the live list at
-  all.
+- a review that is finished and ready to merge,
+- work that is on no branch, so it would be lost when the space is reused.
 
-Then open steps, agents and their spaces, recent answers with usage, and jobs.
+A second section, **waiting for a worker**, holds the front door's own list: queued items, and
+steps that have gone quiet while their agent is idle, or whose agent is not in the live list at
+all. Then open steps, agents and their spaces, recent answers with usage, and jobs.
 
 The page is a pure function of the state, the live agent list and a few git reads, so it is tested
 without a browser. The agent list is best effort: when the multiplexer cannot be read the page says
@@ -463,8 +465,9 @@ conversation; none is fixed by the queue work.
 
 - AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
   gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi
-  package is now the source of truth for both, so those two local files must be deleted once the
-  package is installed, or `/diff` registers twice in one session.
+  package is now the source of truth for both, so those two local files should be deleted once
+  the package is installed, or `/diff` registers twice in one session. Nothing is deleted -
+  a file, a branch, a folder, a record - without the owner's word first.
 
 ## Prior art
 
