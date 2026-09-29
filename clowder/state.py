@@ -7,11 +7,14 @@ read it and a diff can show it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import threading
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .errors import StateError
 from .timeutil import elapsed_seconds, now_iso
@@ -204,6 +207,43 @@ class Queued:
         return asdict(self)
 
 
+@contextlib.contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """One writer at a time across processes. The OS releases it on exit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+
 class StateStore:
     """Read and write the state file. One instance per command run."""
 
@@ -216,103 +256,208 @@ class StateStore:
         self._jobs: dict[str, Job] = {}
         self._queued: dict[str, Queued] = {}
         self._loaded = False
+        # A revision of the file, and the records we loaded. A save that finds a
+        # newer revision folds the other writer's records in, or refuses loudly.
+        self._base_rev = 0
+        self._base_tasks: dict[str, dict[str, object]] = {}
+        self._base_jobs: dict[str, dict[str, object]] = {}
+        self._base_queued: dict[str, dict[str, object]] = {}
+        self._thread_lock = threading.Lock()
 
     # -- io ----------------------------------------------------------------
 
     def load(self) -> StateStore:
         if self._loaded:
             return self
-        if not self.path.exists():
+        raw = self._read_payload()
+        if raw is None:
             self._loaded = True
             return self
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise StateError(f"{self.path}: cannot read: {exc}") from exc
-        if not text.strip():
-            self._loaded = True
-            return self
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise StateError(f"{self.path}: not valid JSON: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise StateError(f"{self.path}: expected a JSON object at the top level")
-
         version = raw.get("schema")
         if version != SCHEMA_VERSION:
             raise StateError(
                 f"{self.path}: schema {version!r}, this build writes "
                 f"{SCHEMA_VERSION}. Refusing to guess."
             )
-        seq = raw.get("seq", 0)
-        if not isinstance(seq, int):
-            raise StateError(f"{self.path}: seq must be an integer")
-        self._seq = seq
+        self._seq = self._int_field(raw, "seq")
+        self._job_seq = self._int_field(raw, "job_seq")
+        self._queue_seq = self._int_field(raw, "queue_seq")
+        self._base_rev = self._int_field(raw, "rev")
 
-        job_seq = raw.get("job_seq", 0)
-        if not isinstance(job_seq, int):
-            raise StateError(f"{self.path}: job_seq must be an integer")
-        self._job_seq = job_seq
-
-        queue_seq = raw.get("queue_seq", 0)
-        if not isinstance(queue_seq, int):
-            raise StateError(f"{self.path}: queue_seq must be an integer")
-        self._queue_seq = queue_seq
-
-        jobs = raw.get("jobs", {})
-        if not isinstance(jobs, dict):
-            raise StateError(f"{self.path}: jobs must be an object")
-        for job_id, record in jobs.items():
-            if not isinstance(record, dict):
-                raise StateError(f"{self.path}: job {job_id} is not an object")
-            record.setdefault("id", job_id)
-            self._jobs[str(job_id)] = Job.from_dict(record)
-
-        tasks = raw.get("tasks", {})
-        if not isinstance(tasks, dict):
-            raise StateError(f"{self.path}: tasks must be an object")
-        for task_id, record in tasks.items():
-            if not isinstance(record, dict):
-                raise StateError(f"{self.path}: task {task_id} is not an object")
-            record.setdefault("id", task_id)
-            self._tasks[str(task_id)] = Task.from_dict(record)
-
-        queued = raw.get("queued", {})
-        if not isinstance(queued, dict):
-            raise StateError(f"{self.path}: queued must be an object")
-        for item_id, record in queued.items():
-            if not isinstance(record, dict):
-                raise StateError(f"{self.path}: queued item {item_id} is not an object")
-            record.setdefault("id", item_id)
-            self._queued[str(item_id)] = Queued.from_dict(record)
+        self._jobs = {
+            str(key): Job.from_dict(self._record(record, key, "job"))
+            for key, record in self._records(raw, "jobs").items()
+        }
+        self._tasks = {
+            str(key): Task.from_dict(self._record(record, key, "task"))
+            for key, record in self._records(raw, "tasks").items()
+        }
+        self._queued = {
+            str(key): Queued.from_dict(self._record(record, key, "queued item"))
+            for key, record in self._records(raw, "queued").items()
+        }
+        self._snapshot_base()
         self._loaded = True
         return self
 
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema": SCHEMA_VERSION,
-            "seq": self._seq,
-            "job_seq": self._job_seq,
-            "queue_seq": self._queue_seq,
-            "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
-            "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
-            "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
-        }
-        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-        temp = self.path.with_name(self.path.name + ".tmp")
+    def _read_payload(self) -> dict[str, object] | None:
+        if not self.path.exists():
+            return None
         try:
-            temp.write_text(text, encoding="utf-8")
-            os.replace(temp, self.path)
+            text = self.path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise StateError(f"{self.path}: cannot write: {exc}") from exc
-        finally:
-            if temp.exists() and temp != self.path:
-                try:
-                    temp.unlink()
-                except OSError:
-                    pass
+            raise StateError(f"{self.path}: cannot read: {exc}") from exc
+        if not text.strip():
+            return None
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise StateError(f"{self.path}: not valid JSON: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise StateError(f"{self.path}: expected a JSON object at the top level")
+        return raw
+
+    def _records(self, raw: dict[str, object], name: str) -> dict[str, object]:
+        records = raw.get(name, {})
+        if not isinstance(records, dict):
+            raise StateError(f"{self.path}: {name} must be an object")
+        return records
+
+    def _int_field(self, raw: dict[str, object], name: str) -> int:
+        value = raw.get(name, 0)
+        if not isinstance(value, int):
+            raise StateError(f"{self.path}: {name} must be an integer")
+        return value
+
+    def _record(self, record: object, key: object, label: str) -> dict[str, object]:
+        if not isinstance(record, dict):
+            raise StateError(f"{self.path}: {label} {key} is not an object")
+        copy = dict(record)
+        copy.setdefault("id", key)
+        return copy
+
+    def _snapshot_base(self) -> None:
+        self._base_tasks = {key: task.to_dict() for key, task in self._tasks.items()}
+        self._base_jobs = {key: job.to_dict() for key, job in self._jobs.items()}
+        self._base_queued = {key: item.to_dict() for key, item in self._queued.items()}
+
+    def save(self) -> None:
+        self.load()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._thread_lock, _file_lock(self._lock_file()):
+            self._fold_in_other_writers()
+            payload = {
+                "schema": SCHEMA_VERSION,
+                "rev": self._base_rev + 1,
+                "seq": self._seq,
+                "job_seq": self._job_seq,
+                "queue_seq": self._queue_seq,
+                "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
+                "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
+                "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
+            }
+            text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            temp = self._temp_path()
+            try:
+                temp.write_text(text, encoding="utf-8")
+                os.replace(temp, self.path)
+            except OSError as exc:
+                raise StateError(f"{self.path}: cannot write: {exc}") from exc
+            finally:
+                if temp.exists() and temp != self.path:
+                    try:
+                        temp.unlink()
+                    except OSError:
+                        pass
+            self._base_rev += 1
+            self._snapshot_base()
+
+    def _lock_file(self) -> Path:
+        return self.path.with_name(self.path.name + ".lock")
+
+    def _temp_path(self) -> Path:
+        """A path no other writer can share, so nobody truncates another's file."""
+        token = os.urandom(4).hex()
+        return self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{token}.tmp"
+        )
+
+    def _fold_in_other_writers(self) -> None:
+        """Merge a newer file into memory, or refuse a clashing edit.
+
+        A lost update is never silent. A record another writer changed while this
+        store held it is refused; anything else is folded in.
+        """
+        raw = self._read_payload()
+        if raw is None:
+            return
+        version = raw.get("schema")
+        if version != SCHEMA_VERSION:
+            raise StateError(
+                f"{self.path}: schema {version!r}, this build writes "
+                f"{SCHEMA_VERSION}. Refusing to guess."
+            )
+        disk_rev = self._int_field(raw, "rev")
+        if disk_rev == self._base_rev:
+            return
+        self._tasks = self._merge_records(
+            "task", self._tasks, self._base_tasks, self._records(raw, "tasks"), Task.from_dict
+        )
+        self._jobs = self._merge_records(
+            "job", self._jobs, self._base_jobs, self._records(raw, "jobs"), Job.from_dict
+        )
+        self._queued = self._merge_records(
+            "queued item",
+            self._queued,
+            self._base_queued,
+            self._records(raw, "queued"),
+            Queued.from_dict,
+        )
+        self._seq = max(self._seq, self._int_field(raw, "seq"))
+        self._job_seq = max(self._job_seq, self._int_field(raw, "job_seq"))
+        self._queue_seq = max(self._queue_seq, self._int_field(raw, "queue_seq"))
+        self._base_rev = disk_rev
+        self._snapshot_base()
+
+    def _merge_records(
+        self,
+        label: str,
+        current: dict[str, Any],
+        base: dict[str, dict[str, object]],
+        disk: dict[str, object],
+        make: Any,
+    ) -> dict[str, Any]:
+        now = {key: obj.to_dict() for key, obj in current.items()}
+        merged: dict[str, dict[str, object]] = {}
+        for key, record in disk.items():
+            disk_record = self._record(record, key, label)
+            if key not in now:
+                was = base.get(key)
+                if was is not None:
+                    if was != disk_record:
+                        raise self._clash(label, key)
+                    continue  # our delete wins; nobody else touched it
+                merged[key] = disk_record
+                continue
+            was = base.get(key)
+            if was is not None and now[key] == was:
+                merged[key] = disk_record  # we did not touch it; theirs wins
+            elif was == disk_record:
+                merged[key] = now[key]  # they did not touch it; ours wins
+            elif now[key] == disk_record:
+                merged[key] = now[key]  # both made the same record
+            else:
+                raise self._clash(label, key)
+        for key, record in now.items():
+            if key not in disk:
+                merged[key] = record
+        return {key: make(record) for key, record in merged.items()}
+
+    def _clash(self, label: str, key: str) -> StateError:
+        return StateError(
+            f"{self.path}: {label} {key} was changed by another command; "
+            "refusing a stale save. Re-run the command on the current file."
+        )
 
     # -- tasks -------------------------------------------------------------
 
