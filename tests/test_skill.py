@@ -96,6 +96,34 @@ class SkillTest(unittest.TestCase):
         for rule in ("you do not build", "comes first", "heavy run"):
             self.assertIn(rule, text, f"a core rule is missing: {rule}")
 
+    def test_the_skill_opens_with_a_reading_order(self) -> None:
+        skill = read_skill()
+        self.assertIn("## Starting after a refresh", skill)
+        section = skill.split("## Starting after a refresh", 1)[1].split("\n## ", 1)[0]
+        text = " ".join(section.split())
+        order = [
+            "clowder inbox",
+            "clowder queue list",
+            "clowder tasks --open",
+            "clowder job list",
+            "clowder agents",
+            "DESIGN.md",
+        ]
+        positions = [text.index(item) for item in order]
+        self.assertEqual(positions, sorted(positions), "read in the listed order")
+        self.assertIn("no state in your head", text)
+        for piece in (
+            "clowder job pass",
+            "clowder job word",
+            "clowder job publish",
+            "clowder job merge",
+        ):
+            self.assertIn(piece, text)
+        self.assertIn("reviewer per repo", text)
+        self.assertIn('"Waiting on you"', text)
+        self.assertIn('"Waiting for a worker"', text)
+        self.assertIn("cannot recover", text)
+
     def test_the_skill_carries_the_walkthrough_and_one_pointer(self) -> None:
         text = " ".join(read_skill().split())
         self.assertIn("Walking the owner through a change", text)

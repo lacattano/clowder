@@ -386,7 +386,9 @@ board (step 4), `/calm` (step 5).
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
 shape, the walkthrough procedure, and the rules that must hold every time - say when you
 dispatch, ask for exactly one decision, never overlap heavy runs. The gate chain is not repeated
-here; the skill carries one pointer at the workspace rules file.
+here; the skill carries one pointer at the workspace rules file. It opens with a reading order for
+a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh is cheap
+and the front door holds no state in its head.
 
 Two tests keep the prose honest. One fails when a CLI command is added and the skill is not
 updated. Another fails when the marker in the skill stops matching the marker in the code.
