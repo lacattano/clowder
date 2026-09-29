@@ -368,6 +368,23 @@ The space is a build cache, not the record. The record is the branch, the held r
   Publish reads the commit from the branch or the held ref, not the worktree HEAD, which now sits
   on the base.
 
+### 25. One reviewer space per repo, and the held queue on the board
+
+The second half of the review-flow design. A finished change should not sit in the writer's space
+while the owner gets to it, and the owner should have one review place per repo.
+
+- One reviewer per repo with active work. It holds that repo's held changes, one at a time, and
+  does both the check and the walkthrough - one role, not two. `job handover` makes the reviewer
+  on first use, so a repo with none is never stuck.
+- The board's owner section lists the held changes waiting for him, oldest first, with each one's
+  age, and a "gone quiet" flag past a day. A queue with an age, not a silent pile.
+- The reviewer discusses only the change in front of the owner and what he asks about it. It does
+  not take new work, dispatch, route, or answer research, and it never records the pass or the
+  merge word - the record commands refuse a worker's name. That keeps the one front door.
+
+This depends on the first half, which releases the writer's space and holds the change in a ref;
+until that lands, the commit stays reachable through the writer's branch.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

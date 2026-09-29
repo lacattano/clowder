@@ -1027,6 +1027,31 @@ class CliTest(unittest.TestCase):
         job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
         self.assertIsNone(job["pass_at"], "a worker's word is not recorded")
 
+    def test_a_reviewer_cannot_record_the_owner_s_pass_or_word(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff",
+            "--answer",
+            "yes",
+            "--by",
+            "verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("worker role", err)
+        code, _, err = self.cli(
+            "job", "word", job_id, "--word", "merge", "--by", "teacher", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("worker role", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertIsNone(job["pass_at"])
+        self.assertIsNone(job["merge_word_at"])
+
     def test_publish_is_refused_without_a_pass(self) -> None:
         job_id, _ = self.open_a_job()
         code, _, err = self.cli("job", "publish", job_id, env=self.state_env())

@@ -198,7 +198,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(waiting_on_you(data(tasks=[answered])), [])
 
     def test_a_reviewed_job_waits_for_the_owner_s_word(self) -> None:
-        reviewed = job(reviewer="verifier", review_commit="a" * 40)
+        reviewed = job(reviewer="verifier", review_commit="a" * 40, pass_at=now_iso())
         waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task(status=REPORTED)]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("your word", waiting[0])
@@ -206,10 +206,32 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("the front door merges it", waiting[0])
         self.assertIn("merge word", waiting[0])
 
+    def test_a_held_change_waits_with_its_age(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("held for your review", waiting[0])
+        self.assertIn("j-0001", waiting[0])
+        self.assertIn("verifier", waiting[0])
+        self.assertIn("waiting", waiting[0])
+        self.assertNotIn("gone quiet", waiting[0], "a fresh hold is not flagged")
+
+    def test_a_held_change_that_has_sat_is_flagged(self) -> None:
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at="2020-01-01T00:00:00Z",
+        )
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("held for your review", waiting[0])
+        self.assertIn("gone quiet", waiting[0])
+
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            pass_at=now_iso(),
             merge_word="merge",
             merge_word_at="2026-09-29T10:00:00Z",
         )

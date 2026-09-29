@@ -17,11 +17,15 @@ from pathlib import Path
 
 from .report import format_cost, format_tokens
 from .state import CLOSED, Job, Queued, Task
-from .timeutil import human_age, human_duration
+from .timeutil import elapsed_seconds, human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
 # nothing is running, so nobody may be coming back to it.
 QUIET_AFTER_SECONDS = 120.0
+
+# A held change the owner has not walked for this long is worth a flag, so a change
+# cannot sit in the queue unnoticed for days.
+HELD_QUIET_AFTER_SECONDS = 86400.0
 
 TITLE = "clowder board"
 
@@ -188,11 +192,30 @@ def waiting_on_you(data: BoardData) -> list[str]:
                 "that space would lose it</span>"
             )
 
+    # The held changes waiting for him, oldest first. A queue with an age, so a
+    # change cannot sit unnoticed; past a day it is flagged.
+    held = [
+        job
+        for job in data.jobs
+        if job.is_open and job.reviewer and job.review_commit and not job.has_pass
+    ]
+    for job in sorted(held, key=lambda item: item.handed_over_at or item.created_at):
+        if any(task.job == job.id and task.is_open for task in data.tasks):
+            continue  # the review step is still running; not the owner's turn yet
+        seconds = elapsed_seconds(job.handed_over_at, None)
+        quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
+        lines.append(
+            f"<b>held for your review</b> <span class='id'>{_e(job.id)}</span> "
+            f"{_e(job.branch)} was handed to {_e(job.reviewer)} "
+            f"<span class='why'>{_e(job.label)}; waiting {_e(human_age(seconds))}"
+            f"{quiet}. Walk it in the reviewer's space.</span>"
+        )
+
     for job in data.jobs:
         if not job.is_open:
             continue
         open_steps = [task for task in data.tasks if task.job == job.id and task.is_open]
-        if job.reviewer and not open_steps and not job.has_merge_word:
+        if job.reviewer and not open_steps and job.has_pass and not job.has_merge_word:
             lines.append(
                 f"<b>your word</b> <span class='id'>{_e(job.id)}</span> "
                 f"{_e(job.branch)} was reviewed by {_e(job.reviewer)} "
