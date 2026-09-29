@@ -324,8 +324,15 @@ def branches_containing(path: str | Path, commit: str, remotes: bool = True) -> 
 
 
 def is_reachable(path: str | Path, commit: str) -> bool:
-    """Is this commit on a branch, rather than only in one folder's HEAD?"""
-    return bool(branches_containing(path, commit))
+    """Is this commit held, rather than alive only in one folder's HEAD?"""
+    if branches_containing(path, commit):
+        return True
+    # A held change lives under refs/clowder until its branch is published, so it
+    # is reachable too. Without this, the board would call held work stranded.
+    held = try_git(
+        path, "for-each-ref", "--contains", commit, "--format=%(refname)", "refs/clowder"
+    )
+    return bool(held and held.strip())
 
 
 def add_worktree(repo: str | Path, target: str | Path, branch: str, base: str) -> None:
@@ -353,6 +360,17 @@ def delete_branch(path: str | Path, branch: str) -> None:
 def push_branch(path: str | Path, branch: str, remote: str = "origin") -> None:
     """Publish one branch. The caller has already checked the owner's pass."""
     run_git(path, "push", "-u", remote, branch)
+
+
+def hold_ref(path: str | Path, name: str, commit: str) -> str:
+    """Point a local ref at a saved commit, so it outlives its branch.
+
+    The commit is already in the object store, so the ref costs nothing and holds
+    no space. The branch may then be kept or deleted; the commit stays reachable.
+    """
+    ref = f"refs/clowder/held/{name}"
+    run_git(path, "update-ref", ref, commit)
+    return ref
 
 
 def run_command(command: str, cwd: str | Path, timeout_s: float = 900.0) -> None:

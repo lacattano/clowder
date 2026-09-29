@@ -954,10 +954,14 @@ def cmd_job_open(args: argparse.Namespace) -> int:
     label = args.label.strip()
     branch = args.branch or f"{config.job_branch_prefix}{sanitise(label)}"
 
-    # One open job per worktree. Two would mean the second switching a branch out
-    # from under the first, which is state no report could be trusted against.
+    # One checked-out job per worktree. A released job keeps its record but has
+    # handed its space back, so it does not block the next piece of work.
     here = next(
-        (job for job in store.open_jobs() if normalise(job.worktree) == normalise(worktree)),
+        (
+            job
+            for job in store.open_jobs()
+            if job.released_at is None and normalise(job.worktree) == normalise(worktree)
+        ),
         None,
     )
     if here is not None and here.branch == branch:
@@ -1033,28 +1037,32 @@ def cmd_job_close(args: argparse.Namespace) -> int:
             "--force."
         )
 
-    dirty = gitcmd.status_entries(worktree)
-    if dirty and not args.force:
-        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
-        more = ", and more" if len(dirty) > 5 else ""
-        raise GitError(
-            f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
-            "ready for the next one, so this is refused. Commit, stash, or pass --force."
-        )
+    if job.released_at is None:
+        dirty = gitcmd.status_entries(worktree)
+        if dirty and not args.force:
+            shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
+            more = ", and more" if len(dirty) > 5 else ""
+            raise GitError(
+                f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
+                "ready for the next one, so this is refused. Commit, stash, or pass --force."
+            )
 
-    on = gitcmd.current_branch(worktree)
-    if on != job.branch and not args.force:
-        raise GitError(
-            f"{worktree} is on {on or 'a detached HEAD'}, not {job.branch}. "
-            "Nothing was switched. Close the job from its own branch."
-        )
-    if on == job.branch:
-        job.commit = gitcmd.head_commit(worktree)
+        on = gitcmd.current_branch(worktree)
+        if on != job.branch and not args.force:
+            raise GitError(
+                f"{worktree} is on {on or 'a detached HEAD'}, not {job.branch}. "
+                "Nothing was switched. Close the job from its own branch."
+            )
+        if on == job.branch:
+            job.commit = gitcmd.head_commit(worktree)
 
-    # Release the space: no branch name on it, sitting on the current base, clean.
-    # Its install and caches stay, which is the whole point of keeping the space.
-    base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
-    gitcmd.detach_at(worktree, base_ref)
+        # Release the space: no branch name on it, sitting on the current base,
+        # clean. Its install and caches stay, the point of keeping the space.
+        base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
+        gitcmd.detach_at(worktree, base_ref)
+    else:
+        # Handover already handed the space back; nothing to release.
+        base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
 
     deleted = False
     if args.delete_branch:
@@ -1177,6 +1185,15 @@ def cmd_job_handover(args: argparse.Namespace) -> int:
         )
 
     gitcmd.switch_to_commit(folder, commit)
+
+    # The space is a build cache, not the record. Hold the reviewed commit in a
+    # local ref - so the branch may be kept or dropped - then hand the writer's
+    # space back to the base. The job stays OPEN for the pass, publish and merge.
+    held = gitcmd.hold_ref(job.repo_path, job.id, commit)
+    base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
+    gitcmd.detach_at(writer, base_ref)
+    job.held_ref = held
+    job.released_at = now_iso()
     job.reviewer = reviewer.name
     job.review_commit = commit
     job.handed_over_at = now_iso()
@@ -1283,7 +1300,9 @@ def cmd_job_publish(args: argparse.Namespace) -> int:
     _require_pass(job)
     _publish_branch(job)
     job.published_at = now_iso()
-    job.commit = gitcmd.head_commit(job.worktree) or job.commit
+    # The space may be released, so read the commit from the branch or the held
+    # ref, never from the worktree HEAD (which sits on the base once released).
+    job.commit = gitcmd.commit_of(job.worktree, job.branch) or job.commit
     store.save()
 
     if args.json:
