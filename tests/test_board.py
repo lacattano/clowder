@@ -113,6 +113,11 @@ class RenderTest(unittest.TestCase):
             "the reload belongs in the head",
         )
 
+    def test_the_page_shows_when_it_was_generated(self) -> None:
+        html = render_board(data(generated_at="2026-09-27 10:00"))
+        self.assertIn("Generated 2026-09-27 10:00", html)
+        self.assertIn("stale", html, "an old page says so")
+
     def test_every_section_is_present_even_when_empty(self) -> None:
         html = render_board(data())
         for heading in (
@@ -184,12 +189,34 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("14 days or 30?", waiting[0])
         self.assertIn("t-0001", waiting[0])
 
-    def test_a_reviewed_job_waits_on_the_human_to_merge(self) -> None:
+    def test_an_answered_decision_does_not_wait(self) -> None:
+        answered = task(
+            open_decision="14 days or 30?",
+            decision_answer="14 days",
+            decision_answered_at="2026-09-29T10:00:00Z",
+        )
+        self.assertEqual(waiting_on_you(data(tasks=[answered])), [])
+
+    def test_a_reviewed_job_waits_for_the_owner_s_word(self) -> None:
         reviewed = job(reviewer="verifier", review_commit="a" * 40)
         waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task(status=REPORTED)]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("ready to merge", waiting[0])
+        self.assertIn("your word", waiting[0])
         self.assertIn("verifier", waiting[0])
+        self.assertIn("the front door merges it", waiting[0])
+        self.assertIn("merge word", waiting[0])
+
+    def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
+        reviewed = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            merge_word="merge",
+            merge_word_at="2026-09-29T10:00:00Z",
+        )
+        waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task(status=REPORTED)]))
+        self.assertEqual(
+            waiting, [], "his word is given, so the merge is the front door's step"
+        )
 
     def test_a_reviewed_job_with_an_open_step_does_not(self) -> None:
         reviewed = job(reviewer="verifier", review_commit="a" * 40)

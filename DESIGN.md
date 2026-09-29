@@ -319,6 +319,19 @@ session.
 inbox until `report` reads it, so the bus message is never the only record. The board is not a
 channel: a page somebody has to reload is how this was missed.
 
+### 23. The board says only what is true, and says how old it is
+
+Seen on 2026-09-29: the owner's section showed two decisions that had already been answered and a
+job that was already merged, and he asked "is this right?". Three fixes:
+
+- A decision can be answered. `report <id> --decide TEXT` records his answer and a time; an
+  answered decision leaves his section, and the record keeps what he said. A pass is not a
+  decision: a pass has its own field (`job pass`), and `--open-decision` is only an open question.
+- The merge line matches the tool: the front door merges on his recorded word once the checks are
+  green. It is his word that is missing, so the item says so, and it disappears once he gives it.
+- The page prints when it was generated, in the body, and says that a tab keeps what it loaded.
+  It reloads itself, but only a command rewrites the file, so an old time is the staleness.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
