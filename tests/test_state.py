@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,19 @@ from clowder.state import (
     Task,
 )
 from clowder.timeutil import now_iso
+
+REPO = Path(__file__).resolve().parent.parent
+
+# Two writers, in two processes, as two crew commands would be.
+WRITER = (
+    "import sys\n"
+    "from clowder.state import StateStore, Task\n"
+    "path, tid = sys.argv[1], sys.argv[2]\n"
+    "store = StateStore(path)\n"
+    "store.add(Task(id=tid, question='q', brief='b', shape='ship',\n"
+    "               agent='maker', repo='repo', repo_path='C:/repo'))\n"
+    "store.save()\n"
+)
 
 
 def make_task(task_id: str = "t-0001", **overrides: object) -> Task:
@@ -271,6 +286,61 @@ class JobGateTest(unittest.TestCase):
         job = make_job()
         self.assertFalse(job.has_pass)
         self.assertFalse(job.has_merge_word)
+
+
+class ConcurrencyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "state.json"
+
+    def test_two_writers_at_once_keep_every_record(self) -> None:
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", WRITER, str(self.path), tid],
+                cwd=str(REPO),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for tid in ("t-0001", "t-0002")
+        ]
+        for proc in procs:
+            _, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err.decode("utf-8", "replace"))
+
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload["tasks"]), {"t-0001", "t-0002"})
+
+    def test_a_second_writer_folds_in_a_new_record(self) -> None:
+        base = StateStore(self.path)
+        base.add(make_task("t-0001"))
+        base.save()
+
+        first = StateStore(self.path)
+        second = StateStore(self.path)
+        second.add(make_task("t-0002"))
+        second.save()
+        first.add(make_task("t-0003"))
+        first.save()  # must keep t-0002, not lose it
+
+        ids = {task.id for task in StateStore(self.path).all()}
+        self.assertEqual(ids, {"t-0001", "t-0002", "t-0003"})
+
+    def test_a_stale_writer_is_refused(self) -> None:
+        base = StateStore(self.path)
+        base.add(make_task("t-0001"))
+        base.save()
+
+        writer = StateStore(self.path)
+        other = StateStore(self.path)
+        writer.get("t-0001").answer = "mine"
+        other.get("t-0001").answer = "theirs"
+        other.save()
+
+        with self.assertRaises(StateError) as caught:
+            writer.save()
+        self.assertIn("stale save", str(caught.exception))
+        self.assertEqual(StateStore(self.path).get("t-0001").answer, "theirs")
 
 
 if __name__ == "__main__":
