@@ -93,8 +93,26 @@ class SkillTest(unittest.TestCase):
 
     def test_the_skill_forbids_doing_the_work(self) -> None:
         text = read_skill().lower()
-        for rule in ("you do not build", "comes first", "not approval", "heavy run"):
+        for rule in ("you do not build", "comes first", "heavy run"):
             self.assertIn(rule, text, f"a core rule is missing: {rule}")
+
+    def test_the_skill_carries_the_walkthrough_and_one_pointer(self) -> None:
+        text = " ".join(read_skill().split())
+        self.assertIn("Walking the owner through a change", text)
+        self.assertIn("/diff main...HEAD", text)
+        self.assertIn("passed, or what to change", text)
+        # The rules get one pointer at the file they live in, not a copy here.
+        self.assertEqual(text.count("code/AGENTS.md"), 1, "one pointer, not a restatement")
+
+    def test_the_skill_does_not_restate_the_gate_chain(self) -> None:
+        text = " ".join(read_skill().split())
+        for old in (
+            "A report is not approval. The user reads the diff before a commit.",
+            "Say what is ready and let the user do it",
+            "the merge into main is the user's step",
+            "Pushing is publishing, and it happens at the end, when the user is ready",
+        ):
+            self.assertNotIn(old, text, f"the old gate wording is still here: {old}")
 
 
 class PackageTest(unittest.TestCase):
