@@ -349,13 +349,26 @@ def render_board(data: BoardData) -> str:
             _e(job.agent),
             _e(job.reviewer or "-"),
             _e(job.commit or "-"),
+            _e("yes" if job.has_pass else "no"),
+            _e("yes" if job.has_merge_word else "no"),
             _e(human_age(job.age_seconds)),
         ]
         for job in data.jobs
     ]
     jobs_html = (
         _table(
-            ["id", "state", "work", "branch", "agent", "reviewer", "commit", "age"],
+            [
+                "id",
+                "state",
+                "work",
+                "branch",
+                "agent",
+                "reviewer",
+                "commit",
+                "pass",
+                "word",
+                "age",
+            ],
             job_rows,
         )
         if job_rows

@@ -110,10 +110,29 @@ class Job:
     review_commit: str | None = None
     handed_over_at: str | None = None
     released_at: str | None = None
+    # The owner's recorded words. A pass lets the branch be published; a merge
+    # word lets it be merged. They are separate on purpose: one is not the other.
+    pass_shown: str | None = None
+    pass_answer: str | None = None
+    pass_at: str | None = None
+    pass_by: str | None = None
+    merge_word: str | None = None
+    merge_word_at: str | None = None
+    merge_word_by: str | None = None
+    published_at: str | None = None
+    merged_at: str | None = None
 
     @property
     def is_open(self) -> bool:
         return self.status == OPEN
+
+    @property
+    def has_pass(self) -> bool:
+        return bool(self.pass_at)
+
+    @property
+    def has_merge_word(self) -> bool:
+        return bool(self.merge_word_at)
 
     @property
     def age_seconds(self) -> float:

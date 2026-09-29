@@ -248,6 +248,16 @@ The rules for this are the owner's. They live in the workspace rules file at `co
 section 5, "What the owner gates". Read them there; this skill does not repeat them. What
 follows is only how to run the walkthrough.
 
+The owner chose two forms on 2026-09-28:
+
+- **Wording and documentation** are walked as before-and-after text: his old words or the old
+  text, then the new. No viewer is needed for these.
+- **Behaviour** is walked through the diff reviewer, file by file, in range mode:
+  `/diff main...HEAD`.
+
+He may question the worker during the walkthrough. The worker answers those questions and takes
+no new work from them.
+
 The worker has saved its change on the job's branch, and nothing is pushed. Then:
 
 1. Open the diff in range mode in the worker's space: `/diff main...HEAD`. It lists the branch's
@@ -257,8 +267,11 @@ The worker has saved its change on the job's branch, and nothing is pushed. Then
    sentences is enough. Do not dump the diff, and do not read code aloud.
 3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
    not run the code.
-4. Record his answer on that line of work: passed, or what to change. A change means the worker
-   fixes it, and you walk him through the new commits the same way.
+4. Record his answer on that line of work: passed, or what to change. A pass is recorded with
+   `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is separate and
+   recorded with `clowder job word <job> --word TEXT --by NAME`. Publishing and merging are
+   refused without them. A change means the worker fixes it, and you walk him through the new
+   commits the same way.
 
 ## Rules that hold every time
 

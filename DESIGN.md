@@ -279,6 +279,25 @@ The board and the report shape already separate what waits on him. This rule cov
 around them, which no test can reach, so it lives in the skill and is guarded there only by the
 examples it must carry.
 
+### 21. The owner's pass and merge word are recorded, and the gates read them
+
+Written rules did not hold: on 2026-09-28 the front door took the owner out of the loop within
+an hour of being told he could not read code. So the gate is in the tool.
+
+A job carries two recorded words from the owner, separate from each other:
+
+- A **pass**: what he was shown, what he answered, who gave it, and when. It lets the branch be
+  published.
+- A **merge word**: his words, who gave it, and when. It lets the pull request be merged.
+
+`clowder job publish` refuses without a pass. `clowder job merge` refuses without a merge word.
+`clowder job close --delete-branch` refuses without a merge word, on top of git's own merged
+check. Each refusal names the record command. No flag skips a gate in silence.
+
+Who gives the words is the owner, and the record names him. A worker role cannot record one: the
+record commands refuse a `--by` that names a worker. The tool cannot prove who typed a command,
+so the record is the proof, and it carries his words and the time.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
