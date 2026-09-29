@@ -1075,6 +1075,56 @@ class CliTest(unittest.TestCase):
         self.assertIn("WORD", out)
         self.assertIn("yes", out)
 
+    def test_inbox_lists_a_step_whose_agent_has_finished(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+        code, out, err = self.cli("inbox", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0001", out)
+        self.assertIn("the refund page is missing", out)
+        self.assertIn("1 step(s) have reported", out)
+
+    def test_inbox_is_empty_before_an_answer(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, out, err = self.cli("inbox", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("nothing has reported", out)
+
+    def test_inbox_drops_a_step_once_its_report_is_read(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+        self.assertEqual(self.cli("report", "t-0001", env=self.state_env())[0], 0)
+        code, out, _ = self.cli("inbox", env=self.state_env())
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has reported", out)
+
+    def test_inbox_skips_an_agent_still_working(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+        # The worker is mid-turn, so its words are not a report yet.
+        mux_state = self.root / "mux-state.json"
+        payload = json.loads(mux_state.read_text(encoding="utf-8"))
+        payload["agents"][0]["status"] = "working"
+        mux_state.write_text(json.dumps(payload), encoding="utf-8")
+        code, out, _ = self.cli("inbox", env=self.state_env())
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has reported", out)
+
+    def test_inbox_json_names_the_answer(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+        code, out, _ = self.cli("inbox", "--json", env=self.state_env())
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["reported"][0]["id"], "t-0001")
+        self.assertIn("the refund page is missing", payload["reported"][0]["answer"])
+
     def test_a_step_records_its_job_branch_and_commit(self) -> None:
         job_id, worktree = self.open_a_job()
         code, out, err = self.step("--job", job_id, "ship: add the refund page")

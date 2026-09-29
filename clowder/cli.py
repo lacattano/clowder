@@ -17,7 +17,7 @@ from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
 from .marker import DEFAULT_SENDER, apply_marker
-from .mux import Mux
+from .mux import AgentInfo, Mux
 from .report import INDENT, build_report, usage_breakdown
 from .sessions import read_answer, read_usage
 from .state import (
@@ -141,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
     list_tasks.add_argument("--open", action="store_true", help="only tasks with no answer yet")
     list_tasks.add_argument("--json", action="store_true")
     list_tasks.set_defaults(handler=cmd_tasks)
+
+    inbox = sub.add_parser(
+        "inbox", help="what has reported since you last looked", parents=[common]
+    )
+    inbox.add_argument("--json", action="store_true")
+    inbox.set_defaults(handler=cmd_inbox)
 
     show = sub.add_parser("report", help="read one task's report", parents=[common])
     show.add_argument("id", help="task id, e.g. t-0001")
@@ -630,6 +636,81 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     open_count = sum(1 for t in tasks if t.is_open)
     unanswered = sum(1 for t in tasks if not t.answer)
     print(f"\n{len(tasks)} task(s), {open_count} still open, {unanswered} with no answer")
+    return 0
+
+
+def _agents_by_name(mux: Mux) -> dict[str, AgentInfo]:
+    """The live roster as a lookup. Best effort: an unreadable list is empty."""
+    try:
+        return {agent.name: agent for agent in mux.list_agents()}
+    except MuxError:
+        return {}
+
+
+def _reported_since_look(
+    store: StateStore, agents: dict[str, AgentInfo]
+) -> list[tuple[Task, str]]:
+    """Open steps whose worker has settled and left an answer since dispatch.
+
+    This is the cheap check the front door runs often: it reads the session the
+    tool already recorded, so nobody reads each report by hand to find out.
+    """
+    found: list[tuple[Task, str]] = []
+    for task in store.select(open_only=True):
+        agent = agents.get(task.agent)
+        status = agent.status if agent is not None else None
+        if status not in (None, "idle", "done"):
+            continue
+        session = (agent.session_path if agent else None) or task.agent_session
+        since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
+        answer = read_answer(session, since) if session else None
+        if answer:
+            found.append((task, answer))
+    return found
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    config, store = _context(args)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    found = _reported_since_look(store, _agents_by_name(mux))
+
+    if args.json:
+        _emit_json(
+            {
+                "reported": [
+                    {
+                        "id": task.id,
+                        "agent": task.agent,
+                        "repo": task.repo,
+                        "job": task.job,
+                        "dispatched_at": task.dispatched_at,
+                        "answer": answer,
+                    }
+                    for task, answer in found
+                ],
+                "count": len(found),
+            }
+        )
+        return 0
+
+    if not found:
+        print("nothing has reported since you last looked")
+        return 0
+
+    rows = [["ID", "AGENT", "REPO", "AGE", "ANSWER"]]
+    for task, answer in found:
+        first = next((line for line in answer.splitlines() if line.strip()), answer)
+        rows.append(
+            [
+                task.id,
+                task.agent,
+                _clip(task.repo, 22),
+                human_age(task.age_seconds),
+                _clip(first.strip(), 50),
+            ]
+        )
+    print(_column(rows))
+    print(f"\n{len(found)} step(s) have reported. Read one with: {PROGRAM} report <id>")
     return 0
 
 

@@ -23,6 +23,7 @@ clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job close <job-id> [--delete-branch]
 clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
+clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT]
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
@@ -39,6 +40,10 @@ Run `clowder`. From a checkout with nothing installed, `py -3.14 -m clowder`.
 - **`dispatch`** is asynchronous. It returns delivery, not the answer. Never wait on it, and
   never tell the user the work is done.
 - **`tasks`** shows what is queued, what is underway, and what has no answer yet.
+- **`inbox`** is the cheap check: it lists the steps that have reported since you last looked,
+  with a line of the answer. Run it after every dispatch, and again whenever a worker may have
+  finished. One command, no thinking. Do not wait for a worker to tell you; the bus has no
+  session in a worker pane.
 - **`report <id>`** reads the worker's own Pi session file: usage, cost, model, and the last
   thing it said in prose. It is a read, not a scrape.
 
@@ -163,6 +168,10 @@ One line to the user, no exceptions:
 
 Silence here is what makes the user think nothing happened, or think two agents are answering
 one question.
+
+A worker does not tell you it has finished - the bus has no session in its pane. So after every
+dispatch, run `clowder inbox`. It names the steps that have reported since you last looked, so
+you never read each report to find out.
 
 ## Write for the owner, not for the crew
 
