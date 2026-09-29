@@ -350,6 +350,11 @@ def delete_branch(path: str | Path, branch: str) -> None:
     run_git(path, "branch", "-d", branch)
 
 
+def push_branch(path: str | Path, branch: str, remote: str = "origin") -> None:
+    """Publish one branch. The caller has already checked the owner's pass."""
+    run_git(path, "push", "-u", remote, branch)
+
+
 def run_command(command: str, cwd: str | Path, timeout_s: float = 900.0) -> None:
     """Run a configured setup command. No shell, so no operators to trip over."""
     parts = shlex.split(command)

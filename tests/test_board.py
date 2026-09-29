@@ -150,6 +150,14 @@ class RenderTest(unittest.TestCase):
         self.assertIn("closed", html)
         self.assertIn("refund", html)
 
+    def test_the_job_table_shows_the_owner_s_gates(self) -> None:
+        passed = job(pass_at="2026-09-29T10:00:00Z", pass_by="lacattano")
+        html = render_board(data(jobs=[passed]))
+        self.assertIn("<th>pass</th>", html)
+        self.assertIn("<th>word</th>", html)
+        self.assertIn("<td>yes</td>", html, "the pass column")
+        self.assertIn("<td>no</td>", html, "the merge word column")
+
     def test_the_worker_section_is_marked_apart_from_the_owner(self) -> None:
         html = render_board(data(queued=[queued()]))
         self.assertIn("Nothing is waiting on you.", html, "the owner has nothing to do")

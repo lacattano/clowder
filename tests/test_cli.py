@@ -965,6 +965,116 @@ class CliTest(unittest.TestCase):
             ],
         )
 
+    def owner_pass(self, job_id: str) -> None:
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff of task/refund",
+            "--answer",
+            "yes, ship it",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_a_pass_records_what_was_shown_and_when(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.owner_pass(job_id)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["pass_shown"], "the diff of task/refund")
+        self.assertEqual(job["pass_answer"], "yes, ship it")
+        self.assertEqual(job["pass_by"], "lacattano")
+        self.assertTrue(job["pass_at"])
+
+    def test_a_worker_cannot_record_the_owner_s_pass(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff",
+            "--answer",
+            "yes",
+            "--by",
+            "maker",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("worker role", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertIsNone(job["pass_at"], "a worker's word is not recorded")
+
+    def test_publish_is_refused_without_a_pass(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("no owner's pass", err)
+        self.assertIn(f"job pass {job_id}", err)
+
+    def test_publish_proceeds_once_the_pass_is_recorded(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.owner_pass(job_id)
+        with mock.patch.object(cli, "_publish_branch") as publish:
+            code, out, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        publish.assert_called_once()
+        self.assertIn("published", out)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertTrue(job["published_at"])
+
+    def test_merge_is_refused_without_the_owner_s_word(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.owner_pass(job_id)
+        code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("no owner's merge word", err)
+        self.assertIn(f"job word {job_id}", err)
+
+    def test_merge_proceeds_once_the_word_is_recorded(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "word",
+            job_id,
+            "--word",
+            "merge it",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        with mock.patch.object(cli, "_merge_pull_request") as merge:
+            code, out, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        merge.assert_called_once()
+        self.assertIn("merged", out)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertTrue(job["merged_at"])
+        self.assertEqual(job["merge_word"], "merge it")
+        self.assertEqual(job["merge_word_by"], "lacattano")
+
+    def test_deleting_a_branch_needs_the_owner_s_word(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli("job", "close", job_id, "--delete-branch", env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("without the owner's word", err)
+        self.assertIn(f"job word {job_id}", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["status"], "open", "a refused close changes nothing")
+
+    def test_job_list_shows_the_two_gates(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.owner_pass(job_id)
+        code, out, err = self.cli("job", "list", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("PASS", out)
+        self.assertIn("WORD", out)
+        self.assertIn("yes", out)
+
     def test_a_step_records_its_job_branch_and_commit(self) -> None:
         job_id, worktree = self.open_a_job()
         code, out, err = self.step("--job", job_id, "ship: add the refund page")

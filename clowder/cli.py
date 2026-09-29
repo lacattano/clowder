@@ -256,6 +256,32 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
 
+    j_pass = job_parser("pass", "record the owner's pass for a job")
+    j_pass.add_argument("id")
+    j_pass.add_argument("--shown", required=True, help="what the owner was shown")
+    j_pass.add_argument("--answer", required=True, help="the owner's answer, in his words")
+    j_pass.add_argument("--by", required=True, metavar="NAME", help="who gave the pass")
+    j_pass.add_argument("--json", action="store_true")
+    j_pass.set_defaults(handler=cmd_job_pass, refreshes_board=True)
+
+    j_word = job_parser("word", "record the owner's merge word for a job")
+    j_word.add_argument("id")
+    j_word.add_argument("--word", required=True, help="the owner's merge word, in his words")
+    j_word.add_argument("--by", required=True, metavar="NAME", help="who gave the merge word")
+    j_word.add_argument("--json", action="store_true")
+    j_word.set_defaults(handler=cmd_job_word, refreshes_board=True)
+
+    j_publish = job_parser("publish", "push the job's branch, once the owner has passed it")
+    j_publish.add_argument("id")
+    j_publish.add_argument("--json", action="store_true")
+    j_publish.set_defaults(handler=cmd_job_publish, refreshes_board=True)
+
+    j_merge = job_parser("merge", "merge the job's pull request, once the owner has said so")
+    j_merge.add_argument("id")
+    j_merge.add_argument("--pr", required=True, help="the pull request number or URL")
+    j_merge.add_argument("--json", action="store_true")
+    j_merge.set_defaults(handler=cmd_job_merge, refreshes_board=True)
+
     queue = sub.add_parser(
         "queue",
         help="decided-but-unsent work, kept where a restart cannot lose it",
@@ -902,6 +928,12 @@ def cmd_job_close(args: argparse.Namespace) -> int:
     job = store.get_job(args.id)
     worktree = job.worktree
 
+    if args.delete_branch and not job.has_merge_word:
+        raise StateError(
+            f"{job.id} cannot delete {job.branch} without the owner's word. Record it "
+            f"with: {PROGRAM} job word {job.id} --word TEXT --by NAME"
+        )
+
     open_steps = [task for task in store.all() if task.job == job.id and task.is_open]
     if open_steps and not args.force:
         listed = ", ".join(f"{task.id} ({task.agent})" for task in open_steps)
@@ -1074,6 +1106,118 @@ def cmd_job_handover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _owner_words_by(by: str) -> str:
+    """The name that gave the owner's words. A worker cannot give them."""
+    name = by.strip()
+    if not name:
+        raise UsageError("--by is required: name who gave the words")
+    if name in ROLES:
+        raise UsageError(
+            f"--by {name!r} is a worker role. Only the owner gives the pass or the merge "
+            "word, and the record must name him. A worker cannot record one."
+        )
+    return name
+
+
+def cmd_job_pass(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    job = store.get_job(args.id)
+    by = _owner_words_by(args.by)
+    shown = args.shown.strip()
+    answer = args.answer.strip()
+    if not shown or not answer:
+        raise UsageError(
+            "--shown and --answer are both required: what he saw, and what he said"
+        )
+    job.pass_shown = shown
+    job.pass_answer = answer
+    job.pass_at = now_iso()
+    job.pass_by = by
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict()})
+        return 0
+    print(f"{job.id}: the owner's pass recorded, by {by} at {job.pass_at}")
+    return 0
+
+
+def cmd_job_word(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    job = store.get_job(args.id)
+    by = _owner_words_by(args.by)
+    word = args.word.strip()
+    if not word:
+        raise UsageError("--word is required: his merge word, in his words")
+    job.merge_word = word
+    job.merge_word_at = now_iso()
+    job.merge_word_by = by
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict()})
+        return 0
+    print(f"{job.id}: the owner's merge word recorded, by {by} at {job.merge_word_at}")
+    return 0
+
+
+def _require_pass(job: Job) -> None:
+    if not job.has_pass:
+        raise StateError(
+            f"{job.id} has no owner's pass, so it cannot be published. Record it with: "
+            f"{PROGRAM} job pass {job.id} --shown TEXT --answer TEXT --by NAME"
+        )
+
+
+def _require_merge_word(job: Job) -> None:
+    if not job.has_merge_word:
+        raise StateError(
+            f"{job.id} has no owner's merge word, so it cannot be merged. Record it with: "
+            f"{PROGRAM} job word {job.id} --word TEXT --by NAME"
+        )
+
+
+def _publish_branch(job: Job) -> None:
+    """Push the branch. Tests replace this; nothing else may skip the gate."""
+    gitcmd.push_branch(job.worktree, job.branch)
+
+
+def _merge_pull_request(job: Job, pr: str) -> None:
+    """Merge the pull request through gh. Tests replace this."""
+    gitcmd.run_command(f"gh pr merge {pr} --merge", job.worktree)
+
+
+def cmd_job_publish(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    job = store.get_job(args.id)
+    _require_pass(job)
+    _publish_branch(job)
+    job.published_at = now_iso()
+    job.commit = gitcmd.head_commit(job.worktree) or job.commit
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict(), "published": True})
+        return 0
+    print(f"{job.id} published: {job.branch} pushed to origin")
+    return 0
+
+
+def cmd_job_merge(args: argparse.Namespace) -> int:
+    _, store = _context(args)
+    job = store.get_job(args.id)
+    _require_merge_word(job)
+    _merge_pull_request(job, args.pr)
+    job.merged_at = now_iso()
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict(), "merged": True, "pr": args.pr})
+        return 0
+    print(f"{job.id} merged: pull request {args.pr}")
+    return 0
+
+
 def cmd_job_list(args: argparse.Namespace) -> int:
     _, store = _context(args)
     jobs = store.all_jobs() if args.all else store.open_jobs()
@@ -1086,7 +1230,7 @@ def cmd_job_list(args: argparse.Namespace) -> int:
         print("no jobs" if args.all else "no open jobs")
         return 0
 
-    rows = [["ID", "STATUS", "REPO", "BRANCH", "AGENT", "AGE", "LABEL"]]
+    rows = [["ID", "STATUS", "REPO", "BRANCH", "AGENT", "AGE", "PASS", "WORD", "LABEL"]]
     for job in jobs:
         rows.append(
             [
@@ -1096,6 +1240,8 @@ def cmd_job_list(args: argparse.Namespace) -> int:
                 _clip(job.branch, 28),
                 job.agent,
                 human_age(job.age_seconds),
+                "yes" if job.has_pass else "no",
+                "yes" if job.has_merge_word else "no",
                 _clip(job.label, 30),
             ]
         )

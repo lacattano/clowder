@@ -10,6 +10,7 @@ from clowder.state import (
     DISPATCHED,
     REPORTED,
     SCHEMA_VERSION,
+    Job,
     Queued,
     StateStore,
     Task,
@@ -41,6 +42,21 @@ def make_queued(item_id: str = "q-0001", **overrides: object) -> Queued:
     }
     base.update(overrides)
     return Queued(**base)  # type: ignore[arg-type]
+
+
+def make_job(job_id: str = "j-0001", **overrides: object) -> Job:
+    base: dict[str, object] = {
+        "id": job_id,
+        "label": "refund",
+        "repo": "myrepo",
+        "repo_path": "C:/code/myrepo",
+        "worktree": "C:/code/myrepo/.worktrees/maker",
+        "branch": "task/refund",
+        "base": "main",
+        "agent": "maker",
+    }
+    base.update(overrides)
+    return Job(**base)  # type: ignore[arg-type]
 
 
 class StateStoreTest(unittest.TestCase):
@@ -219,6 +235,42 @@ class QueuedTest(unittest.TestCase):
         with self.assertRaises(StateError) as caught:
             StateStore(self.path).load()
         self.assertIn("unknown fields", str(caught.exception))
+
+
+class JobGateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "state.json"
+
+    def test_the_owner_s_two_words_survive_a_reload(self) -> None:
+        store = StateStore(self.path)
+        store.add_job(
+            make_job(
+                pass_shown="the diff of task/refund",
+                pass_answer="yes, ship it",
+                pass_at="2026-09-29T10:00:00Z",
+                pass_by="lacattano",
+                merge_word="merge it",
+                merge_word_at="2026-09-29T11:00:00Z",
+                merge_word_by="lacattano",
+            )
+        )
+        store.save()
+
+        reloaded = StateStore(self.path).get_job("j-0001")
+        self.assertTrue(reloaded.has_pass)
+        self.assertTrue(reloaded.has_merge_word)
+        self.assertEqual(reloaded.pass_shown, "the diff of task/refund")
+        self.assertEqual(reloaded.pass_answer, "yes, ship it")
+        self.assertEqual(reloaded.pass_by, "lacattano")
+        self.assertEqual(reloaded.merge_word, "merge it")
+        self.assertEqual(reloaded.merge_word_by, "lacattano")
+
+    def test_a_job_with_no_words_has_no_gates(self) -> None:
+        job = make_job()
+        self.assertFalse(job.has_pass)
+        self.assertFalse(job.has_merge_word)
 
 
 if __name__ == "__main__":
