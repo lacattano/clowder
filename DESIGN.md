@@ -332,6 +332,26 @@ job that was already merged, and he asked "is this right?". Three fixes:
 - The page prints when it was generated, in the body, and says that a tab keeps what it loaded.
   It reloads itself, but only a command rewrites the file, so an old time is the staleness.
 
+### 24. A released space, and the change held in a ref
+
+Seen 2026-09-29: a finished change held its worker's space until the owner walked it, and a space
+takes one open job at a time. The key change held the tancat-maker space for hours. The owner
+feels this as work stopping while it waits for him.
+
+The space is a build cache, not the record. The record is the branch, the held ref and the job.
+
+- One **checked-out** job per space, not one open job. `released_at` marks a job that has handed
+  its space back.
+- `job handover` detaches the writer's space to the base, writes the reviewed commit to
+  `refs/clowder/held/<job>`, and keeps the job OPEN. The branch may be kept or deleted; the ref
+  keeps the commit reachable, and `is_reachable` counts that ref so the board does not call held
+  work stranded.
+- `job open` gates on a job whose space is still checked out. `job close` still releases the
+  space, and skips the release when handover already did it.
+- `job publish` and `job merge` never tested `is_open`, so they still work from a released job.
+  Publish reads the commit from the branch or the held ref, not the worktree HEAD, which now sits
+  on the base.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

@@ -116,6 +116,7 @@ class Job:
     review_commit: str | None = None
     handed_over_at: str | None = None
     released_at: str | None = None
+    held_ref: str | None = None
     # The owner's recorded words. A pass lets the branch be published; a merge
     # word lets it be merged. They are separate on purpose: one is not the other.
     pass_shown: str | None = None

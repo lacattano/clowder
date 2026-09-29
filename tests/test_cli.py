@@ -1337,13 +1337,154 @@ class CliTest(unittest.TestCase):
         self.assertEqual(gitcmd.commit_of(verifier_folder, "HEAD"), commit)
         self.assertTrue(gitcmd.is_detached(verifier_folder), "no branch name on the copy")
         self.assertTrue((verifier_folder / "refund.py").is_file())
-        self.assertTrue((maker_folder / "refund.py").is_file())
-        # The writer keeps its branch, and can carry on.
-        self.assertEqual(gitcmd.current_branch(maker_folder), "task/refund")
+        # The branch is the record and stays; the writer's space is handed back, so
+        # the file is on the branch, not in the working tree at the base.
+        self.assertTrue(gitcmd.branch_exists(maker_folder, "task/refund"))
+        self.assertEqual(gitcmd.commit_of(maker_folder, "task/refund"), commit)
+        self.assertIsNone(gitcmd.current_branch(maker_folder))
 
         job = json.loads(self.cli("job", "list", "--json", env=self.state_env())[1])["jobs"][0]
         self.assertEqual(job["reviewer"], "myrepo-verifier")
         self.assertEqual(job["review_commit"], commit)
+        self.assertTrue(job["released_at"])
+        self.assertEqual(job["held_ref"], f"refs/clowder/held/{job['id']}")
+
+    def test_handover_releases_the_writers_space_and_keeps_the_job_open(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)
+        code, _, err = self.cli(
+            "job",
+            "handover",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["status"], "open", "the job stays open for the pass")
+        self.assertTrue(job["released_at"], "the writer's space is handed back")
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "the space is detached")
+
+        # A second job can start in the space now that it is released.
+        code, out, err = self.cli(
+            "job",
+            "open",
+            "myrepo",
+            "--label",
+            "second",
+            "--role",
+            "maker",
+            "--name",
+            "myrepo-maker",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("open", out)
+
+    def test_publish_and_merge_work_from_a_released_job(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        commit = self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.cli(
+                "job",
+                "pass",
+                job_id,
+                "--shown",
+                "the diff",
+                "--answer",
+                "yes",
+                "--by",
+                "lacattano",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        with mock.patch.object(cli, "_publish_branch") as publish:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        publish.assert_called_once()
+
+        self.assertEqual(
+            self.cli(
+                "job",
+                "word",
+                job_id,
+                "--word",
+                "merge",
+                "--by",
+                "lacattano",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        with mock.patch.object(cli, "_merge_pull_request") as merge:
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        merge.assert_called_once()
+
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["commit"], commit, "publish reads the commit, not the base HEAD")
+
+    def test_the_held_ref_keeps_the_commit_when_the_branch_is_deleted(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        commit = self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        gitcmd.run_git(maker_folder, "branch", "-D", "task/refund")
+        found = gitcmd.try_git(maker_folder, "rev-parse", f"refs/clowder/held/{job_id}")
+        self.assertEqual((found or "").strip(), commit, "the ref holds the commit")
+        self.assertTrue(
+            gitcmd.is_reachable(maker_folder, commit), "a held commit is not stranded"
+        )
+
+    def test_close_still_works_after_handover(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        code, _, err = self.cli("job", "close", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["status"], "closed")
 
     def test_handover_refuses_work_that_is_not_saved(self) -> None:
         job_id, maker_folder = self.open_a_job()
