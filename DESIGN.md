@@ -298,21 +298,26 @@ Who gives the words is the owner, and the record names him. A worker role cannot
 record commands refuse a `--by` that names a worker. The tool cannot prove who typed a command,
 so the record is the proof, and it carries his words and the time.
 
-### 22. A finished step is found by one command, not by the bus
+### 22. A finished step reports itself, and the inbox is the fallback
 
 Seen on 2026-09-29: three steps had finished and their agents were idle, and the front door did
-not know. The steps still read as dispatched until somebody read each report by hand. The workers
-tried to report over the agent bus, but a worker pane has no bus session - their reports opened
-"no bus session is active, so here is the report for topcat". So the bus is the wrong channel:
-a message does not leave a worker pane by itself.
+not know. The first fix was `clowder inbox`, a command the front door ran. That is cheaper
+polling, not notification, and the owner said so: polling should not be the front door's job.
 
-The channel that does work is the tool's own state. The worker's answer is already in its Pi
-session file, which the tool reads. `clowder inbox` names the open steps whose worker has settled
-and left an answer since dispatch, with a line of it. The front door runs it after every dispatch,
-and again whenever a worker may have finished. Once `report` records the answer, the step leaves
-the inbox.
+The bus does work. The same day, a worker's report arrived over the agent bus with an id, a
+headline and a report path, and the front door had not asked for it. The first attempt concluded
+the opposite, from reports that opened "no bus session is active". That was a briefs problem, not
+a channel problem: no brief told the worker to send.
 
-The board is not the channel. A page somebody has to reload is how this was missed.
+So the tool tells it. Every dispatched brief carries the report instruction, next to the marker:
+send the report to the sender named in the marker, resolved by name in the worker's own peer
+list, with the job id, a headline, and where the full answer is. No address is baked in -
+addresses are per-observer and move when panes reload. The answer still stays in the worker's
+session.
+
+`clowder inbox` is the fallback, not the first check. When a send fails, the step stays in the
+inbox until `report` reads it, so the bus message is never the only record. The board is not a
+channel: a page somebody has to reload is how this was missed.
 
 ## What step 1 built
 

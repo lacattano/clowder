@@ -123,7 +123,7 @@ class CliTest(unittest.TestCase):
         self.assertIsNotNone(task["dispatched_at"])
         self.assertEqual(task["mux_returncode"], 0)
 
-    def test_the_message_clowder_sends_is_marker_then_brief(self) -> None:
+    def test_the_message_is_marker_then_report_instructions_then_brief(self) -> None:
         self.cli(
             "dispatch",
             "maker",
@@ -134,10 +134,14 @@ class CliTest(unittest.TestCase):
             env=self.fake_env(),
         )
         sent = self.only_task()["mux_argv"][-1]
-        self.assertEqual(
-            sent,
-            "[clowder job t-0001 | ship | myrepo | from topcat]\nship: add the refund page",
+        self.assertTrue(
+            sent.startswith("[clowder job t-0001 | ship | myrepo | from topcat]\n"), sent
         )
+        # The tool, not the brief writer, tells the worker to report over the bus.
+        self.assertIn("send its report to topcat over the agent bus", sent)
+        self.assertIn("peer list", sent)
+        self.assertIn("clowder inbox", sent)
+        self.assertTrue(sent.endswith("ship: add the refund page"), sent)
 
     def test_the_marker_reaches_the_process(self) -> None:
         log = self.root / "calls.jsonl"

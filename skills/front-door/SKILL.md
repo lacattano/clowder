@@ -40,10 +40,10 @@ Run `clowder`. From a checkout with nothing installed, `py -3.14 -m clowder`.
 - **`dispatch`** is asynchronous. It returns delivery, not the answer. Never wait on it, and
   never tell the user the work is done.
 - **`tasks`** shows what is queued, what is underway, and what has no answer yet.
-- **`inbox`** is the cheap check: it lists the steps that have reported since you last looked,
-  with a line of the answer. Run it after every dispatch, and again whenever a worker may have
-  finished. One command, no thinking. Do not wait for a worker to tell you; the bus has no
-  session in a worker pane.
+- **`inbox`** is the fallback. It lists the steps that have reported since you last looked,
+  with a line of the answer. A worker sends its report over the agent bus when it finishes, so
+  trust that message first; run `inbox` when a send may have failed, or when a worker may have
+  gone quiet.
 - **`report <id>`** reads the worker's own Pi session file: usage, cost, model, and the last
   thing it said in prose. It is a read, not a scrape.
 
@@ -169,9 +169,13 @@ One line to the user, no exceptions:
 Silence here is what makes the user think nothing happened, or think two agents are answering
 one question.
 
-A worker does not tell you it has finished - the bus has no session in its pane. So after every
-dispatch, run `clowder inbox`. It names the steps that have reported since you last looked, so
-you never read each report to find out.
+A worker sends its report over the agent bus when it finishes. Trust that message: it carries the
+job id, a headline, and where the full answer is. Your tool adds the instruction to every brief,
+and the worker resolves your name in its own peer list, so no address is stored anywhere.
+
+If a send fails, the step does not disappear. Run `clowder inbox` to find it, and read it with
+`clowder report <id>`. The answer always stays in the worker's session, so the bus message is
+never the only record.
 
 ## Write for the owner, not for the crew
 

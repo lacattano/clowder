@@ -26,23 +26,32 @@ class MarkerLineTest(unittest.TestCase):
 
 
 class ApplyMarkerTest(unittest.TestCase):
-    def test_brief_is_unchanged_and_comes_after_the_marker(self) -> None:
+    def test_the_brief_is_unchanged_and_comes_last(self) -> None:
         brief = "ship: add the refund page\n\n1. shape\n2. test"
         text = apply_marker(brief, "t-0004", "ship", "clowder", "topcat")
         self.assertEqual(
             text.splitlines()[0], "[clowder job t-0004 | ship | clowder | from topcat]"
         )
-        self.assertEqual(text.split("\n", 1)[1], brief)
+        self.assertTrue(text.endswith(brief), "the brief is handed over unchanged")
 
-    def test_a_single_line_brief_still_reports_two_lines(self) -> None:
+    def test_the_tool_tells_the_worker_how_to_report(self) -> None:
         text = apply_marker("do the thing", "t-0001", "ship", "r", "topcat")
-        self.assertEqual(len(text.splitlines()), 2)
+        self.assertIn("agent bus", text)
+        self.assertIn("topcat", text)
+        self.assertIn("peer list", text)
+        self.assertIn("clowder inbox", text)
+        self.assertTrue(text.endswith("do the thing"))
+
+    def test_the_message_names_no_bus_address(self) -> None:
+        # The worker resolves the name in its own peer list; addresses move.
+        text = apply_marker("do the thing", "t-0001", "ship", "r", "topcat")
+        self.assertNotIn("@", text)
 
     def test_a_brief_that_looks_like_a_marker_is_not_altered(self) -> None:
         odd = "[clowder job t-9999 | scout | other | from someone else]\nthe real brief"
         text = apply_marker(odd, "t-0001", "ship", "r", "topcat")
-        self.assertEqual(len(text.splitlines()), 3)
         self.assertTrue(text.startswith("[clowder job t-0001 |"))
+        self.assertTrue(text.endswith(odd), "the odd brief is still handed over intact")
 
 
 if __name__ == "__main__":
