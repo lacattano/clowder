@@ -60,7 +60,13 @@ class Task:
     answer: str | None = None
     answer_source: str | None = None
     open_decision: str | None = None
+    decision_answer: str | None = None
+    decision_answered_at: str | None = None
     usage: dict[str, object] | None = None
+
+    @property
+    def decision_is_open(self) -> bool:
+        return bool(self.open_decision) and not self.decision_answer
 
     @property
     def is_open(self) -> bool:

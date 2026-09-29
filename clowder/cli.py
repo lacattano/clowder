@@ -156,7 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument(
         "--open-decision",
         metavar="TEXT",
-        help="record the one decision this task leaves open",
+        help="record an open question for this task; a pass uses job pass",
+    )
+    show.add_argument(
+        "--decide",
+        metavar="TEXT",
+        help="answer the task's open decision, so it leaves the board's owner section",
     )
     show.add_argument("--verbose", action="store_true", help="show the usage breakdown")
     show.add_argument("--json", action="store_true")
@@ -764,6 +769,10 @@ def cmd_report(args: argparse.Namespace) -> int:
             task.agent_session = session_path
             changed = True
         if args.open_decision:
+            changed = True
+        if args.decide:
+            task.decision_answer = args.decide
+            task.decision_answered_at = now_iso()
             changed = True
         if changed:
             store.save()

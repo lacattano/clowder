@@ -24,7 +24,7 @@ clowder job close <job-id> [--delete-branch]
 clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
-clowder report <id> [--verbose] [--json] [--open-decision TEXT]
+clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id>
@@ -214,7 +214,10 @@ Re: <the question it answers>
   that. Do not fill the gap yourself.
 - `--verbose` shows the usage breakdown behind the headline numbers.
 - `--json` is for reading fields, not for showing the user.
-- `--open-decision TEXT` records the one decision with the task.
+- `--open-decision TEXT` records an open question with the task. It is not a pass: a pass is
+  `clowder job pass`, and a merge word is `clowder job word`.
+- `--decide TEXT` answers that question. The decision then leaves the board's owner section, and
+  the record keeps what the answer was.
 
 ## The queue
 
@@ -250,6 +253,10 @@ still works when the multiplexer cannot be read, because it falls back to the st
 first section is what is waiting on the user: a decision, a review that is ready to merge, or
 work that is on no branch. The queue waits under "Waiting for a worker", which is the front
 door's own list. Relay the user's section in words. Do not paste the HTML at the user.
+
+The page is a snapshot. It prints when it was generated and reloads itself every 30 seconds, but
+only a clowder command rewrites the file, so an old generated time means the page is stale - run
+`clowder board` before you relay it.
 
 ## Walking the owner through a change
 

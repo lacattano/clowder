@@ -95,6 +95,23 @@ class StateStoreTest(unittest.TestCase):
         self.assertEqual(reloaded.usage, {"turns": 3, "total_tokens": 8200})
         self.assertEqual(reloaded.mux_argv[-1], "brief")
 
+    def test_a_decision_answer_survives_a_reload(self) -> None:
+        store = StateStore(self.path)
+        store.add(
+            make_task(
+                open_decision="14 days or 30?",
+                decision_answer="14 days",
+                decision_answered_at="2026-09-29T10:00:00Z",
+            )
+        )
+        store.save()
+
+        reloaded = StateStore(self.path).get("t-0001")
+        self.assertEqual(reloaded.open_decision, "14 days or 30?")
+        self.assertEqual(reloaded.decision_answer, "14 days")
+        self.assertEqual(reloaded.decision_answered_at, "2026-09-29T10:00:00Z")
+        self.assertFalse(reloaded.decision_is_open, "his answer closes it")
+
     def test_next_id_increments_and_survives_reload(self) -> None:
         store = StateStore(self.path)
         first = store.next_id()

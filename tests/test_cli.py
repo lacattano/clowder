@@ -473,6 +473,21 @@ class CliTest(unittest.TestCase):
         self.assertIn("Open decision: 14 days or 30?", out)
         self.assertEqual(self.only_task()["open_decision"], "14 days or 30?")
 
+    def test_report_decide_answers_a_decision_and_it_leaves_the_board(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        self.cli("report", "t-0001", "--open-decision", "14 days or 30?", env=self.fake_env())
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("14 days or 30?", page, "the open decision waits on the owner")
+
+        code, _, err = self.cli("report", "t-0001", "--decide", "14 days", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertEqual(task["decision_answer"], "14 days")
+        self.assertTrue(task["decision_answered_at"])
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertNotIn("14 days or 30?", page, "an answered decision leaves his section")
+
     def test_report_json_carries_state_usage_and_answer(self) -> None:
         self.dispatch("maker", "myrepo", "ship: add the refund page")
         self.session_turns()

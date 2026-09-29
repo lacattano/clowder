@@ -171,7 +171,7 @@ def waiting_on_you(data: BoardData) -> list[str]:
     lines: list[str] = []
 
     for task in data.tasks:
-        if task.open_decision and task.status != CLOSED:
+        if task.open_decision and task.decision_is_open and task.status != CLOSED:
             lines.append(
                 f"<b>decision</b> <span class='id'>{_e(task.id)}</span> "
                 f"{_e(_clip(task.open_decision, 200))} "
@@ -192,12 +192,12 @@ def waiting_on_you(data: BoardData) -> list[str]:
         if not job.is_open:
             continue
         open_steps = [task for task in data.tasks if task.job == job.id and task.is_open]
-        if job.reviewer and not open_steps:
+        if job.reviewer and not open_steps and not job.has_merge_word:
             lines.append(
-                f"<b>ready to merge</b> <span class='id'>{_e(job.id)}</span> "
+                f"<b>your word</b> <span class='id'>{_e(job.id)}</span> "
                 f"{_e(job.branch)} was reviewed by {_e(job.reviewer)} "
-                f"<span class='why'>{_e(job.label)}; merging is your step, and the "
-                f"tool will not do it</span>"
+                f"<span class='why'>{_e(job.label)}; the front door merges it once "
+                "you give your merge word and the checks are green</span>"
             )
 
     return lines
@@ -393,6 +393,9 @@ def render_board(data: BoardData) -> str:
 <main>
 <h1>{_e(TITLE)}</h1>
 <p class="meta">What is queued, what is underway, and what is waiting on you.</p>
+<p class="meta">Generated {_e(data.generated_at)}. This page is a snapshot: it changes only
+when a clowder command rewrites it, and an open tab keeps what it loaded. If that time is not
+now, the page is stale.</p>
 {_section("Waiting on you", len(needs), needs_html, css="needs")}
 {_section("Waiting for a worker", len(worker), worker_html)}
 {_section("Open steps", len(open_rows), open_html)}
