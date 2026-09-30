@@ -20,6 +20,31 @@ description: Guide a plain-language, file-by-file review of Git changes, includi
 - A committed branch that is not pushed has no page to review, so review it in the viewer:
   `/diff main...HEAD` for a branch against its base, or `/diff <commit>` for one commit. The
   bare form and `--cached` are unchanged.
+- The viewer names its place at the top: the folder it read, the branch or "no branch, pinned at
+  <commit>", and the base it resolved with its commit. Read that line first; it tells a working
+  viewer from a broken one. It also says when the base is behind its remote.
+- Pick the form for the copy you are in:
+  - **A job branch**: `/diff main...HEAD` - the branch against its base.
+  - **A reviewer's pinned save** (no branch, pinned at a commit): `/diff main...HEAD` - the save
+    against the base. The header names the writer's branch and commit.
+  - **The shared main checkout**: the bare `/diff`, for uncommitted work. It is not a job, so
+    there is no branch to compare.
+  - **A free space, detached at the base**: there is nothing to show. The viewer says so; do not
+    read the empty view as a failure.
+- An empty view gives one line: "no changes: this copy is not on a job branch", or "No tracked
+  changes for <range>". A Git failure gives one translated line and what to do; add `--detail`
+  for the raw error. Never a traceback.
+- The viewer ships in the clowder Pi package, installed for this machine, so `/diff` is in every
+  pane the crew uses - not only clowder panes. The install is a filtered package entry: personal
+  settings load `extensions` plus the `diff-review` skill, and exclude the `front-door` skill;
+  `clowder/.pi/settings.json` adds `front-door` back for clowder panes only. Do not copy
+  `extensions/diff.ts` into a repo.
+- If a pane does not have `/diff`, run `/reload` in it first; a pane started before the install
+  keeps its old resource list. If it is still missing, install from the clowder checkout with
+  `pi install ./clowder`, then `/reload`.
+- If `/diff` is still absent, do not leave the owner with nothing. Walk the change as
+  before-and-after text, file by file: the old line or wording, then the new, one file at a time,
+  in his terms. The walkthrough is the requirement; `/diff` is the convenience.
 - Do not claim to open the viewer with a shell command. It is an interactive Pi command the user runs.
 - The viewer shows tracked Git changes, not reliable agent/session attribution. Untracked files are excluded. Other agents may have changed the same checkout.
 - Explain closes the viewer and sends one file's patch snapshot to the model. Browsing alone makes no model call.
