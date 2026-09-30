@@ -218,9 +218,30 @@ A worker sends its report over the agent bus when it finishes. Trust that messag
 job id, a headline, and where the full answer is. Your tool adds the instruction to every brief,
 and the worker resolves your name in its own peer list, so no address is stored anywhere.
 
-If a send fails, the step does not disappear. Run `clowder inbox` to find it, and read it with
-`clowder report <id>`. The answer always stays in the worker's session, so the bus message is
-never the only record.
+Before any pane can send, two things must be true:
+
+1. The remote-pi Docker service is running. It is what the owner uses to reach the crew from his
+   phone.
+2. Every pane must be joined with `/remote-pi join`. A pane that has not joined answers "Not in a
+   session" to `list_peers` and `agent_send`.
+
+`clowder agents` and the board cannot see bus membership, so check `list_peers` yourself. A pane
+that has not joined looks exactly like a pane whose send failed, so say which it is to the owner
+rather than let it fail quietly:
+
+> The verifier has not joined the bus. Run `/remote-pi join` in its pane and I will send the job.
+
+Only a human can join a pane, and only from the pane: the front door cannot do it from its side. A
+slash command sent through the agent prompt arrives as a message, not as a command. In that pane
+the human can type `/new` for a fresh session, or exit with ctrl+c twice and start the agent again
+in the same pane.
+
+A send that still fails does not lose the answer. Run `clowder inbox` and read it with
+`clowder report <id>`. The answer stays in the worker's session, so the bus message is never the
+only record.
+
+One thing for the owner's information: joining a pane puts it in the same remote-pi session he
+reaches from his phone, so his phone sees these panes too.
 
 ## Write for the owner, not for the crew
 

@@ -315,6 +315,11 @@ list, with the job id, a headline, and where the full answer is. No address is b
 addresses are per-observer and move when panes reload. The answer still stays in the worker's
 session.
 
+A pane can send only once the remote-pi Docker service is running and the pane is joined with
+`/remote-pi join`; a pane that has not joined answers "Not in a session", which looks the same as
+a failed send, so the front door says which it is rather than let it fail quietly. Only a human
+can join a pane, and only from the pane - the front door cannot do it from its side.
+
 `clowder inbox` is the fallback, not the first check. When a send fails, the step stays in the
 inbox until `report` reads it, so the bus message is never the only record. The board is not a
 channel: a page somebody has to reload is how this was missed.
