@@ -164,6 +164,15 @@ class PackageTest(unittest.TestCase):
         source = (REPO / "skills" / "diff-review" / "SKILL.md").read_text(encoding="utf-8")
         self.assertEqual(frontmatter(source).get("name"), "diff-review")
 
+    def test_the_diff_skill_says_where_the_viewer_runs(self) -> None:
+        skill = (REPO / "skills" / "diff-review" / "SKILL.md").read_text(encoding="utf-8")
+        low = " ".join(skill.lower().split())
+        self.assertIn("pi install", skill, "say how the viewer is installed")
+        self.assertIn("/reload", skill, "what to do when a pane does not have it")
+        self.assertIn("not only clowder panes", low)
+        self.assertIn("before-and-after", low, "the fallback when the viewer is absent")
+        self.assertIn("file by file", low)
+
 
 class AsciiTest(unittest.TestCase):
     def test_every_text_file_in_the_repo_is_ascii(self) -> None:

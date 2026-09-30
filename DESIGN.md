@@ -398,6 +398,24 @@ asked in chat. The section could not see them, so it lied.
 - The empty line is honest: "Nothing is recorded as waiting on you." It says the tool shows only
   what a command recorded, so a report held in the front door's words will not appear.
 
+### 27. The viewer loads in every pane, and the front-door skill does not
+
+Seen 2026-09-29: the owner was told to run `/diff main...HEAD` in a product-repo pane and the
+command was absent. The viewer ships in the clowder package, so it loads wherever that package
+loads - but loading the whole package everywhere would also put the `front-door` skill in panes
+that must not act as a front door.
+
+The install is a filtered package entry, not a copy of the file:
+
+- Personal (`~/.pi/agent/settings.json`): the clowder package with
+  `extensions: ["extensions/*.ts"]` and `skills: ["!skills/front-door"]`. Every pane gets `/diff`
+  and the `diff-review` skill.
+- Project (`clowder/.pi/settings.json`): the same package with `autoload: false` and
+  `skills: ["+skills/front-door"]`. The front-door skill returns in clowder panes only.
+
+A pane that still lacks `/diff` runs `/reload`, or `pi install ./clowder` from the checkout. The
+fallback is unchanged and must be offered: walk the change as before-and-after text, file by file.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
