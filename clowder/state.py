@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
@@ -70,6 +71,9 @@ class Task:
     owner_item: str | None = None
     owner_item_at: str | None = None
     usage: dict[str, object] | None = None
+    # Fields a newer copy wrote that this code does not know. Kept, never dropped,
+    # so a newer copy can still read them.
+    extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def decision_is_open(self) -> bool:
@@ -85,17 +89,18 @@ class Task:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Task:
-        known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        unknown = set(data) - known
-        if unknown:
-            raise StateError(f"task record has unknown fields: {sorted(unknown)}")
+        known = {f for f in cls.__dataclass_fields__ if f != "extra"}  # type: ignore[attr-defined]
+        extra = {key: value for key, value in data.items() if key not in known}
+        clean = {key: value for key, value in data.items() if key in known}
         try:
-            return cls(**data)  # type: ignore[arg-type]
+            task = cls(**clean)  # type: ignore[arg-type]
         except TypeError as exc:
             raise StateError(f"task record is malformed: {exc}") from exc
+        task.extra = extra
+        return task
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return _with_extra(self)
 
 
 @dataclass
@@ -135,6 +140,8 @@ class Job:
     merge_word_by: str | None = None
     published_at: str | None = None
     merged_at: str | None = None
+    # Fields a newer copy wrote that this code does not know; kept, never dropped.
+    extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def is_open(self) -> bool:
@@ -154,17 +161,18 @@ class Job:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Job:
-        known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        unknown = set(data) - known
-        if unknown:
-            raise StateError(f"job record has unknown fields: {sorted(unknown)}")
+        known = {f for f in cls.__dataclass_fields__ if f != "extra"}  # type: ignore[attr-defined]
+        extra = {key: value for key, value in data.items() if key not in known}
+        clean = {key: value for key, value in data.items() if key in known}
         try:
-            return cls(**data)  # type: ignore[arg-type]
+            job = cls(**clean)  # type: ignore[arg-type]
         except TypeError as exc:
             raise StateError(f"job record is malformed: {exc}") from exc
+        job.extra = extra
+        return job
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return _with_extra(self)
 
 
 @dataclass
@@ -186,6 +194,8 @@ class Queued:
     question: str | None = None
     job: str | None = None
     created_at: str = field(default_factory=now_iso)
+    # Fields a newer copy wrote that this code does not know; kept, never dropped.
+    extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def target(self) -> str:
@@ -198,17 +208,27 @@ class Queued:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Queued:
-        known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        unknown = set(data) - known
-        if unknown:
-            raise StateError(f"queued record has unknown fields: {sorted(unknown)}")
+        known = {f for f in cls.__dataclass_fields__ if f != "extra"}  # type: ignore[attr-defined]
+        extra = {key: value for key, value in data.items() if key not in known}
+        clean = {key: value for key, value in data.items() if key in known}
         try:
-            return cls(**data)  # type: ignore[arg-type]
+            item = cls(**clean)  # type: ignore[arg-type]
         except TypeError as exc:
             raise StateError(f"queued record is malformed: {exc}") from exc
+        item.extra = extra
+        return item
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return _with_extra(self)
+
+
+def _with_extra(record: Any) -> dict[str, object]:
+    """A record as a dict, with any unknown fields a newer copy wrote kept on top."""
+    fields = asdict(record)
+    extra = fields.pop("extra", {})
+    merged: dict[str, object] = dict(extra)  # type: ignore[arg-type]
+    merged.update(fields)
+    return merged
 
 
 @contextlib.contextmanager
@@ -300,6 +320,14 @@ class StateStore:
             str(key): Queued.from_dict(self._record(record, key, "queued item"))
             for key, record in self._records(raw, "queued").items()
         }
+        # A field this code does not know is a later copy's business. Say which one
+        # was skipped, once, instead of refusing the whole file.
+        for key, job in self._jobs.items():
+            self._note_extra("job", key, job.extra)
+        for key, task in self._tasks.items():
+            self._note_extra("task", key, task.extra)
+        for key, item in self._queued.items():
+            self._note_extra("queued item", key, item.extra)
         self._snapshot_base()
         self._loaded = True
         return self
@@ -344,6 +372,17 @@ class StateStore:
         self._base_tasks = {key: task.to_dict() for key, task in self._tasks.items()}
         self._base_jobs = {key: job.to_dict() for key, job in self._jobs.items()}
         self._base_queued = {key: item.to_dict() for key, item in self._queued.items()}
+
+    def _note_extra(self, label: str, key: object, extra: dict[str, object]) -> None:
+        """One line for a field this code does not know, so the reader can tell."""
+        if not extra:
+            return
+        names = ", ".join(sorted(str(name) for name in extra))
+        print(
+            f"{self.path}: {label} {key}: ignored unknown field(s) {names}; "
+            "kept for a newer copy",
+            file=sys.stderr,
+        )
 
     def save(self) -> None:
         self.load()

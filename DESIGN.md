@@ -398,6 +398,22 @@ asked in chat. The section could not see them, so it lied.
 - The empty line is honest: "Nothing is recorded as waiting on you." It says the tool shows only
   what a command recorded, so a report held in the front door's words will not appear.
 
+### 27. An unknown field is skipped and kept, never fatal
+
+Seen 2026-09-29: a working copy wrote two fields it had invented (`owner_item`,
+`owner_item_at`) into the shared state, then that work was amended away. No surviving copy knew the
+fields, and `Task.from_dict` refused a record with an unknown field, so every clowder command on
+the machine stopped until the file was repaired by hand.
+
+The tool ships its own state path, so one stale checkout must not freeze the crew.
+
+- A reader skips a field it does not know, says so in one line naming the field, and keeps the
+  value. It never drops it on save: a newer copy may still need it.
+- A record keeps the extras in an `extra` map, and `to_dict` writes them back beside the known
+  fields. This applies to tasks, jobs and queued items.
+- The top-level schema check stays: a file whose whole shape is unknown is a different case and is
+  still refused.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
