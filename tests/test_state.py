@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -164,16 +166,22 @@ class StateStoreTest(unittest.TestCase):
             StateStore(self.path).load()
         self.assertIn("schema", str(caught.exception))
 
-    def test_unknown_task_field_is_refused(self) -> None:
-        payload = {
-            "schema": SCHEMA_VERSION,
-            "seq": 1,
-            "tasks": {"t-0001": {"id": "t-0001", "question": "q", "surprise": 1}},
-        }
+    def test_an_unknown_task_field_is_ignored_and_kept(self) -> None:
+        record = make_task("t-0001").to_dict()
+        record["surprise"] = 7
+        payload = {"schema": SCHEMA_VERSION, "seq": 1, "tasks": {"t-0001": record}}
         self.path.write_text(json.dumps(payload), encoding="utf-8")
-        with self.assertRaises(StateError) as caught:
-            StateStore(self.path).load()
-        self.assertIn("unknown fields", str(caught.exception))
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            store = StateStore(self.path)
+            task = store.get("t-0001")
+        self.assertEqual(task.extra, {"surprise": 7})
+        self.assertIn("surprise", err.getvalue(), "the reader names the field it ignored")
+
+        store.save()  # a newer copy may still need it, so it is not dropped
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["tasks"]["t-0001"]["surprise"], 7)
 
     def test_save_leaves_no_temp_file(self) -> None:
         store = StateStore(self.path)
@@ -257,16 +265,17 @@ class QueuedTest(unittest.TestCase):
         again.save()
         self.assertEqual(StateStore(self.path).all_queued(), [])
 
-    def test_unknown_queued_field_is_refused(self) -> None:
-        payload = {
-            "schema": SCHEMA_VERSION,
-            "seq": 0,
-            "queued": {"q-0001": {"id": "q-0001", "surprise": 1}},
-        }
+    def test_an_unknown_queued_field_is_ignored_and_kept(self) -> None:
+        record = make_queued("q-0001").to_dict()
+        record["surprise"] = 3
+        payload = {"schema": SCHEMA_VERSION, "seq": 0, "queued": {"q-0001": record}}
         self.path.write_text(json.dumps(payload), encoding="utf-8")
-        with self.assertRaises(StateError) as caught:
-            StateStore(self.path).load()
-        self.assertIn("unknown fields", str(caught.exception))
+
+        store = StateStore(self.path)
+        self.assertEqual(store.get_queued("q-0001").extra, {"surprise": 3})
+        store.save()
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["queued"]["q-0001"]["surprise"], 3)
 
 
 class JobGateTest(unittest.TestCase):
