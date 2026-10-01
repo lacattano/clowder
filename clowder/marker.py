@@ -25,11 +25,17 @@ DEFAULT_SENDER = "the front door"
 
 # Appended to every dispatched brief. It names no address on purpose: addresses are
 # per-observer and move when panes reload, so the worker resolves the name afresh.
+# A pane can only send once the remote-pi Docker service runs and the pane is joined,
+# and only a human can do that from the pane.
 REPORT_INSTRUCTION = (
     "When this step is done, send its report to {sender} over the agent bus: find them by\n"
     "name in your own peer list (never reuse an old address from earlier), then send the\n"
-    "job id, a one-line headline, and where the full answer is. Your answer also stays in\n"
-    "your session, and `clowder inbox` is the fallback if the send does not arrive."
+    "job id, a one-line headline, and where the full answer is. A pane can only send once\n"
+    "two things are true: the remote-pi Docker service is running, and this pane is joined\n"
+    "with /remote-pi join. If `list_peers` says 'Not in a session', the pane is not joined -\n"
+    "say so rather than fail quietly, and let the human join it; a slash command sent as a\n"
+    "prompt is a message, not a command. Your answer also stays in your session, and\n"
+    "`clowder inbox` is the fallback if the send does not arrive."
 )
 
 

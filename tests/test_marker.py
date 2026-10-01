@@ -40,6 +40,12 @@ class ApplyMarkerTest(unittest.TestCase):
         self.assertIn("topcat", text)
         self.assertIn("peer list", text)
         self.assertIn("clowder inbox", text)
+        # Both steps a pane needs before it can send, in order.
+        self.assertIn("remote-pi Docker service is running", text)
+        self.assertIn("/remote-pi join", text)
+        self.assertLess(text.index("Docker service"), text.index("/remote-pi join"))
+        self.assertIn("list_peers", text)
+        self.assertIn("human", text)
         self.assertTrue(text.endswith("do the thing"))
 
     def test_the_message_names_no_bus_address(self) -> None:
