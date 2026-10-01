@@ -2196,6 +2196,100 @@ class CliTest(unittest.TestCase):
         self.assertIn("already exists", err)
         self.assertEqual(backup.read_text(encoding="utf-8"), "do not overwrite me")
 
+    # -- abandoning a dead step --------------------------------------------
+
+    def test_step_abandon_refuses_without_a_why(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli("step", "abandon", "t-0001", env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--why", err)
+        self.assertEqual(self.only_task()["status"], "dispatched")
+
+    def test_step_abandon_frees_the_job_and_keeps_no_answer(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, out, err = self.cli(
+            "step",
+            "abandon",
+            "t-0001",
+            "--why",
+            "the pane died",
+            "--by",
+            "topcat",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0001 abandoned: the pane died", out)
+
+        task = self.only_task()
+        self.assertEqual(task["status"], "abandoned")
+        self.assertEqual(task["abandon_reason"], "the pane died")
+        self.assertTrue(task["abandoned_at"])
+        self.assertIsNone(task["answer"])
+
+        # The job is free: the next step dispatches without --force.
+        code, out, err = self.step("--job", job_id, "ship: now do something else")
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0002", out)
+        self.assertEqual(len(self.load_state()["tasks"]), 2)
+
+    def test_step_abandon_writes_an_audit_line(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.cli(
+            "step",
+            "abandon",
+            "t-0001",
+            "--why",
+            "pane died",
+            "--by",
+            "topcat",
+            env=self.state_env(),
+        )
+        audit_file = self.root / "state.json.audit"
+        self.assertTrue(audit_file.is_file())
+        line = json.loads(audit_file.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(line["action"], "step-abandon")
+        self.assertEqual(line["step"], "t-0001")
+        self.assertEqual(line["job"], job_id)
+        self.assertEqual(line["reason"], "pane died")
+        self.assertEqual(line["by"], "topcat")
+
+    def test_a_reported_step_cannot_be_abandoned(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.answer_the_step()
+        self.assertEqual(self.cli("report", "t-0001", env=self.state_env())[0], 0)
+        code, _, err = self.cli(
+            "step", "abandon", "t-0001", "--why", "too late", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("not open", err)
+
+    def test_tasks_shows_an_abandoned_step_as_abandoned(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.cli("step", "abandon", "t-0001", "--why", "pane died", env=self.state_env())
+        code, out, err = self.cli("tasks", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("abandoned", out)
+        self.assertIn("1 abandoned", out)
+        self.assertIn("0 still open", out)
+
+    def test_report_does_not_capture_an_answer_for_an_abandoned_step(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.cli("step", "abandon", "t-0001", "--why", "pane died", env=self.state_env())
+        # The pane said a half sentence before it died; it must not become the answer.
+        self.answer_the_step()
+        code, out, err = self.cli("report", "t-0001", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("abandoned", out)
+        task = self.only_task()
+        self.assertEqual(task["status"], "abandoned")
+        self.assertIsNone(task["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

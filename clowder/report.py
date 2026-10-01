@@ -62,6 +62,9 @@ def build_report(task: Task, usage: Usage | None, answer: str | None) -> str:
     if answer:
         for line in answer.splitlines():
             lines.append(INDENT + line.rstrip())
+    elif task.is_abandoned:
+        reason = task.abandon_reason or "no reason recorded"
+        lines.append(INDENT + f"(abandoned: {reason} - no answer will come)")
     else:
         lines.append(
             INDENT + f"(no answer yet - dispatched {human_duration(task.age_seconds)} ago)"

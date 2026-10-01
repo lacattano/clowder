@@ -25,8 +25,9 @@ SCHEMA_VERSION = 2
 DISPATCHED = "dispatched"
 REPORTED = "reported"
 FAILED = "failed"
+ABANDONED = "abandoned"
 
-STATUSES = (DISPATCHED, REPORTED, FAILED)
+STATUSES = (DISPATCHED, REPORTED, FAILED, ABANDONED)
 
 SHAPES = ("ship", "scout")
 
@@ -63,6 +64,10 @@ class Task:
     reported_at: str | None = None
     answer: str | None = None
     answer_source: str | None = None
+    # A dead step: a pane died or the machine restarted, and no answer will ever
+    # come. The reason is kept; the answer stays empty.
+    abandoned_at: str | None = None
+    abandon_reason: str | None = None
     open_decision: str | None = None
     decision_answer: str | None = None
     decision_answered_at: str | None = None
@@ -82,6 +87,10 @@ class Task:
     @property
     def is_open(self) -> bool:
         return self.status == DISPATCHED
+
+    @property
+    def is_abandoned(self) -> bool:
+        return self.status == ABANDONED
 
     @property
     def age_seconds(self) -> float:
