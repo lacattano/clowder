@@ -336,9 +336,10 @@ Re: <the question it answers>
   clears it too, so the list is never longer than the open decisions.
 - `clowder owner <id> --item TEXT` records one line that waits on the owner when no other field
   carries it, such as a report you are holding for him. Write it in his words, names first, and
-  say where he does it (this chat, a pull-request page). The board numbers these so he can answer
-  with a number. `--clear` removes it when he answers. Record it the moment you decide to hold
-  something for him; the board's owner section can only show what a command recorded.
+  say where he does it (this chat, a pull-request page). The board numbers every question waiting
+  on him, this kind and an open decision alike, so he can answer with a number. `--clear` removes
+  it when he answers. Record it the moment you decide to hold something for him; the board's owner
+  section can only show what a command recorded.
 
 ## The queue
 

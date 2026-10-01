@@ -400,27 +400,65 @@ def patch_id(path: str | Path, commit: str, timeout_s: float = DEFAULT_TIMEOUT_S
     return parts[0] if parts else None
 
 
-def content_on_a_branch(path: str | Path, commit: str) -> bool | None:
-    """Is this commit, or a commit carrying the same change, held by a branch?
+def _parents(path: str | Path, commit: str) -> list[str] | None:
+    """A commit's parent hashes, or None when the commit cannot be read."""
+    answer = try_git(path, "rev-list", "--parents", "-n", "1", commit)
+    if not answer or not answer.strip():
+        return None
+    return answer.split()[1:]
 
-    True  - a branch, a remote or a refs/clowder ref holds it.
-    False - the change exists nowhere but this one commit.
-    None  - it could not be told: a merge, an empty change, or a read failure.
 
-    This is what keeps a rebased-away commit from being called work at risk: the
-    old hash is on no branch, but the new hash's patch-id is the same.
+def _is_empty_change(path: str | Path, commit: str) -> bool | None:
+    """Does this commit change no file? None when it cannot be read."""
+    changed = try_git(
+        path, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit
+    )
+    if changed is None:
+        return None
+    return not changed.strip()
+
+
+# What, if anything, is at risk about a commit that is on no branch.
+ON_BRANCH = "on_branch"
+LOST = "lost"
+EMPTY = "empty"
+MERGE = "merge"
+UNKNOWN = "unknown"
+
+
+def commit_risk(path: str | Path, commit: str) -> str:
+    """Tell a lost change apart from one that only looks lost.
+
+    ON_BRANCH - a branch, a remote or a refs/clowder ref already holds it.
+    LOST      - the change is nowhere but this commit: real work at risk.
+    EMPTY     - the commit changes no file, so there is nothing to lose.
+    MERGE     - a merge; it carries its parents' content, nothing of its own.
+    UNKNOWN   - it could not be told: a read failure.
+
+    Two commits with the same patch-id carry the same change even when a rebase
+    gave them different hashes, so `LOST` is decided by content, not by hash.
     """
-    if is_reachable(path, commit):
-        return True
-    ident = patch_id(path, commit)
+    # Work in full hashes: `git log --all` includes this worktree's HEAD, and a
+    # short hash would fail to match itself and be counted as its own content.
+    full = commit_of(path, commit) or commit
+    if is_reachable(path, full):
+        return ON_BRANCH
+    parents = _parents(path, full)
+    if parents is None:
+        return UNKNOWN
+    if len(parents) > 1:
+        return MERGE
+    ident = patch_id(path, full)
     if ident is None:
-        return None
-    subject = try_git(path, "show", "-s", "--format=%s", commit)
+        if _is_empty_change(path, full) is True:
+            return EMPTY
+        return UNKNOWN
+    subject = try_git(path, "show", "-s", "--format=%s", full)
     if subject is None:
-        return None
+        return UNKNOWN
     subject = subject.strip()
     if not subject:
-        return None
+        return UNKNOWN
     listing = try_git(
         path,
         "log",
@@ -431,14 +469,14 @@ def content_on_a_branch(path: str | Path, commit: str) -> bool | None:
         "--format=%H",
     )
     if listing is None:
-        return None
+        return UNKNOWN
     for other in listing.splitlines():
         other = other.strip()
-        if not other or other == commit:
+        if not other or other == full:
             continue
         if patch_id(path, other) == ident:
-            return True
-    return False
+            return ON_BRANCH
+    return LOST
 
 
 def add_worktree(repo: str | Path, target: str | Path, branch: str, base: str) -> None:

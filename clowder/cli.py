@@ -864,8 +864,10 @@ def cmd_report(args: argparse.Namespace) -> int:
                 changed = True
         # The reachability gate, where a worker makes its claim. A commit that is on
         # no branch exists only in that folder, and reusing the folder destroys it.
+        # The same content-based check as the board, so both answers agree: a commit
+        # a rebase superseded is not lost.
         if task.commit and task.worktree:
-            stranded = not gitcmd.is_reachable(task.worktree, task.commit)
+            stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
         if answer and (task.answer != answer or task.status != REPORTED) and settled:
             task.answer = answer
             task.answer_source = source or "session"
@@ -2009,15 +2011,15 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     # superseded, not lost. When the change cannot be compared, say so instead of
     # raising a false alarm.
     stranded: set[str] = set()
-    uncheckable: set[str] = set()
+    risk_notes: dict[str, str] = {}
     for task in tasks:
         if not (task.commit and task.worktree):
             continue
-        held = gitcmd.content_on_a_branch(task.worktree, task.commit)
-        if held is False:
+        risk = gitcmd.commit_risk(task.worktree, task.commit)
+        if risk == gitcmd.LOST:
             stranded.add(task.id)
-        elif held is None:
-            uncheckable.add(task.id)
+        elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
+            risk_notes[task.id] = risk
 
     return BoardData(
         tasks=tasks,
@@ -2030,7 +2032,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         note=note,
         front_door_name=config.front_door_name,
         stranded=stranded,
-        uncheckable=uncheckable,
+        risk_notes=risk_notes,
     )
 
 
@@ -2052,7 +2054,7 @@ def cmd_board(args: argparse.Namespace) -> int:
                 "queued": len(data.queued),
                 "live_ok": data.live_ok,
                 "stranded": sorted(data.stranded),
-                "uncheckable": sorted(data.uncheckable),
+                "risk_notes": data.risk_notes,
             }
         )
         return 0

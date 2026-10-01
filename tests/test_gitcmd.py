@@ -209,23 +209,40 @@ class GitTest(unittest.TestCase):
         gitcmd.switch_branch(self.repo.root, "main")
 
         self.assertFalse(gitcmd.is_reachable(self.repo.root, old), "the old hash is gone")
-        self.assertIs(gitcmd.content_on_a_branch(self.repo.root, old), True)
+        self.assertEqual(gitcmd.commit_risk(self.repo.root, old), gitcmd.ON_BRANCH)
 
-    def test_a_lost_commit_is_not_content_on_a_branch(self) -> None:
+    def test_a_lost_commit_is_still_at_risk(self) -> None:
         gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
         lost = self.repo.commit("lost.txt")
         gitcmd.run_git(self.repo.root, "reset", "--hard", "HEAD~1")
         gitcmd.switch_branch(self.repo.root, "main")
 
         self.assertFalse(gitcmd.is_reachable(self.repo.root, lost))
-        self.assertIs(gitcmd.content_on_a_branch(self.repo.root, lost), False)
+        self.assertEqual(gitcmd.commit_risk(self.repo.root, lost), gitcmd.LOST)
 
-    def test_an_empty_change_cannot_be_checked(self) -> None:
+    def test_an_empty_change_has_nothing_to_lose(self) -> None:
         gitcmd.run_git(self.repo.root, "checkout", "--detach")
         gitcmd.run_git(self.repo.root, "commit", "--allow-empty", "-m", "empty")
         commit = gitcmd.head_commit(self.repo.root, short=False) or ""
         self.assertFalse(gitcmd.is_reachable(self.repo.root, commit))
-        self.assertIsNone(gitcmd.content_on_a_branch(self.repo.root, commit))
+        self.assertEqual(gitcmd.commit_risk(self.repo.root, commit), gitcmd.EMPTY)
+
+    def test_a_merge_commit_is_named_not_unchecked(self) -> None:
+        root = self.repo.root
+        gitcmd.switch_new_branch(root, "side", "main")
+        self.repo.commit("side.txt")
+        gitcmd.switch_branch(root, "main")
+        self.repo.commit("main.txt")
+        gitcmd.run_git(root, "merge", "--no-ff", "-m", "merge side", "side")
+        merge = gitcmd.head_commit(root, short=False) or ""
+        gitcmd.run_git(root, "reset", "--hard", "HEAD~1")
+        gitcmd.run_git(root, "branch", "-D", "side")
+
+        self.assertFalse(gitcmd.is_reachable(root, merge))
+        self.assertEqual(gitcmd.commit_risk(root, merge), gitcmd.MERGE)
+
+    def test_a_missing_commit_cannot_be_checked(self) -> None:
+        self.assertEqual(gitcmd.commit_risk(self.repo.root, "0" * 40), gitcmd.UNKNOWN)
 
     # -- worktrees ---------------------------------------------------------
 

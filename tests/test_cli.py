@@ -1757,7 +1757,7 @@ class CliTest(unittest.TestCase):
         gitcmd.switch_branch(repo, "main")
         return old, lost
 
-    def write_pinned_task(self, task_id: str, commit: str) -> None:
+    def write_pinned_task(self, task_id: str, commit: str, worktree: str | None = None) -> None:
         store = StateStore(self.state)
         store.add(
             Task(
@@ -1768,7 +1768,7 @@ class CliTest(unittest.TestCase):
                 agent="maker",
                 repo="myrepo",
                 repo_path=str(self.repo_path),
-                worktree=str(self.repo_path),
+                worktree=str(worktree or self.repo_path),
                 commit=commit,
             )
         )
@@ -1784,6 +1784,23 @@ class CliTest(unittest.TestCase):
         owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
         self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
         self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
+
+    def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
+        old, lost = self.make_rebased_commits()
+        old_wt = self.repo_path / ".worktrees" / "old"
+        lost_wt = self.repo_path / ".worktrees" / "lost"
+        gitcmd.add_worktree_free(self.repo_path, old_wt, old)
+        gitcmd.add_worktree_free(self.repo_path, lost_wt, lost)
+        self.write_pinned_task("t-0001", old, worktree=str(old_wt))
+        self.write_pinned_task("t-0002", lost, worktree=str(lost_wt))
+
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("on no branch", out, "the superseded commit is not lost")
+
+        code, out, err = self.cli("report", "t-0002", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("on no branch", out, "the lost commit is still flagged")
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.
