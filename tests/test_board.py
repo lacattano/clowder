@@ -220,6 +220,51 @@ class WaitingTest(unittest.TestCase):
             "the name comes before the handle",
         )
 
+    def test_owner_items_are_numbered_in_order(self) -> None:
+        first = task("t-0001", owner_item="choose A or B", owner_item_at="2026-10-01T10:00:00Z")
+        second = task(
+            "t-0002", owner_item="choose C or D", owner_item_at="2026-10-01T11:00:00Z"
+        )
+        waiting = waiting_on_you(data(tasks=[second, first]))
+        self.assertIn("<b>1.</b> choose A or B", waiting[0])
+        self.assertIn("<b>2.</b> choose C or D", waiting[1])
+
+    def test_an_uncheckable_commit_is_a_worker_note_not_a_warning(self) -> None:
+        notes = data(tasks=[task()], risk_notes={"t-0001": "unknown"})
+        self.assertEqual(waiting_on_you(notes), [], "could not check is not work at risk")
+        worker = " ".join(waiting_for_worker(notes))
+        self.assertIn("could not check", worker)
+        self.assertIn("t-0001", worker)
+
+    def test_an_open_decision_is_numbered_too(self) -> None:
+        waiting = waiting_on_you(data(tasks=[task(open_decision="14 days or 30?")]))
+        self.assertIn("<b>1.</b>", waiting[0])
+        self.assertIn("decision", waiting[0])
+        self.assertIn("14 days or 30?", waiting[0])
+
+    def test_owner_items_and_decisions_share_one_numbering(self) -> None:
+        item = task("t-0001", owner_item="choose A or B", owner_item_at="2026-10-01T10:00:00Z")
+        decision = task(
+            "t-0002", open_decision="14 days or 30?", created_at="2026-10-01T11:00:00Z"
+        )
+        waiting = waiting_on_you(data(tasks=[item, decision]))
+        self.assertIn("<b>1.</b>", waiting[0])
+        self.assertIn("choose A or B", waiting[0])
+        self.assertIn("<b>2.</b>", waiting[1])
+        self.assertIn("14 days or 30?", waiting[1])
+
+    def test_a_merge_and_an_empty_change_are_named(self) -> None:
+        merge = " ".join(
+            waiting_for_worker(data(tasks=[task()], risk_notes={"t-0001": "merge"}))
+        )
+        self.assertIn("merge commit", merge)
+        self.assertNotIn("could not check", merge)
+        empty = " ".join(
+            waiting_for_worker(data(tasks=[task()], risk_notes={"t-0001": "empty"}))
+        )
+        self.assertIn("empty change", empty)
+        self.assertNotIn("could not check", empty)
+
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
 

@@ -366,6 +366,119 @@ def is_reachable(path: str | Path, commit: str) -> bool:
     return bool(held and held.strip())
 
 
+def patch_id(path: str | Path, commit: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> str | None:
+    """The stable patch-id of one commit's change, or None when it cannot be told.
+
+    Two commits with the same patch-id carry the same change even when a rebase
+    gave them different hashes. A merge or an empty commit has no patch-id, and
+    the caller is told so rather than guessing.
+    """
+    shown = try_git(path, "show", "--no-color", "--patch", "--format=commit %H", commit)
+    if not shown or not shown.strip():
+        return None
+    try:
+        piped = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            cwd=str(path),
+            input=shown,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except OSError:
+        return None
+    except subprocess.TimeoutExpired:
+        return None
+    if piped.returncode != 0:
+        return None
+    lines = piped.stdout.strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[0].split()
+    return parts[0] if parts else None
+
+
+def _parents(path: str | Path, commit: str) -> list[str] | None:
+    """A commit's parent hashes, or None when the commit cannot be read."""
+    answer = try_git(path, "rev-list", "--parents", "-n", "1", commit)
+    if not answer or not answer.strip():
+        return None
+    return answer.split()[1:]
+
+
+def _is_empty_change(path: str | Path, commit: str) -> bool | None:
+    """Does this commit change no file? None when it cannot be read."""
+    changed = try_git(
+        path, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit
+    )
+    if changed is None:
+        return None
+    return not changed.strip()
+
+
+# What, if anything, is at risk about a commit that is on no branch.
+ON_BRANCH = "on_branch"
+LOST = "lost"
+EMPTY = "empty"
+MERGE = "merge"
+UNKNOWN = "unknown"
+
+
+def commit_risk(path: str | Path, commit: str) -> str:
+    """Tell a lost change apart from one that only looks lost.
+
+    ON_BRANCH - a branch, a remote or a refs/clowder ref already holds it.
+    LOST      - the change is nowhere but this commit: real work at risk.
+    EMPTY     - the commit changes no file, so there is nothing to lose.
+    MERGE     - a merge; it carries its parents' content, nothing of its own.
+    UNKNOWN   - it could not be told: a read failure.
+
+    Two commits with the same patch-id carry the same change even when a rebase
+    gave them different hashes, so `LOST` is decided by content, not by hash.
+    """
+    # Work in full hashes: `git log --all` includes this worktree's HEAD, and a
+    # short hash would fail to match itself and be counted as its own content.
+    full = commit_of(path, commit) or commit
+    if is_reachable(path, full):
+        return ON_BRANCH
+    parents = _parents(path, full)
+    if parents is None:
+        return UNKNOWN
+    if len(parents) > 1:
+        return MERGE
+    ident = patch_id(path, full)
+    if ident is None:
+        if _is_empty_change(path, full) is True:
+            return EMPTY
+        return UNKNOWN
+    subject = try_git(path, "show", "-s", "--format=%s", full)
+    if subject is None:
+        return UNKNOWN
+    subject = subject.strip()
+    if not subject:
+        return UNKNOWN
+    listing = try_git(
+        path,
+        "log",
+        "--all",
+        "--no-merges",
+        "--fixed-strings",
+        f"--grep={subject}",
+        "--format=%H",
+    )
+    if listing is None:
+        return UNKNOWN
+    for other in listing.splitlines():
+        other = other.strip()
+        if not other or other == full:
+            continue
+        if patch_id(path, other) == ident:
+            return ON_BRANCH
+    return LOST
+
+
 def add_worktree(repo: str | Path, target: str | Path, branch: str, base: str) -> None:
     """Add a worktree on `branch`, making the branch from `base` if needed."""
     if branch_exists(repo, branch):

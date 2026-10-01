@@ -481,6 +481,30 @@ time, leaves the answer empty, and frees its job for the next step. A missing `-
   agent, reason.
 - `--force` is kept. This replaces its routine use, not its existence.
 
+### 30. The board is rewritten by every state change, and the owner's decisions are numbered
+
+The owner reads the board, not a fast-moving chat, so the board has to be current without anyone
+remembering to refresh it, and it has to carry every decision put to him.
+
+- Every command that changes state rewrites the board file beside the state: dispatch, report,
+  ensure, owner `--item`/`--clear`, step abandon, state repair, and job open/close/handover/pin/
+  pass/word/publish/merge and queue add/send. The write is best effort: a failure warns on stderr
+  and never fails the command that triggered it. `clowder board` still writes and prints the path.
+- A decision is recorded with `clowder owner <task> --item TEXT` at the moment it is put, or as an
+  open decision on a report. The board numbers every question the owner must answer, both kinds in
+  one sequence, so a number names one question on the page. It clears the item in the same command
+  path that records his answer (`report --decide`, or `owner --clear`), so the list is never longer
+  than the open decisions.
+
+The at-risk section is content-based, not hash-based, and both the board and `report` ask the same
+question, so the answer does not change with where it is asked. A commit on no branch is flagged only
+when its change is on no branch either: two commits with the same patch-id carry the same change, so
+a rebased-away commit is superseded, not lost. A merge carries its parents' content and an empty
+change carries nothing, so each is named as such; `could not check` is kept for a real read failure.
+A short hash must be resolved to its full form before comparing, because `git log --all` includes the
+worktree's own HEAD and a short hash would match itself. Three false alarms in one evening had taught
+the owner to ignore the section.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

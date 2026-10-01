@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd
+from clowder.state import StateStore, Task
 from tests.support import (
     clean_env,
     default_usage,
@@ -1703,6 +1704,103 @@ class CliTest(unittest.TestCase):
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertNotIn("the team-page design is ready to read", html)
         self.assertIn("Nothing is recorded as waiting on you.", html)
+
+    def test_owner_items_are_numbered_on_the_board(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: first thing")
+        self.cli("owner", "t-0001", "--item", "choose A or B", env=self.fake_env())
+        self.dispatch("maker", "myrepo", "ship: second thing")
+        self.cli("owner", "t-0002", "--item", "choose C or D", env=self.fake_env())
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("<b>1.</b> choose A or B", html)
+        self.assertIn("<b>2.</b> choose C or D", html)
+
+    def test_recording_the_answer_clears_the_owner_item(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B, it changes X and costs Y",
+            env=self.fake_env(),
+        )
+        self.assertIn("choose A or B", (self.root / "board.html").read_text(encoding="utf-8"))
+        code, _, err = self.cli("report", "t-0001", "--decide", "A", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertIsNone(task["owner_item"])
+        self.assertTrue(task["decision_answer"])
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertNotIn("choose A or B", html, "the answered item leaves his section")
+
+    def make_rebased_commits(self) -> tuple[str, str]:
+        """One commit a rebase replaced, and one that is genuinely lost."""
+        repo = self.repo_path
+        gitcmd.switch_new_branch(repo, "task/x", "main")
+        (repo / "b.txt").write_text("b\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "b.txt")
+        gitcmd.run_git(repo, "commit", "-m", "add b")
+        (repo / "c.txt").write_text("c\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "c.txt")
+        gitcmd.run_git(repo, "commit", "-m", "add c")
+        old = gitcmd.head_commit(repo, short=False) or ""
+        (repo / "lost.txt").write_text("lost\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "lost.txt")
+        gitcmd.run_git(repo, "commit", "-m", "lost work")
+        lost = gitcmd.head_commit(repo, short=False) or ""
+        gitcmd.run_git(repo, "reset", "--hard", "HEAD~1")
+        gitcmd.switch_branch(repo, "main")
+        (repo / "d.txt").write_text("d\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "d.txt")
+        gitcmd.run_git(repo, "commit", "-m", "base two")
+        gitcmd.switch_branch(repo, "task/x")
+        gitcmd.run_git(repo, "rebase", "main")
+        gitcmd.switch_branch(repo, "main")
+        return old, lost
+
+    def write_pinned_task(self, task_id: str, commit: str, worktree: str | None = None) -> None:
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id=task_id,
+                question="is this commit lost?",
+                brief="ship: x",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                worktree=str(worktree or self.repo_path),
+                commit=commit,
+            )
+        )
+        store.save()
+
+    def test_the_board_does_not_flag_a_rebased_away_commit(self) -> None:
+        old, lost = self.make_rebased_commits()
+        self.write_pinned_task("t-0001", old)
+        self.write_pinned_task("t-0002", lost)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
+        self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
+
+    def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
+        old, lost = self.make_rebased_commits()
+        old_wt = self.repo_path / ".worktrees" / "old"
+        lost_wt = self.repo_path / ".worktrees" / "lost"
+        gitcmd.add_worktree_free(self.repo_path, old_wt, old)
+        gitcmd.add_worktree_free(self.repo_path, lost_wt, lost)
+        self.write_pinned_task("t-0001", old, worktree=str(old_wt))
+        self.write_pinned_task("t-0002", lost, worktree=str(lost_wt))
+
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("on no branch", out, "the superseded commit is not lost")
+
+        code, out, err = self.cli("report", "t-0002", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("on no branch", out, "the lost commit is still flagged")
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.

@@ -44,6 +44,8 @@ The newer pieces, so a fresh you does not have to discover them:
 - One reviewer per repo holds that repo's changes and walks the owner through them.
 - The board has two sections: "Waiting on you" for him, "Waiting for a worker" for your own
   queue.
+- The board is rewritten by every command that changes state, so it is current without anyone
+  running `clowder board`. Run `clowder board --open` only to read it.
 
 What a refresh cannot recover: anything you kept only in your own words. If it is not on a job, a
 task or a queue item, a fresh you will not know it.
@@ -330,12 +332,14 @@ Re: <the question it answers>
 - `--open-decision TEXT` records an open question with the task. It is not a pass: a pass is
   `clowder job pass`, and a merge word is `clowder job word`.
 - `--decide TEXT` answers that question. The decision then leaves the board's owner section, and
-  the record keeps what the answer was.
+  the record keeps what the answer was. If a `clowder owner --item` is open on the task, this
+  clears it too, so the list is never longer than the open decisions.
 - `clowder owner <id> --item TEXT` records one line that waits on the owner when no other field
   carries it, such as a report you are holding for him. Write it in his words, names first, and
-  say where he does it (this chat, a pull-request page). `--clear` removes it when he answers.
-  Record it the moment you decide to hold something for him; the board's owner section can only
-  show what a command recorded.
+  say where he does it (this chat, a pull-request page). The board numbers every question waiting
+  on him, this kind and an open decision alike, so he can answer with a number. `--clear` removes
+  it when he answers. Record it the moment you decide to hold something for him; the board's owner
+  section can only show what a command recorded.
 
 ## The queue
 

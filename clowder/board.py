@@ -135,6 +135,9 @@ class BoardData:
     front_door_name: str | None = None
     # Task ids whose commit is on no branch, so the work exists only in one folder.
     stranded: set[str] = field(default_factory=set)
+    # Task ids whose commit is on no branch and whose content could not be judged,
+    # keyed to why: `merge`, `empty`, or `unknown` (a real read failure).
+    risk_notes: dict[str, str] = field(default_factory=dict)
 
 
 def _e(value: object) -> str:
@@ -174,22 +177,32 @@ def waiting_on_you(data: BoardData) -> list[str]:
     """
     lines: list[str] = []
 
-    # What the front door recorded as waiting on him, oldest first. This is the
-    # catch-all for a report it holds, or a question it asked outside a task.
-    waiting = [t for t in data.tasks if t.owner_item and t.status != CLOSED]
-    for task in sorted(waiting, key=lambda item: item.owner_item_at or item.created_at):
-        lines.append(
-            f"<b>your move</b> {_e(_clip(task.owner_item or '', 240))} "
-            f"<span class='why'>[{_e(task.id)}]</span>"
-        )
-
+    # Every question the owner must answer is numbered, whether it was recorded
+    # with `owner --item` or as an open decision on a report. One sequence, so a
+    # number names one question on the whole page.
+    questions: list[tuple[str, str]] = []
+    for task in data.tasks:
+        if task.owner_item and task.status != CLOSED:
+            questions.append(
+                (
+                    task.owner_item_at or task.created_at,
+                    f"{_e(_clip(task.owner_item or '', 240))} "
+                    f"<span class='why'>your move, [{_e(task.id)}]</span>",
+                )
+            )
     for task in data.tasks:
         if task.open_decision and task.decision_is_open and task.status != CLOSED:
-            lines.append(
-                f"<b>decision</b> {_e(_clip(task.open_decision, 200))} "
-                f"<span class='why'>[{_e(task.id)}] asked by {_e(task.agent)} about "
-                f"{_e(_clip(task.question, 120))}</span>"
+            questions.append(
+                (
+                    task.created_at,
+                    f"{_e(_clip(task.open_decision, 200))} "
+                    f"<span class='why'>decision, [{_e(task.id)}] asked by "
+                    f"{_e(task.agent)} about {_e(_clip(task.question, 120))}</span>",
+                )
             )
+    ordered = sorted(questions, key=lambda item: item[0])
+    for number, (_, line) in enumerate(ordered, start=1):
+        lines.append(f"<b>{number}.</b> {line}")
 
     for task in data.tasks:
         if task.id in data.stranded:
@@ -268,6 +281,30 @@ def waiting_for_worker(data: BoardData) -> list[str]:
                 f"{_e(task.agent)} is {_e(agent.status or 'idle')} and has said nothing "
                 f"for {_e(human_age(task.age_seconds))} "
                 f"<span class='why'>{_e(_clip(task.question, 120))}</span>"
+            )
+
+    for task in data.tasks:
+        risk = data.risk_notes.get(task.id)
+        if risk is None:
+            continue
+        if risk == "merge":
+            lines.append(
+                f"<b>merge commit</b> <span class='id'>{_e(task.id)}</span> "
+                f"commit {_e(task.commit)} is on no branch but carries its parents' "
+                f"content <span class='why'>held in {_e(task.worktree)}</span>"
+            )
+        elif risk == "empty":
+            lines.append(
+                f"<b>empty change</b> <span class='id'>{_e(task.id)}</span> "
+                f"commit {_e(task.commit)} is on no branch but changes nothing "
+                f"<span class='why'>nothing is lost in {_e(task.worktree)}</span>"
+            )
+        else:
+            lines.append(
+                f"<b>could not check</b> <span class='id'>{_e(task.id)}</span> "
+                f"commit {_e(task.commit)} is on no branch, and it could not be told "
+                "whether its change is already on one "
+                f"<span class='why'>held in {_e(task.worktree)}</span>"
             )
 
     return lines
