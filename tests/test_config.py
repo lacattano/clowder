@@ -160,6 +160,36 @@ class LoadConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(path)
 
+    def test_the_git_identity_has_a_default(self) -> None:
+        config = load_config(self.config_path)
+        self.assertEqual(config.git_name, "clowder-bot")
+        self.assertEqual(config.git_email, "94532220+lacattano@users.noreply.github.com")
+
+    def test_the_git_identity_can_be_overridden(self) -> None:
+        path = write_config(
+            self.root / "git.toml", git={"name": "my-bot", "email": "bot@example.com"}
+        )
+        config = load_config(path)
+        self.assertEqual(config.git_name, "my-bot")
+        self.assertEqual(config.git_email, "bot@example.com")
+
+    def test_git_identity_env_beats_the_file(self) -> None:
+        with clean_env(CLOWDER_GIT_EMAIL="env@example.com"):
+            config = load_config(self.config_path)
+        self.assertEqual(config.git_email, "env@example.com")
+
+    def test_an_unknown_git_key_is_refused(self) -> None:
+        path = write_config(self.root / "gitbad.toml", git={"nmae": "typo"})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("unknown git keys", str(caught.exception))
+
+    def test_a_git_value_must_be_a_string(self) -> None:
+        path = write_config(self.root / "gitnum.toml", git={"email": 7})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("git.email", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

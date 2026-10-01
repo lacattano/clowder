@@ -57,5 +57,15 @@ delivery = "local-only"
 # setup: one command run once per new space, to pay the install once - for example
 # setup = "uv sync". No shell operators.
 
+[git]
+# The identity every commit the crew makes carries, in every repo it touches.
+# A checkout's own `user.name`/`user.email` is never trusted. This is a bot, so
+# your own global git config stays yours. Set it here or leave the default.
+name = "clowder-bot"
+email = "94532220+lacattano@users.noreply.github.com"
+# Recommended once per machine, so git refuses to guess an identity at all:
+#   git config --global user.useConfigOnly true
+# It complements the identity above; it does not replace it.
+
 [repos]
 my-app = 'D:\work\my-app'

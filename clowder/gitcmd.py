@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,28 @@ class WorktreeInfo:
         return self.branch or "(detached)"
 
 
+@dataclass(frozen=True)
+class Identity:
+    """The commit identity the crew uses, in every repo it touches.
+
+    A checkout's own config is not trusted: it can name anyone, and one write to
+    it reaches every worktree. `env()` overrides that config at the process, so a
+    commit made under it is the crew's whatever the file says.
+    """
+
+    name: str
+    email: str
+
+    def env(self) -> dict[str, str]:
+        """Pin git's author and committer, config or not."""
+        return {
+            "GIT_AUTHOR_NAME": self.name,
+            "GIT_AUTHOR_EMAIL": self.email,
+            "GIT_COMMITTER_NAME": self.name,
+            "GIT_COMMITTER_EMAIL": self.email,
+        }
+
+
 def _clean_path(text: str) -> str:
     # git for Windows can answer with an extended-length prefix.
     if text.startswith("\\\\?\\"):
@@ -67,9 +90,19 @@ def _clean_path(text: str) -> str:
     return text
 
 
-def run_git(cwd: str | Path, *args: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> str:
-    """Run git and insist that it worked."""
+def run_git(
+    cwd: str | Path,
+    *args: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Run git and insist that it worked.
+
+    `env` is merged over the current environment. A commit made with
+    `Identity.env()` is the crew's even when the checkout names someone else.
+    """
     argv = ["git", *args]
+    child_env = {**os.environ, **env} if env else None
     try:
         completed = subprocess.run(
             argv,
@@ -79,6 +112,7 @@ def run_git(cwd: str | Path, *args: str, timeout_s: float = DEFAULT_TIMEOUT_S) -
             encoding="utf-8",
             errors="replace",
             timeout=timeout_s,
+            env=child_env,
         )
     except FileNotFoundError as exc:
         raise GitError("cannot run git: it is not on PATH") from exc
@@ -93,10 +127,15 @@ def run_git(cwd: str | Path, *args: str, timeout_s: float = DEFAULT_TIMEOUT_S) -
     return completed.stdout
 
 
-def try_git(cwd: str | Path, *args: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> str | None:
+def try_git(
+    cwd: str | Path,
+    *args: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
     """Run git where a failure is an answer, not an error."""
     try:
-        return run_git(cwd, *args, timeout_s=timeout_s)
+        return run_git(cwd, *args, timeout_s=timeout_s, env=env)
     except GitError:
         return None
 
@@ -499,6 +538,76 @@ def remove_worktree(repo: str | Path, target: str | Path) -> None:
 def delete_branch(path: str | Path, branch: str) -> None:
     """Delete a merged branch. Refuses on an unmerged one, on purpose."""
     run_git(path, "branch", "-d", branch)
+
+
+@dataclass(frozen=True)
+class CommitAuthorship:
+    """Who git says wrote and committed one save."""
+
+    commit: str
+    author: str
+    author_email: str
+    committer: str
+    committer_email: str
+
+
+def foreign_commits(
+    path: str | Path,
+    rev_range: str,
+    identity: Identity,
+    *,
+    exclude_remote: bool = True,
+) -> list[CommitAuthorship]:
+    """Commits in `rev_range` not authored and committed as `identity`.
+
+    `exclude_remote` drops anything already on a remote-tracking ref, so a branch
+    that merged remote history does not report those old commits as the crew's.
+    """
+    args = ["log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce", rev_range]
+    if exclude_remote:
+        args += ["--not", "--remotes"]
+    answer = run_git(path, *args)
+    found: list[CommitAuthorship] = []
+    for line in answer.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) != 5:
+            continue
+        commit, author, author_email, committer, committer_email = parts
+        if (author, author_email) == (identity.name, identity.email) and (
+            committer,
+            committer_email,
+        ) == (identity.name, identity.email):
+            continue
+        found.append(CommitAuthorship(commit, author, author_email, committer, committer_email))
+    return found
+
+
+def refuse_foreign_authors(
+    path: str | Path,
+    rev_range: str,
+    identity: Identity,
+    *,
+    exclude_remote: bool = True,
+) -> None:
+    """Refuse to publish commits that are not the crew's.
+
+    The backstop for the one hole the environment cannot close: a pane made
+    before the identity was set, or made by hand. It runs before the push, so a
+    foreign author never reaches the remote.
+    """
+    foreign = foreign_commits(path, rev_range, identity, exclude_remote=exclude_remote)
+    if not foreign:
+        return
+    shown = "; ".join(
+        f"{item.commit[:7]} {item.author} <{item.author_email}>" for item in foreign[:5]
+    )
+    more = f", and {len(foreign) - 5} more" if len(foreign) > 5 else ""
+    raise GitError(
+        f"refusing to publish {len(foreign)} commit(s) not authored as "
+        f"{identity.name} <{identity.email}>: {shown}{more}. The crew's commits must "
+        "use the crew's identity. Amend or rebase them under the crew identity, then "
+        "publish again."
+    )
 
 
 def push_branch(path: str | Path, branch: str, remote: str = "origin") -> None:

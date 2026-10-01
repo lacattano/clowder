@@ -505,6 +505,36 @@ A short hash must be resolved to its full form before comparing, because `git lo
 worktree's own HEAD and a short hash would match itself. Three false alarms in one evening had taught
 the owner to ignore the section.
 
+### 31. The crew sets its own commit identity, and refuses a foreign one
+
+Seen 2026-10-01: the product checkout's `.git/config` named
+`openhands <openhands@all-hands.dev>` for 77 commits. Worktrees share the main checkout's config,
+so one `git config user.email <anything>` covered every worktree the crew would make there. The
+crew tool set no identity of its own, so a commit inherited whatever the file said.
+
+The identity is the crew's, not the owner's, so his own global git config stays his:
+
+- `[git] name` and `[git] email` in the clowder config, defaulting to
+  `clowder-bot <94532220+lacattano@users.noreply.github.com>`. One place to change, every repo the
+  crew touches.
+- Every pane the tool makes is launched with `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (`herdr pane split --env`). The process
+  environment beats the checkout's config, and a `git config` write cannot reach it, so the fix
+  does not depend on the file being right - which is what failed.
+
+The backstop runs in the ship path, not as a global hook: `job publish` checks the commits in
+`base..branch` with `refuse_foreign_authors` before `git push`, and refuses any whose author or
+committer is not the crew's identity. A global `core.hooksPath` hook would also work; this was
+chosen because it lives in the tool's own path, needs no global state on the owner's machine, and
+cannot be skipped. Its costs: it checks only at publish time, and only the job's own new commits -
+a commit already on origin is the separate history rewrite, not this.
+
+The hole it cannot close: a pane made before the change, or by hand, still inherits the checkout's
+config. The backstop catches those at publish. `user.useConfigOnly` is complementary only: it
+catches git guessing an identity, not a wrong explicit value. It is set on this machine
+(`git config --global user.useConfigOnly true`) and recommended in `clowder.example.toml`; it
+never touches the owner's own identity, which is configured explicitly.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

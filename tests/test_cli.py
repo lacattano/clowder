@@ -1000,6 +1000,19 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, err)
 
+    def handover(self, job_id: str) -> None:
+        code, _, err = self.cli(
+            "job",
+            "handover",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+
     def test_a_pass_records_what_was_shown_and_when(self) -> None:
         job_id, _ = self.open_a_job()
         self.owner_pass(job_id)
@@ -1342,6 +1355,15 @@ class CliTest(unittest.TestCase):
         gitcmd.run_git(folder, "commit", "-m", f"add {name}")
         return gitcmd.head_commit(folder, short=False) or ""
 
+    def save_as_crew(self, folder: str | Path, name: str = "refund.py") -> str:
+        """A save made the way a crew pane makes one: identity in the env."""
+        identity = gitcmd.Identity("clowder-bot", "94532220+lacattano@users.noreply.github.com")
+        path = Path(folder) / name
+        path.write_text("pass\n", encoding="utf-8")
+        gitcmd.run_git(folder, "add", name)
+        gitcmd.run_git(folder, "commit", "-m", f"add {name}", env=identity.env())
+        return gitcmd.head_commit(folder, short=False) or ""
+
     def test_handover_puts_the_saved_code_in_the_reviewers_copy(self) -> None:
         job_id, maker_folder = self.open_a_job()
         commit = self.save_something(maker_folder)
@@ -1467,6 +1489,28 @@ class CliTest(unittest.TestCase):
 
         job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
         self.assertEqual(job["commit"], commit, "publish reads the commit, not the base HEAD")
+
+    def test_publish_refuses_a_commit_not_authored_by_the_crew(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)  # Test <test@example.com>
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 2)
+        self.assertIn("refusing to publish", err)
+        self.assertIn("test@example.com", err)
+        pushed.assert_not_called()
+
+    def test_publish_allows_a_commit_authored_by_the_crew(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        pushed.assert_called_once()
 
     def test_the_held_ref_keeps_the_commit_when_the_branch_is_deleted(self) -> None:
         job_id, maker_folder = self.open_a_job()
