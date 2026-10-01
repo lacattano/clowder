@@ -51,6 +51,15 @@ class BuildArgvTest(unittest.TestCase):
             mux.build_prompt_argv("maker", "x" * 9000)
         self.assertIn("--brief-file", str(caught.exception))
 
+    def test_send_keys_argv_types_the_command_as_keys(self) -> None:
+        # A slash command through the prompt is a message, not a command; the
+        # reset must arrive as keys so the editor submits it.
+        mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
+        self.assertEqual(
+            mux.build_send_keys_argv("maker", ["/", "n", "e", "w", "enter"]),
+            ["herdr", "agent", "send-keys", "maker", "/", "n", "e", "w", "enter"],
+        )
+
 
 class ParseAgentListTest(unittest.TestCase):
     def test_reads_the_real_shape(self) -> None:

@@ -9,10 +9,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
-from . import __version__, gitcmd
+from . import __version__, audit, gitcmd
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
@@ -212,6 +213,37 @@ def build_parser() -> argparse.ArgumentParser:
     roster.add_argument("--json", action="store_true")
     roster.set_defaults(handler=cmd_agents)
 
+    agent = sub.add_parser("agent", help="act on one live agent's pane", parents=[common])
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    a_reset = agent_sub.add_parser(
+        "reset", help="give an agent a fresh context, and prove it happened", parents=[common]
+    )
+    a_reset.add_argument("name", help="the agent, as the multiplexer knows it")
+    a_reset.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="how long to wait for the session to change (default: 30)",
+    )
+    a_reset.add_argument(
+        "--force", action="store_true", help="reset even with an unreported step"
+    )
+    a_reset.add_argument("--json", action="store_true")
+    a_reset.set_defaults(handler=cmd_agent_reset, refreshes_board=True)
+
+    checkouts = sub.add_parser(
+        "checkouts", help="how far behind its remote each checkout is", parents=[common]
+    )
+    checkouts.add_argument(
+        "repo", nargs="*", help="repos to check (default: the repos of known jobs and steps)"
+    )
+    checkouts.add_argument(
+        "--fetch", action="store_true", help="fetch before comparing, so the count is fresh"
+    )
+    checkouts.add_argument("--json", action="store_true")
+    checkouts.set_defaults(handler=cmd_checkouts)
+
     board = sub.add_parser(
         "board",
         help="write the HTML page of what is queued, underway and waiting",
@@ -282,6 +314,24 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
 
+    j_pin = job_parser("pin", "pin a job's saved commit into a reviewer's copy")
+    j_pin.add_argument("id")
+    j_pin.add_argument(
+        "--to",
+        default="verifier",
+        choices=ROLES,
+        help="the role that checks it (default: verifier)",
+    )
+    j_pin.add_argument("--name", help="use or make a reviewer with this name")
+    j_pin.add_argument(
+        "--commit", metavar="SHA", help="the save to pin (default: the job's reviewed commit)"
+    )
+    j_pin.add_argument("--kind", default=DEFAULT_KIND)
+    j_pin.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    j_pin.add_argument("--force", action="store_true")
+    j_pin.add_argument("--json", action="store_true")
+    j_pin.set_defaults(handler=cmd_job_pin, refreshes_board=True)
+
     j_pass = job_parser("pass", "record the owner's pass for a job")
     j_pass.add_argument("id")
     j_pass.add_argument("--shown", required=True, help="what the owner was shown")
@@ -345,6 +395,24 @@ def build_parser() -> argparse.ArgumentParser:
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
+
+    state = sub.add_parser("state", help="inspect or repair the state file", parents=[common])
+    state_sub = state.add_subparsers(dest="state_command", required=True)
+    s_repair = state_sub.add_parser(
+        "repair",
+        help="drop a field no copy knows, with a backup and an audit line",
+        parents=[common],
+    )
+    s_repair.add_argument("--drop-unknown", metavar="FIELD", help="the unknown field to remove")
+    s_repair.add_argument(
+        "--backup", metavar="PATH", help="write a copy of the state file here first"
+    )
+    s_repair.add_argument("--why", metavar="TEXT", help="why it is being dropped")
+    s_repair.add_argument(
+        "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
+    )
+    s_repair.add_argument("--json", action="store_true")
+    s_repair.set_defaults(handler=cmd_state_repair, refreshes_board=True)
 
     return parser
 
@@ -991,7 +1059,19 @@ def cmd_job_open(args: argparse.Namespace) -> int:
             "--force."
         )
 
+    try:
+        gitcmd.fetch(repo_path)
+    except GitError as exc:
+        print(f"{PROGRAM}: warning: could not fetch {repo_path}: {exc}", file=sys.stderr)
     base_ref = gitcmd.resolve_base(repo_path, args.base or config.worktree_base)
+    behind = gitcmd.branch_behind(repo_path, base_ref)
+    if behind and not args.force:
+        raise GitError(
+            f"{base_ref} is {behind} commit(s) behind origin/{base_ref}. A job from a "
+            "stale base carries old code, and its report would be about code that is "
+            f'not current. Pull first: git -C "{repo_path}" pull --ff-only, then open '
+            "the job again. Or pass --force if you know better."
+        )
     label = args.label.strip()
     branch = args.branch or f"{config.job_branch_prefix}{sanitise(label)}"
 
@@ -1251,6 +1331,110 @@ def cmd_job_handover(args: argparse.Namespace) -> int:
         f"{INDENT}send the review step with: {PROGRAM} dispatch {reviewer.name} "
         f"{job.repo} --job {job.id}"
     )
+    return 0
+
+
+def cmd_job_pin(args: argparse.Namespace) -> int:
+    """Pin a job's saved commit into a reviewer's copy, and prove it landed.
+
+    `job handover` needs the writer's folder to still hold the job branch. When
+    the writer has moved on to a later job, that folder no longer does, and the
+    front door used to detach the reviewer's copy by hand. This is that act, with
+    the checks: the copy is a space of its own, clean, and holds no other open job.
+    """
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    if not job.is_open:
+        raise StateError(f"{job.id} is closed, so there is nothing to pin.")
+
+    candidate = args.commit or job.review_commit or job.commit
+    if not candidate and job.held_ref:
+        candidate = gitcmd.commit_of(job.repo_path, job.held_ref)
+    if not candidate:
+        raise StateError(f"{job.id} names no commit to pin; pass --commit SHA")
+    commit = gitcmd.commit_of(job.repo_path, candidate) or candidate
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    ensured = _ensure(
+        config,
+        mux,
+        job.repo_path,
+        repo_name=job.repo,
+        role=args.to,
+        kind=args.kind,
+        direction=args.direction,
+        name=args.name,
+        create=True,
+    )
+    if not ensured.ok:
+        print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)
+        if ensured.candidates:
+            print(
+                f"{PROGRAM}: agents in that repo: {', '.join(ensured.candidates)}",
+                file=sys.stderr,
+            )
+        return NEEDS_HUMAN
+
+    reviewer = ensured.agent
+    assert reviewer is not None
+    folder = reviewer.cwd or ""
+    if ensured.note:
+        print(f"{PROGRAM}: note: {ensured.note}", file=sys.stderr)
+
+    top = gitcmd.toplevel(job.repo_path)
+    if top and normalise(folder) == normalise(top) and not args.force:
+        raise GitError(
+            f"{reviewer.name} works in the main checkout ({folder}). Pinning that to a "
+            "commit would move your own work. Make a reviewer with a copy of its own: "
+            f"`{PROGRAM} ensure {job.repo} --role {args.to} --name <name>`."
+        )
+    if not folder or not gitcmd.is_repo(folder):
+        raise GitError(
+            f"{reviewer.name}'s folder is not a git repository "
+            f"({folder or 'unknown'}), so it cannot hold the code to check."
+        )
+
+    busy = next(
+        (
+            other
+            for other in store.open_jobs()
+            if other.id != job.id and normalise(other.worktree) == normalise(folder)
+        ),
+        None,
+    )
+    if busy is not None and not args.force:
+        raise StateError(
+            f"{busy.id} is still open on {reviewer.name}'s folder. Close it first."
+        )
+
+    unsaved = gitcmd.status_entries(folder)
+    if unsaved and not args.force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in unsaved[:5])
+        raise GitError(
+            f"{reviewer.name} has work that is not saved in {folder}: {shown}. "
+            "Pinning the folder would write over it. Save it, or pass --force."
+        )
+
+    gitcmd.switch_to_commit(folder, commit)
+    held = gitcmd.commit_of(folder, "HEAD")
+    if held != commit:
+        raise GitError(
+            f"pinned {folder} but it reports {held or 'no commit'}, not {commit}. "
+            "Nothing was recorded."
+        )
+
+    job.reviewer = reviewer.name
+    job.review_commit = commit
+    job.commit = commit
+    job.held_ref = gitcmd.hold_ref(job.repo_path, job.id, commit)
+    job.handed_over_at = now_iso()
+    store.save()
+
+    if args.json:
+        _emit_json({"job": job.to_dict(), "reviewer": reviewer.name, "commit": commit})
+        return 0
+    print(f"{job.id} pinned: {job.branch} @ {commit[:7]}")
+    print(f"{INDENT}{reviewer.name} holds it in {folder}")
     return 0
 
 
@@ -1596,6 +1780,141 @@ def cmd_agents(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent_reset(args: argparse.Namespace) -> int:
+    """Give an agent a fresh context, and prove the session changed.
+
+    The reset is typed into the pane as individual keys, because a slash command
+    sent through the agent prompt is a message, not a command. It is refused while
+    a step on the agent is unreported: that would wipe the session copy the answer
+    is read from, and the record would lose its answer.
+    """
+    config, store = _context(args)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    name = args.name.strip()
+    agent = mux.find_agent(name)
+    if agent is None:
+        live = ", ".join(sorted(a.name for a in mux.list_agents())) or "none"
+        raise DispatchError(f"no live agent named {name!r}. Live agents: {live}.")
+
+    pending = [task for task in store.all() if task.agent == name and task.is_open]
+    if pending and not args.force:
+        listed = ", ".join(f"{task.id} ({_clip(task.question, 40)})" for task in pending)
+        raise StateError(
+            f"{name} has an unreported step: {listed}. A reset would wipe the session "
+            f"its answer is read from. Read it first: {PROGRAM} report {pending[0].id}, "
+            "or pass --force."
+        )
+
+    before = agent.session_path
+    result = mux.send_keys(name, ["/", "n", "e", "w", "enter"])
+    if not result.ok:
+        raise MuxError(f"could not type the reset into {name}: {result.error_text()}")
+    after = _wait_for_session_change(mux, name, before, args.timeout)
+    if after is None:
+        raise StateError(
+            f"{name}'s session did not change after the reset, so the context was not "
+            "refreshed. The keys may not have arrived; check the pane and try again."
+        )
+
+    if args.json:
+        _emit_json({"agent": name, "session_before": before, "session_after": after})
+        return 0
+    print(f"{name} reset: new session {after}")
+    return 0
+
+
+def _wait_for_session_change(
+    mux: Mux, name: str, before: str | None, timeout_s: float
+) -> str | None:
+    """Poll the live session until it differs from `before`, or the wait runs out."""
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        agent = mux.find_agent(name)
+        after = agent.session_path if agent is not None else None
+        if after and after != before:
+            return after
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
+
+
+def _checkout_repos(config: Config, store: StateStore, names: list[str]) -> list[Path]:
+    """The repos to inspect: the ones named, or the ones known jobs and steps use."""
+    paths: list[Path] = [config.resolve_repo(name) for name in names]
+    if not paths:
+        paths = [Path(job.repo_path) for job in store.all_jobs()]
+        paths.extend(Path(task.repo_path) for task in store.all() if task.repo_path)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = normalise(str(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def cmd_checkouts(args: argparse.Namespace) -> int:
+    """How far behind its remote each checkout is, in one line each."""
+    config, store = _context(args)
+    repos = _checkout_repos(config, store, args.repo)
+    if not repos:
+        print("no checkouts known; name a repo, or open a job first")
+        return 0
+
+    found: list[dict[str, object]] = []
+    for repo in repos:
+        if not gitcmd.is_repo(repo):
+            continue
+        if args.fetch:
+            try:
+                gitcmd.fetch(repo)
+            except GitError as exc:
+                print(f"{PROGRAM}: warning: could not fetch {repo}: {exc}", file=sys.stderr)
+        for worktree in gitcmd.list_worktrees(repo):
+            branch = worktree.branch
+            if worktree.detached or not branch:
+                behind = None
+                where = f"detached @ {(worktree.commit or '?')[:7]}"
+            else:
+                behind = gitcmd.branch_behind(repo, branch)
+                if behind is None:
+                    where = "no remote"
+                elif behind == 0:
+                    where = "current"
+                else:
+                    where = f"behind {behind}"
+            found.append(
+                {
+                    "repo": repo.name,
+                    "path": str(repo),
+                    "folder": worktree.path,
+                    "branch": branch,
+                    "state": where,
+                    "behind": behind,
+                }
+            )
+
+    if args.json:
+        _emit_json({"checkouts": found, "count": len(found)})
+        return 0
+    if not found:
+        print("no checkouts found")
+        return 0
+    rows = [["REPO", "STATE", "BRANCH", "FOLDER"]]
+    for item in found:
+        rows.append(
+            [
+                str(item["repo"]),
+                str(item["state"]),
+                str(item["branch"] or "-"),
+                _clip(str(item["folder"]), 52),
+            ]
+        )
+    print(_column(rows))
+    return 0
+
+
 def _board_path(store: StateStore) -> Path:
     """Where the page lives when nobody asked for a different place."""
     return store.path.parent / "board.html"
@@ -1700,6 +2019,77 @@ def _refresh_board(args: argparse.Namespace) -> None:
         write_board(data, _board_path(store))
     except Exception as exc:  # the board must never fail the command it follows
         print(f"{PROGRAM}: could not refresh the board: {exc}", file=sys.stderr)
+
+
+def cmd_state_repair(args: argparse.Namespace) -> int:
+    """Drop a field no copy knows, with a backup and an audit line.
+
+    The reader half skips an unknown field and keeps it. When a stale copy keeps
+    writing it back, the field has to be removed from the record. This refuses
+    without a backup, writes it first, names what it removed, and audits the act.
+    """
+    config, store = _context(args)
+    field = (args.drop_unknown or "").strip()
+    if not field:
+        raise UsageError("--drop-unknown FIELD is required")
+    if not args.backup:
+        raise UsageError(
+            "--backup PATH is required: a repair writes a copy of the state file first"
+        )
+    backup = Path(args.backup).expanduser().absolute()
+    if backup.exists():
+        raise StateError(f"backup already exists: {backup}. Choose a path that is free.")
+
+    store.load()
+    if not store.path.exists():
+        raise StateError(f"no state file at {store.path}; nothing to repair")
+    original = store.path.read_bytes()
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        backup.write_bytes(original)
+    except OSError as exc:
+        raise StateError(f"cannot write the backup {backup}: {exc}") from exc
+    if backup.read_bytes() != original:
+        raise StateError(f"backup {backup} does not match {store.path}; refusing to repair")
+
+    removed = store.drop_unknown_fields(field)
+    total = sum(removed.values())
+    if total:
+        store.save()
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    why = (args.why or f"removed unknown field {field!r} so the record can be read").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": now_iso(),
+            "by": who,
+            "action": "drop-unknown",
+            "field": field,
+            "why": why,
+            "removed": removed,
+            "backup": str(backup),
+        },
+    )
+
+    if args.json:
+        _emit_json(
+            {
+                "removed": removed,
+                "backup": str(backup),
+                "audit": str(audit_file),
+                "state": str(store.path),
+            }
+        )
+        return 0
+    if total:
+        shown = ", ".join(f"{count} {label}(s)" for label, count in removed.items() if count)
+        print(f"dropped {field!r} from {shown}")
+    else:
+        print(f"nothing carried {field!r}")
+    print(f"{INDENT}backup: {backup}")
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
 
 
 def cmd_config(args: argparse.Namespace) -> int:

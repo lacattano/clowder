@@ -441,6 +441,32 @@ The install is a filtered package entry, not a copy of the file:
 A pane that still lacks `/diff` runs `/reload`, or `pi install ./clowder` from the checkout. The
 fallback is unchanged and must be offered: walk the change as before-and-after text, file by file.
 
+### 28. A hand-action the front door repeats is a command, not a rule
+
+The owner, 2026-09-30: "im asking if the action you tried to take could instead be written in python
+as a process". He was right. Four things were done by hand on this machine - with shell commands and
+keystrokes - and each now does its own work and checks it:
+
+- `clowder agent reset NAME` types `/new` into the pane as keys, then verifies the session file
+  changed and fails if it did not. It refuses while a step on that agent is unreported, because
+  the reset wipes the session copy the answer is read from. A slash command sent through the agent
+  prompt is a message, not a command, so the keys path is the only one that works.
+- `clowder job pin <job> --to <reviewer>` pins the job's recorded save into the reviewer's copy
+  and proves the copy holds that commit. It exists for when the writer's space has moved on to a
+  later job, so `job handover` can no longer read the commit from the branch.
+- `clowder job open` fetches before it resolves a base, and refuses a base that is behind its
+  remote, naming the count and the pull. `clowder checkouts` prints one line per checkout so a
+  stale one is visible without anyone running git by hand. Without this the front door was the
+  thing that remembered to pull.
+- `clowder state repair --drop-unknown FIELD --backup PATH` removes a field no copy knows from
+  every record that carries it. It refuses without a free backup path, writes the backup first,
+  names what it removed, and appends one line to `state.json.audit`. The audit format is shared
+  with the queue drop (q-0036), so both write lines a reader can scan the same way.
+
+The rule behind the rule: if the front door has to do something more than once, and it can be
+checked, it belongs in the tool. `--force` stays, as a human's deliberate override, and the pass
+and merge gates are untouched.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

@@ -223,6 +223,19 @@ class Mux:
         ]
         return self._run(argv, timeout_s)
 
+    def build_send_keys_argv(self, target: str, keys: Sequence[str]) -> list[str]:
+        """Type key presses into a pane. A slash command must arrive as keys.
+
+        A slash command sent through the agent prompt is a message, not a command:
+        the agent answers it and the session stays. Individual key presses go into
+        the editor, so Enter submits them.
+        """
+        return [self.binary, "agent", "send-keys", target, *keys]
+
+    def send_keys(self, target: str, keys: Sequence[str], timeout_s: float = 20.0) -> MuxResult:
+        """Type key presses into an agent's pane and report what happened."""
+        return self._run(self.build_send_keys_argv(target, keys), timeout_s)
+
     def start_agent(
         self,
         name: str,

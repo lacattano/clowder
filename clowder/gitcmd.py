@@ -212,6 +212,37 @@ def local_branches(path: str | Path) -> list[str]:
     return [line.strip() for line in answer.splitlines() if line.strip()]
 
 
+def has_remote(path: str | Path, remote: str = "origin") -> bool:
+    """Is there a remote to fetch from or compare against?"""
+    return try_git(path, "remote", "get-url", remote) is not None
+
+
+def fetch(
+    path: str | Path, remote: str = "origin", timeout_s: float = DEFAULT_TIMEOUT_S
+) -> bool:
+    """Fetch the remote before a base is chosen. False when there is no remote."""
+    if not has_remote(path, remote):
+        return False
+    run_git(path, "fetch", remote, timeout_s=timeout_s)
+    return True
+
+
+def commits_behind(path: str | Path, local: str, remote_ref: str) -> int | None:
+    """How many commits `remote_ref` is ahead of `local`.
+
+    None when the remote ref does not exist, so a repo with no remote is never
+    reported as stale by accident.
+    """
+    if try_git(path, "rev-parse", "--verify", "--quiet", remote_ref) is None:
+        return None
+    return count_commits(path, f"{local}..{remote_ref}")
+
+
+def branch_behind(path: str | Path, branch: str, remote: str = "origin") -> int | None:
+    """How far the local branch is behind its remote-tracking branch."""
+    return commits_behind(path, branch, f"refs/remotes/{remote}/{branch}")
+
+
 def resolve_base(path: str | Path, preferred: str | None = None) -> str:
     """The branch a new branch starts from.
 

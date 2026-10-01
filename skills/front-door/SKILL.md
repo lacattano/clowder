@@ -55,6 +55,7 @@ clowder ensure <repo> [--role maker|verifier|teacher|researcher] [--name AGENT] 
 clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT]
 clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
+clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
 clowder job close <job-id> [--delete-branch]
 clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
@@ -65,11 +66,28 @@ clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id>
 clowder agents
+clowder agent reset <agent>
+clowder checkouts [repo...] [--fetch]
 clowder board [--open] [--out PATH]
 clowder config
+clowder state repair --drop-unknown FIELD --backup PATH [--why TEXT] [--by NAME]
 ```
 
 Run `clowder`. From a checkout with nothing installed, `py -3.14 -m clowder`.
+
+- **`agent reset <agent>`** gives a pane a fresh context by typing `/new` as keys, then
+  verifies the session file changed. It refuses while a step on that agent is unreported, and
+  when the session does not change it fails instead of claiming success. Do this at a clean
+  boundary, not mid-job.
+- **`job pin <job-id>`** pins the job's saved commit into the reviewer's copy. Use it when the
+  writer's space has moved on to a later job and `job handover` cannot reach the branch. It
+  verifies the copy holds the commit and prints the branch and commit it pinned.
+- **`checkouts`** prints one line per checkout - main and each worktree - saying whether it is
+  current, behind its remote, or has no remote. `--fetch` refreshes the comparison first. Open a
+  job from a stale base is refused until the checkout is pulled.
+- **`state repair --drop-unknown FIELD --backup PATH`** removes a field no copy knows from every
+  record that carries it. It refuses without a free `--backup` path, writes the backup first,
+  names what it removed, and appends one audit line to `state.json.audit`.
 
 - **`agents`** is the live roster. Read it before every dispatch. Never carry a list of agent
   names, panes or bus addresses from earlier in the session.
@@ -163,6 +181,9 @@ branch name on it. The writer keeps its branch and can carry on.
 
 - Unsaved work is refused, with the file names. A reviewer checks a save, not a folder.
 - A job with no commits of its own yet has nothing to hand over, and that is refused too.
+- When the writer's space has moved on to a later job, `job handover` cannot reach the branch.
+  Use `job pin <job-id> --to verifier` to put the recorded save into the reviewer's copy, and
+  it names the branch and commit it pinned.
 - The reviewer's copy is left exactly where it was pinned. That folder is the evidence of what
   was checked, and the commit is recorded on the job.
 - A step sent to a copy that does not hold the save is refused. Do not work around it. Run

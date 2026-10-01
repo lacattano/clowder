@@ -4,6 +4,7 @@ Mimics only what clowder reads, and only the commands it runs:
 
     agent list
     agent prompt <target> <text>
+    agent send-keys <target> <key>...
     pane split --current --cwd <path> ...
     agent start <name> --kind <kind> --pane <id>
     pane move <pane_id> --workspace <id> --new-tab
@@ -23,6 +24,7 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_PROMPT_FAIL  "1" makes prompt submission fail
     CLOWDER_FAKE_START_FAIL   "1" makes agent start fail
     CLOWDER_FAKE_LOG          append the received argv, one JSON line per call
+    CLOWDER_FAKE_RESET_FAIL   "1" makes `/new` keys leave the session unchanged
 """
 
 from __future__ import annotations
@@ -165,6 +167,29 @@ def main(argv: list[str]) -> int:
                 "id": "cli:pane:move",
                 "result": {"pane": {"pane_id": new_pane_id, "workspace_id": workspace_id}},
             }
+        )
+
+    if argv[:2] == ["agent", "send-keys"]:
+        if _state_path() is None:
+            return _fail("no_state", "the fake has no state file to record keys in", 6)
+        target = argv[2] if len(argv) > 2 else ""
+        keys = argv[3:]
+        state = _load()
+        agents = state.get("agents") or []
+        assert isinstance(agents, list)
+        found = next((a for a in agents if a.get("name") == target), None)
+        if found is None:
+            return _fail("no_such_agent", f"agent {target} is not live", 5)
+        reset = keys == ["/", "n", "e", "w", "enter"]
+        if reset and os.environ.get("CLOWDER_FAKE_RESET_FAIL") != "1":
+            session_dir = os.environ.get("CLOWDER_FAKE_SESSION_DIR")
+            base = Path(session_dir) if session_dir else Path(".")
+            nonce = int(state.get("next_pane", 2))  # type: ignore[arg-type]
+            state["next_pane"] = nonce + 1
+            found["session_file"] = str(base / f"{target}-reset-{nonce}.jsonl")
+        _save(state)
+        return _emit(
+            {"id": "cli:agent:send-keys", "result": {"agent": {"name": target, "keys": keys}}}
         )
 
     if argv[:2] == ["agent", "start"]:

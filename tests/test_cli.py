@@ -1955,6 +1955,247 @@ class CliTest(unittest.TestCase):
         self.assertTrue(other.exists())
         self.assertFalse(self.state.exists())
 
+    # -- agent reset -------------------------------------------------------
+
+    def seed_agent(self, name: str = "myrepo-maker") -> Path:
+        """A stateful fake with one agent that has a real session file."""
+        sessions = self.root / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        session = sessions / f"{name}.jsonl"
+        session.write_text("", encoding="utf-8")
+        self.seed_mux(
+            [{"name": name, "cwd": str(self.repo_path), "session_file": str(session)}]
+        )
+        return session
+
+    def test_agent_reset_changes_the_session_and_names_it(self) -> None:
+        self.seed_agent()
+        code, out, err = self.cli(
+            "agent", "reset", "myrepo-maker", "--timeout", "2", env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("reset: new session", out)
+        self.assertIn("myrepo-maker-reset", out)
+
+    def test_agent_reset_refuses_while_a_step_is_unreported(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli(
+            "agent", "reset", "myrepo-maker", "--timeout", "2", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("unreported step", err)
+        self.assertIn("t-0001", err)
+
+    def test_agent_reset_fails_when_the_session_does_not_change(self) -> None:
+        self.seed_agent()
+        code, _, err = self.cli(
+            "agent",
+            "reset",
+            "myrepo-maker",
+            "--timeout",
+            "0.2",
+            env=self.state_env(CLOWDER_FAKE_RESET_FAIL="1"),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("did not change", err)
+
+    def test_agent_reset_refuses_an_unknown_agent(self) -> None:
+        self.seed_mux([])
+        code, _, err = self.cli("agent", "reset", "ghost", env=self.state_env())
+        self.assertEqual(code, 2)
+        self.assertIn("no live agent named", err)
+
+    # -- job pin -----------------------------------------------------------
+
+    def test_job_pin_puts_the_reviewed_commit_in_the_reviewers_copy(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        commit = self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        code, out, err = self.cli(
+            "job",
+            "pin",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"pinned: task/refund @ {commit[:7]}", out)
+        verifier_folder = self.repo_path / ".worktrees" / "myrepo-verifier"
+        self.assertEqual(gitcmd.commit_of(verifier_folder, "HEAD"), commit)
+        self.assertTrue(gitcmd.is_detached(verifier_folder))
+
+    def test_job_pin_can_name_a_commit_after_the_writer_moved_on(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        commit = self.save_something(maker_folder)
+        # The writer's space moves on: it no longer holds the job branch, so
+        # `handover` could not read the commit from it.
+        gitcmd.detach_at(maker_folder, "main")
+        code, out, err = self.cli(
+            "job",
+            "pin",
+            job_id,
+            "--commit",
+            commit,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(commit[:7], out)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["review_commit"], commit)
+        self.assertEqual(job["held_ref"], f"refs/clowder/held/{job_id}")
+        self.assertTrue(gitcmd.is_reachable(maker_folder, commit), "the pinned save is held")
+
+    # -- checkouts and a stale base ----------------------------------------
+
+    def add_origin(self) -> None:
+        """Give the repo an origin that is one commit ahead of its local main."""
+        origin = self.root / "origin.git"
+        gitcmd.run_git(self.root, "init", "--bare", "-b", "main", str(origin))
+        gitcmd.run_git(self.repo_path, "remote", "add", "origin", str(origin))
+        gitcmd.run_git(self.repo_path, "push", "-u", "origin", "main")
+        other = self.root / "other"
+        gitcmd.run_git(self.root, "clone", str(origin), str(other))
+        gitcmd.run_git(other, "config", "user.email", "test@example.com")
+        gitcmd.run_git(other, "config", "user.name", "Test")
+        (other / "ahead.txt").write_text("x\n", encoding="utf-8")
+        gitcmd.run_git(other, "add", "ahead.txt")
+        gitcmd.run_git(other, "commit", "-m", "ahead")
+        gitcmd.run_git(other, "push", "origin", "main")
+
+    def test_job_open_refuses_a_base_that_is_behind_its_remote(self) -> None:
+        self.add_origin()
+        self.seed_mux([])
+        code, _, err = self.cli(
+            "job",
+            "open",
+            "myrepo",
+            "--label",
+            "refund",
+            "--role",
+            "maker",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("behind", err)
+        self.assertIn("pull --ff-only", err)
+
+    def test_job_open_with_force_ignores_a_stale_base(self) -> None:
+        self.add_origin()
+        self.seed_mux([])
+        code, out, err = self.cli(
+            "job",
+            "open",
+            "myrepo",
+            "--label",
+            "refund",
+            "--role",
+            "maker",
+            "--force",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("open", out)
+
+    def test_checkouts_reports_a_checkout_behind_its_remote(self) -> None:
+        self.add_origin()
+        code, out, err = self.cli("checkouts", "myrepo", "--fetch", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("behind 1", out)
+
+    def test_checkouts_json_serialises_every_field(self) -> None:
+        self.add_origin()
+        code, out, err = self.cli(
+            "checkouts", "myrepo", "--fetch", "--json", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["count"], len(payload["checkouts"]))
+        self.assertTrue(any(item["behind"] == 1 for item in payload["checkouts"]))
+
+    # -- state repair ------------------------------------------------------
+
+    def write_unknown_field(self, field: str = "surprise") -> tuple[str, str]:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        tid = next(iter(payload["tasks"]))
+        payload["tasks"][tid][field] = "left by a stale copy"
+        self.state.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return tid, field
+
+    def test_state_repair_drops_an_unknown_field_with_backup_and_audit(self) -> None:
+        tid, field = self.write_unknown_field()
+        backup = self.root / "state.backup.json"
+        code, out, err = self.cli(
+            "state",
+            "repair",
+            "--drop-unknown",
+            field,
+            "--backup",
+            str(backup),
+            "--why",
+            "a stale copy wrote it",
+            "--by",
+            "topcat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"dropped {field!r}", out)
+        self.assertTrue(backup.is_file())
+        after = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertNotIn(field, after["tasks"][tid])
+
+        audit_file = self.root / "state.json.audit"
+        self.assertTrue(audit_file.is_file())
+        line = json.loads(audit_file.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(line["action"], "drop-unknown")
+        self.assertEqual(line["field"], field)
+        self.assertEqual(line["by"], "topcat")
+        self.assertEqual(line["removed"]["task"], 1)
+        self.assertEqual(line["backup"], str(backup))
+
+    def test_state_repair_refuses_without_a_backup(self) -> None:
+        _, field = self.write_unknown_field()
+        code, _, err = self.cli("state", "repair", "--drop-unknown", field, env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--backup", err)
+
+    def test_state_repair_refuses_an_existing_backup(self) -> None:
+        _, field = self.write_unknown_field()
+        backup = self.root / "state.backup.json"
+        backup.write_text("do not overwrite me", encoding="utf-8")
+        code, _, err = self.cli(
+            "state",
+            "repair",
+            "--drop-unknown",
+            field,
+            "--backup",
+            str(backup),
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", err)
+        self.assertEqual(backup.read_text(encoding="utf-8"), "do not overwrite me")
+
 
 if __name__ == "__main__":
     unittest.main()
