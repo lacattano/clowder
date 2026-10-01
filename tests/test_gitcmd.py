@@ -179,6 +179,54 @@ class GitTest(unittest.TestCase):
         orphan = self.repo.commit("orphan.txt")
         self.assertFalse(gitcmd.is_reachable(self.repo.root, orphan))
 
+    # -- a change on a branch, by content ----------------------------------
+
+    def test_patch_id_survives_a_rebase(self) -> None:
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        self.repo.commit("b.txt")
+        old = self.repo.commit("c.txt")
+        gitcmd.switch_branch(self.repo.root, "main")
+        self.repo.commit("d.txt")
+        gitcmd.switch_branch(self.repo.root, "task/x")
+        gitcmd.run_git(self.repo.root, "rebase", "main")
+        new = gitcmd.head_commit(self.repo.root, short=False) or ""
+        gitcmd.switch_branch(self.repo.root, "main")
+
+        self.assertNotEqual(old, new)
+        self.assertIsNotNone(gitcmd.patch_id(self.repo.root, old))
+        self.assertEqual(
+            gitcmd.patch_id(self.repo.root, old), gitcmd.patch_id(self.repo.root, new)
+        )
+
+    def test_a_superseded_commit_is_content_on_a_branch(self) -> None:
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        self.repo.commit("b.txt")
+        old = self.repo.commit("c.txt")
+        gitcmd.switch_branch(self.repo.root, "main")
+        self.repo.commit("d.txt")
+        gitcmd.switch_branch(self.repo.root, "task/x")
+        gitcmd.run_git(self.repo.root, "rebase", "main")
+        gitcmd.switch_branch(self.repo.root, "main")
+
+        self.assertFalse(gitcmd.is_reachable(self.repo.root, old), "the old hash is gone")
+        self.assertIs(gitcmd.content_on_a_branch(self.repo.root, old), True)
+
+    def test_a_lost_commit_is_not_content_on_a_branch(self) -> None:
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        lost = self.repo.commit("lost.txt")
+        gitcmd.run_git(self.repo.root, "reset", "--hard", "HEAD~1")
+        gitcmd.switch_branch(self.repo.root, "main")
+
+        self.assertFalse(gitcmd.is_reachable(self.repo.root, lost))
+        self.assertIs(gitcmd.content_on_a_branch(self.repo.root, lost), False)
+
+    def test_an_empty_change_cannot_be_checked(self) -> None:
+        gitcmd.run_git(self.repo.root, "checkout", "--detach")
+        gitcmd.run_git(self.repo.root, "commit", "--allow-empty", "-m", "empty")
+        commit = gitcmd.head_commit(self.repo.root, short=False) or ""
+        self.assertFalse(gitcmd.is_reachable(self.repo.root, commit))
+        self.assertIsNone(gitcmd.content_on_a_branch(self.repo.root, commit))
+
     # -- worktrees ---------------------------------------------------------
 
     def test_add_a_worktree_on_a_new_branch(self) -> None:

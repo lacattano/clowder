@@ -220,6 +220,25 @@ class WaitingTest(unittest.TestCase):
             "the name comes before the handle",
         )
 
+    def test_owner_items_are_numbered_in_order(self) -> None:
+        first = task("t-0001", owner_item="choose A or B", owner_item_at="2026-10-01T10:00:00Z")
+        second = task(
+            "t-0002", owner_item="choose C or D", owner_item_at="2026-10-01T11:00:00Z"
+        )
+        waiting = waiting_on_you(data(tasks=[second, first]))
+        self.assertIn("<b>1.</b> choose A or B", waiting[0])
+        self.assertIn("<b>2.</b> choose C or D", waiting[1])
+
+    def test_an_uncheckable_commit_is_a_worker_note_not_a_warning(self) -> None:
+        self.assertEqual(
+            waiting_on_you(data(tasks=[task()], uncheckable={"t-0001"})),
+            [],
+            "could not check is not work at risk",
+        )
+        worker = " ".join(waiting_for_worker(data(tasks=[task()], uncheckable={"t-0001"})))
+        self.assertIn("could not check", worker)
+        self.assertIn("t-0001", worker)
+
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
 

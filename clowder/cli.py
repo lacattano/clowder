@@ -880,6 +880,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         if args.decide:
             task.decision_answer = args.decide
             task.decision_answered_at = now_iso()
+            # The decision was on the board; recording his answer clears it, so the
+            # list is never longer than the open decisions.
+            if task.owner_item is not None:
+                task.owner_item = None
+                task.owner_item_at = None
             changed = True
         if changed:
             store.save()
@@ -1999,11 +2004,20 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
 
     tasks = store.all()
-    stranded = {
-        task.id
-        for task in tasks
-        if task.commit and task.worktree and not gitcmd.is_reachable(task.worktree, task.commit)
-    }
+    # A commit on no branch is only at risk when its change is on no branch either.
+    # A rebase rewrites the hash but keeps the patch-id, so the old commit is
+    # superseded, not lost. When the change cannot be compared, say so instead of
+    # raising a false alarm.
+    stranded: set[str] = set()
+    uncheckable: set[str] = set()
+    for task in tasks:
+        if not (task.commit and task.worktree):
+            continue
+        held = gitcmd.content_on_a_branch(task.worktree, task.commit)
+        if held is False:
+            stranded.add(task.id)
+        elif held is None:
+            uncheckable.add(task.id)
 
     return BoardData(
         tasks=tasks,
@@ -2016,6 +2030,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         note=note,
         front_door_name=config.front_door_name,
         stranded=stranded,
+        uncheckable=uncheckable,
     )
 
 
@@ -2037,6 +2052,7 @@ def cmd_board(args: argparse.Namespace) -> int:
                 "queued": len(data.queued),
                 "live_ok": data.live_ok,
                 "stranded": sorted(data.stranded),
+                "uncheckable": sorted(data.uncheckable),
             }
         )
         return 0

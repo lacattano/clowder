@@ -135,6 +135,9 @@ class BoardData:
     front_door_name: str | None = None
     # Task ids whose commit is on no branch, so the work exists only in one folder.
     stranded: set[str] = field(default_factory=set)
+    # Task ids whose commit is on no branch, and whose change could not be checked
+    # against the branches: a merge, an empty change, or a read failure.
+    uncheckable: set[str] = field(default_factory=set)
 
 
 def _e(value: object) -> str:
@@ -175,12 +178,16 @@ def waiting_on_you(data: BoardData) -> list[str]:
     lines: list[str] = []
 
     # What the front door recorded as waiting on him, oldest first. This is the
-    # catch-all for a report it holds, or a question it asked outside a task.
-    waiting = [t for t in data.tasks if t.owner_item and t.status != CLOSED]
-    for task in sorted(waiting, key=lambda item: item.owner_item_at or item.created_at):
+    # catch-all for a report it holds, or a question it asked outside a task. Each
+    # is numbered so he can answer with a number.
+    waiting = sorted(
+        (task for task in data.tasks if task.owner_item and task.status != CLOSED),
+        key=lambda item: item.owner_item_at or item.created_at,
+    )
+    for number, task in enumerate(waiting, start=1):
         lines.append(
-            f"<b>your move</b> {_e(_clip(task.owner_item or '', 240))} "
-            f"<span class='why'>[{_e(task.id)}]</span>"
+            f"<b>{number}.</b> {_e(_clip(task.owner_item or '', 240))} "
+            f"<span class='why'>your move, [{_e(task.id)}]</span>"
         )
 
     for task in data.tasks:
@@ -268,6 +275,15 @@ def waiting_for_worker(data: BoardData) -> list[str]:
                 f"{_e(task.agent)} is {_e(agent.status or 'idle')} and has said nothing "
                 f"for {_e(human_age(task.age_seconds))} "
                 f"<span class='why'>{_e(_clip(task.question, 120))}</span>"
+            )
+
+    for task in data.tasks:
+        if task.id in data.uncheckable:
+            lines.append(
+                f"<b>could not check</b> <span class='id'>{_e(task.id)}</span> "
+                f"commit {_e(task.commit)} is on no branch, and it could not be told "
+                "whether its change is already on one "
+                f"<span class='why'>held in {_e(task.worktree)}</span>"
             )
 
     return lines

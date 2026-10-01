@@ -366,6 +366,81 @@ def is_reachable(path: str | Path, commit: str) -> bool:
     return bool(held and held.strip())
 
 
+def patch_id(path: str | Path, commit: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> str | None:
+    """The stable patch-id of one commit's change, or None when it cannot be told.
+
+    Two commits with the same patch-id carry the same change even when a rebase
+    gave them different hashes. A merge or an empty commit has no patch-id, and
+    the caller is told so rather than guessing.
+    """
+    shown = try_git(path, "show", "--no-color", "--patch", "--format=commit %H", commit)
+    if not shown or not shown.strip():
+        return None
+    try:
+        piped = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            cwd=str(path),
+            input=shown,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except OSError:
+        return None
+    except subprocess.TimeoutExpired:
+        return None
+    if piped.returncode != 0:
+        return None
+    lines = piped.stdout.strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[0].split()
+    return parts[0] if parts else None
+
+
+def content_on_a_branch(path: str | Path, commit: str) -> bool | None:
+    """Is this commit, or a commit carrying the same change, held by a branch?
+
+    True  - a branch, a remote or a refs/clowder ref holds it.
+    False - the change exists nowhere but this one commit.
+    None  - it could not be told: a merge, an empty change, or a read failure.
+
+    This is what keeps a rebased-away commit from being called work at risk: the
+    old hash is on no branch, but the new hash's patch-id is the same.
+    """
+    if is_reachable(path, commit):
+        return True
+    ident = patch_id(path, commit)
+    if ident is None:
+        return None
+    subject = try_git(path, "show", "-s", "--format=%s", commit)
+    if subject is None:
+        return None
+    subject = subject.strip()
+    if not subject:
+        return None
+    listing = try_git(
+        path,
+        "log",
+        "--all",
+        "--no-merges",
+        "--fixed-strings",
+        f"--grep={subject}",
+        "--format=%H",
+    )
+    if listing is None:
+        return None
+    for other in listing.splitlines():
+        other = other.strip()
+        if not other or other == commit:
+            continue
+        if patch_id(path, other) == ident:
+            return True
+    return False
+
+
 def add_worktree(repo: str | Path, target: str | Path, branch: str, base: str) -> None:
     """Add a worktree on `branch`, making the branch from `base` if needed."""
     if branch_exists(repo, branch):
