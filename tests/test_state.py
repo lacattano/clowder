@@ -183,6 +183,35 @@ class StateStoreTest(unittest.TestCase):
         saved = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(saved["tasks"]["t-0001"]["surprise"], 7)
 
+    def test_drop_unknown_fields_removes_the_named_field_everywhere(self) -> None:
+        task = make_task("t-0001")
+        task.extra = {"surprise": 1}
+        job = make_job("j-0001")
+        job.extra = {"surprise": 2}
+        item = make_queued("q-0001")
+        item.extra = {"surprise": 3}
+        store = StateStore(self.path)
+        store.add(task)
+        store.add_job(job)
+        store.add_queued(item)
+        store.save()
+
+        store = StateStore(self.path)
+        removed = store.drop_unknown_fields("surprise")
+        self.assertEqual(removed, {"task": 1, "job": 1, "queued": 1})
+        store.save()
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        for group, key in (("tasks", "t-0001"), ("jobs", "j-0001"), ("queued", "q-0001")):
+            self.assertNotIn("surprise", saved[group][key])
+
+    def test_drop_unknown_fields_leaves_known_fields_alone(self) -> None:
+        store = StateStore(self.path)
+        store.add(make_task("t-0001", answer="kept"))
+        store.save()
+        removed = store.drop_unknown_fields("surprise")
+        self.assertEqual(removed, {"task": 0, "job": 0, "queued": 0})
+        self.assertEqual(store.get("t-0001").answer, "kept")
+
     def test_save_leaves_no_temp_file(self) -> None:
         store = StateStore(self.path)
         store.add(make_task())

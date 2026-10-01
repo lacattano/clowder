@@ -611,5 +611,21 @@ class StateStore:
         self.load()
         return len(self._tasks)
 
+    def drop_unknown_fields(self, field: str) -> dict[str, int]:
+        """Remove one unknown field from every record that carries it.
+
+        Returns how many were dropped, per record type. Only the in-memory
+        records change; the caller takes a backup first and then calls `save`.
+        """
+        self.load()
+        removed = {"task": 0, "job": 0, "queued": 0}
+        groups = (("task", self._tasks), ("job", self._jobs), ("queued", self._queued))
+        for label, records in groups:
+            for record in records.values():
+                if field in record.extra:
+                    del record.extra[field]
+                    removed[label] += 1
+        return removed
+
     def __iter__(self) -> Iterator[Task]:
         return iter(self.all())

@@ -274,6 +274,30 @@ class GitTest(unittest.TestCase):
     def test_an_empty_command_does_nothing(self) -> None:
         gitcmd.run_command("   ", self.repo.root)
 
+    # -- a stale base ------------------------------------------------------
+
+    def test_fetch_is_false_without_a_remote(self) -> None:
+        self.assertFalse(gitcmd.fetch(self.repo.root))
+        self.assertIsNone(gitcmd.branch_behind(self.repo.root, "main"))
+
+    def test_branch_behind_counts_commits_after_a_fetch(self) -> None:
+        origin = Path(self.tmp.name) / "origin.git"
+        gitcmd.run_git(self.tmp.name, "init", "--bare", "-b", "main", str(origin))
+        gitcmd.run_git(self.repo.root, "remote", "add", "origin", str(origin))
+        gitcmd.run_git(self.repo.root, "push", "-u", "origin", "main")
+        other = Path(self.tmp.name) / "other"
+        gitcmd.run_git(self.tmp.name, "clone", str(origin), str(other))
+        gitcmd.run_git(other, "config", "user.email", "t@example.com")
+        gitcmd.run_git(other, "config", "user.name", "Test")
+        (other / "ahead.txt").write_text("x\n", encoding="utf-8")
+        gitcmd.run_git(other, "add", "ahead.txt")
+        gitcmd.run_git(other, "commit", "-m", "ahead")
+        gitcmd.run_git(other, "push", "origin", "main")
+
+        self.assertTrue(gitcmd.fetch(self.repo.root))
+        self.assertEqual(gitcmd.branch_behind(self.repo.root, "main"), 1)
+        self.assertEqual(gitcmd.branch_behind(self.repo.root, "task/nope"), None)
+
 
 if __name__ == "__main__":
     unittest.main()
