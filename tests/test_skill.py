@@ -66,6 +66,25 @@ class SkillTest(unittest.TestCase):
         expected = marker_line("t-0004", "ship", "myrepo", "topcat")
         self.assertIn(expected, read_skill())
 
+    def test_the_skill_records_how_the_front_door_resets_a_context(self) -> None:
+        text = " ".join(read_skill().split())
+        self.assertIn('herdr agent send-keys NAME "/" n e w enter', text)
+        self.assertIn("MSYS_NO_PATHCONV=1 herdr agent send-keys NAME", text)
+        self.assertIn("herdr agent get NAME", text)
+        self.assertIn("message, not as a command", text)
+        self.assertIn("open job", text)
+        self.assertIn("state stay on disk", text)
+
+    def test_no_file_keeps_the_human_only_claim(self) -> None:
+        # The front door can refresh a pane or join it from its side, so the
+        # claim that only a human can do it is gone from every file.
+        offenders = []
+        for path in (SKILL, REPO / "DESIGN.md", REPO / "clowder" / "marker.py"):
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            if "only a human" in text.lower():
+                offenders.append(path.name)
+        self.assertEqual(offenders, [])
+
     def test_the_report_shape_is_documented(self) -> None:
         text = read_skill()
         self.assertIn("Re: <the question it answers>", text)

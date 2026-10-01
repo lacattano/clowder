@@ -50,7 +50,9 @@ task, each in its own pane.
 ### 3. Workers are persistent panes, not spawned processes
 
 You keep the ability to click into any worker and change its model or reset its context by
-hand. Consequence: the dispatcher does **not** manage models or context.
+hand. The front door can reset a worker's context from its side too, by typing the command into
+the pane as keys. Consequence: the dispatcher does **not** manage models, and it resets context
+only at a clean boundary - never while a job or a step is open.
 
 ### 4. One git worktree per task, passed as the working directory
 
@@ -317,8 +319,10 @@ session.
 
 A pane can send only once the remote-pi Docker service is running and the pane is joined with
 `/remote-pi join`; a pane that has not joined answers "Not in a session", which looks the same as
-a failed send, so the front door says which it is rather than let it fail quietly. Only a human
-can join a pane, and only from the pane - the front door cannot do it from its side.
+a failed send, so the front door says which it is rather than let it fail quietly. The front door
+can join an unjoined pane from its side by typing the command into the pane as keys
+(`herdr agent send-keys`); a slash command sent through the agent prompt is a message, not a
+command.
 
 `clowder inbox` is the fallback, not the first check. When a send fails, the step stays in the
 inbox until `report` reads it, so the bus message is never the only record. The board is not a

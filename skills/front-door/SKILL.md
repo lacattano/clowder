@@ -229,12 +229,29 @@ Before any pane can send, two things must be true:
 that has not joined looks exactly like a pane whose send failed, so say which it is to the owner
 rather than let it fail quietly:
 
-> The verifier has not joined the bus. Run `/remote-pi join` in its pane and I will send the job.
+> The verifier has not joined the bus. I will join it from its side and send the job.
 
-Only a human can join a pane, and only from the pane: the front door cannot do it from its side. A
-slash command sent through the agent prompt arrives as a message, not as a command. In that pane
-the human can type `/new` for a fresh session, or exit with ctrl+c twice and start the agent again
-in the same pane.
+A slash command sent through the agent prompt arrives as a message, not as a command: the agent
+answers it and the session stays. The front door acts on a pane from its side by typing the command
+into the pane as individual keys, so the editor holds it and the enter key submits it:
+
+    herdr agent send-keys NAME "/" n e w enter
+
+On Windows under Git Bash, prefix it so the leading slash is not turned into a path:
+
+    MSYS_NO_PATHCONV=1 herdr agent send-keys NAME "/" n e w enter
+
+The same call submits `/remote-pi join`, and `/new` gives the agent a fresh context. A reset has a
+limit and a cost:
+
+- Do not reset while the agent's copy holds an open job, or while a step on it is still running. A
+  reset mid-job loses the context a walkthrough may need.
+- A reset costs the conversation: it is gone. The reports and the state stay on disk.
+- To check it worked, read the agent's session path with `herdr agent get NAME`. A reset shows a
+  new path.
+
+Exiting Pi with ctrl+c twice does not work on this machine: the editor clears and Pi stays. The
+reset above is the working way.
 
 A send that still fails does not lose the answer. Run `clowder inbox` and read it with
 `clowder report <id>`. The answer stays in the worker's session, so the bus message is never the

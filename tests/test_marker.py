@@ -45,7 +45,9 @@ class ApplyMarkerTest(unittest.TestCase):
         self.assertIn("/remote-pi join", text)
         self.assertLess(text.index("Docker service"), text.index("/remote-pi join"))
         self.assertIn("list_peers", text)
-        self.assertIn("human", text)
+        # The front door can join the pane from its side; it is not human-only.
+        self.assertNotIn("only a human", text.lower())
+        self.assertIn("front door can join", text)
         self.assertTrue(text.endswith("do the thing"))
 
     def test_the_message_names_no_bus_address(self) -> None:
