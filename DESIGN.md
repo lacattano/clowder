@@ -467,6 +467,20 @@ The rule behind the rule: if the front door has to do something more than once, 
 checked, it belongs in the tool. `--force` stays, as a human's deliberate override, and the pass
 and merge gates are untouched.
 
+### 29. A dead step is abandoned, not forced
+
+When a pane dies or the machine restarts mid-step, the step can never report. `dispatch` refuses
+the next step while it is open, and the only way past was `--force`, which skips the branch and
+clean-tree checks with it. That is how a half-captured answer once got recorded as a step's result.
+
+- `clowder step abandon <id> --why TEXT` marks an open step abandoned, keeps the reason and the
+time, leaves the answer empty, and frees its job for the next step. A missing `--why` is refused.
+- `report` never captures an answer for an abandoned step, and says it was abandoned instead of
+  "no answer yet". `tasks` shows `abandoned` in the status column, apart from `reported`.
+- It appends an audit line, the same shape the state repair writes: time, who, action, step, job,
+  agent, reason.
+- `--force` is kept. This replaces its routine use, not its existence.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from

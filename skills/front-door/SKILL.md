@@ -62,6 +62,7 @@ clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
 clowder owner <id> --item TEXT | --clear
+clowder step abandon <id> --why TEXT
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id>
@@ -88,6 +89,10 @@ Run `clowder`. From a checkout with nothing installed, `py -3.14 -m clowder`.
 - **`state repair --drop-unknown FIELD --backup PATH`** removes a field no copy knows from every
   record that carries it. It refuses without a free `--backup` path, writes the backup first,
   names what it removed, and appends one audit line to `state.json.audit`.
+- **`step abandon <id> --why TEXT`** records a step that can never report - a pane died, the
+  machine restarted - as abandoned, keeps the reason, leaves the answer empty, and frees its job
+  for the next step. It refuses without a reason. It writes one audit line, like the state repair.
+  Do not use `--force` for this; `--force` skips the branch and clean-tree checks with it.
 
 - **`agents`** is the live roster. Read it before every dispatch. Never carry a list of agent
   names, panes or bus addresses from earlier in the session.

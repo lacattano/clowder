@@ -11,6 +11,7 @@ from pathlib import Path
 
 from clowder.errors import StateError
 from clowder.state import (
+    ABANDONED,
     DISPATCHED,
     REPORTED,
     SCHEMA_VERSION,
@@ -211,6 +212,22 @@ class StateStoreTest(unittest.TestCase):
         removed = store.drop_unknown_fields("surprise")
         self.assertEqual(removed, {"task": 0, "job": 0, "queued": 0})
         self.assertEqual(store.get("t-0001").answer, "kept")
+
+    def test_an_abandoned_step_survives_a_reload_with_no_answer(self) -> None:
+        task = make_task("t-0001")
+        task.status = ABANDONED
+        task.abandoned_at = now_iso()
+        task.abandon_reason = "the pane died"
+        store = StateStore(self.path)
+        store.add(task)
+        store.save()
+
+        again = StateStore(self.path).get("t-0001")
+        self.assertTrue(again.is_abandoned)
+        self.assertFalse(again.is_open)
+        self.assertIsNone(again.answer)
+        self.assertEqual(again.abandon_reason, "the pane died")
+        self.assertEqual(again.abandoned_at, task.abandoned_at)
 
     def test_save_leaves_no_temp_file(self) -> None:
         store = StateStore(self.path)

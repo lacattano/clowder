@@ -22,6 +22,7 @@ from .mux import AgentInfo, Mux
 from .report import INDENT, build_report, usage_breakdown
 from .sessions import read_answer, read_usage
 from .state import (
+    ABANDONED,
     CLOSED,
     DISPATCHED,
     FAILED,
@@ -182,6 +183,21 @@ def build_parser() -> argparse.ArgumentParser:
     owner.add_argument("--clear", action="store_true", help="he has answered it; remove it")
     owner.add_argument("--json", action="store_true")
     owner.set_defaults(handler=cmd_owner, refreshes_board=True)
+
+    step = sub.add_parser("step", help="act on one dispatched step", parents=[common])
+    step_sub = step.add_subparsers(dest="step_command", required=True)
+    s_abandon = step_sub.add_parser(
+        "abandon",
+        help="record a dead step as abandoned, and free its job",
+        parents=[common],
+    )
+    s_abandon.add_argument("id", help="task id, e.g. t-0001")
+    s_abandon.add_argument("--why", metavar="TEXT", help="why it is abandoned (required)")
+    s_abandon.add_argument(
+        "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
+    )
+    s_abandon.add_argument("--json", action="store_true")
+    s_abandon.set_defaults(handler=cmd_step_abandon, refreshes_board=True)
 
     make = sub.add_parser(
         "ensure",
@@ -722,8 +738,12 @@ def cmd_tasks(args: argparse.Namespace) -> int:
         )
     print(_column(rows))
     open_count = sum(1 for t in tasks if t.is_open)
+    abandoned = sum(1 for t in tasks if t.is_abandoned)
     unanswered = sum(1 for t in tasks if not t.answer)
-    print(f"\n{len(tasks)} task(s), {open_count} still open, {unanswered} with no answer")
+    print(
+        f"\n{len(tasks)} task(s), {open_count} still open, {abandoned} abandoned, "
+        f"{unanswered} with no answer"
+    )
     return 0
 
 
@@ -812,6 +832,10 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     usage = read_usage(session_path, since) if session_path else None
     answer = task.answer or (read_answer(session_path, since) if session_path else None)
+    # An abandoned step keeps no answer: it died before one came, and reading the
+    # session now would capture a half sentence as its result.
+    if task.is_abandoned:
+        answer = None
 
     if task.answer:
         source = task.answer_source or "record"
@@ -916,6 +940,56 @@ def cmd_owner(args: argparse.Namespace) -> int:
         _emit_json({"task": task.to_dict()})
         return 0
     print(note)
+    return 0
+
+
+def cmd_step_abandon(args: argparse.Namespace) -> int:
+    """Record a dead step as abandoned, and free its job for the next step.
+
+    When a pane dies or the machine restarts mid-step, the step can never report.
+    Before this, the only way past was --force, which also skipped the branch and
+    clean-tree checks. Abandoning keeps the reason, leaves the answer empty, and
+    is not read as a report.
+    """
+    config, store = _context(args)
+    why = (args.why or "").strip()
+    if not why:
+        raise UsageError("--why is required: say why the step is being abandoned")
+    task = store.get(args.id)
+    if task.status == ABANDONED:
+        raise StateError(f"{task.id} is already abandoned.")
+    if not task.is_open:
+        raise StateError(
+            f"{task.id} is {task.status}, not open. Only an open step can be abandoned; "
+            "a step that reported is read with `clowder report`."
+        )
+
+    task.status = ABANDONED
+    task.abandoned_at = now_iso()
+    task.abandon_reason = why
+    store.save()
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": task.abandoned_at,
+            "by": who,
+            "action": "step-abandon",
+            "step": task.id,
+            "job": task.job,
+            "agent": task.agent,
+            "reason": why,
+        },
+    )
+
+    if args.json:
+        _emit_json({"task": task.to_dict(), "audit": str(audit_file)})
+        return 0
+    print(f"{task.id} abandoned: {why}")
+    if task.job:
+        print(f"{INDENT}{task.job} is free for the next step")
+    print(f"{INDENT}audit: {audit_file}")
     return 0
 
 
