@@ -65,6 +65,24 @@ class GitTest(unittest.TestCase):
         entries = gitcmd.status_entries(self.repo.root)
         self.assertTrue(any("scratch.txt" in entry for entry in entries))
 
+    def test_the_panes_pi_state_does_not_make_it_dirty(self) -> None:
+        # The tool writes `.pi/remote-pi/config.json` so a new pane joins the
+        # relay. That is local state, not the agent's work, so it is ignored.
+        config = self.repo.root / ".pi" / "remote-pi" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text("{}", encoding="utf-8")
+        self.assertTrue(gitcmd.is_clean(self.repo.root))
+        self.assertEqual(gitcmd.status_entries(self.repo.root), [])
+
+    def test_pi_state_does_not_hide_real_work(self) -> None:
+        config = self.repo.root / ".pi" / "remote-pi" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text("{}", encoding="utf-8")
+        (self.repo.root / "scratch.txt").write_text("x", encoding="utf-8")
+        entries = gitcmd.status_entries(self.repo.root)
+        self.assertTrue(any("scratch.txt" in entry for entry in entries))
+        self.assertFalse(any(".pi" in entry for entry in entries))
+
     def test_an_edited_file_makes_it_dirty(self) -> None:
         (self.repo.root / "readme.md").write_text("changed\n", encoding="utf-8")
         self.assertFalse(gitcmd.is_clean(self.repo.root))

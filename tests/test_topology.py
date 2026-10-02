@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
+from clowder import gitcmd
 from clowder.errors import UsageError
 from clowder.gitcmd import Identity
 from clowder.mux import AgentInfo, MuxResult
@@ -15,6 +17,7 @@ from clowder.topology import (
     match_agent,
     sanitise,
     workspace_for_repo,
+    write_remote_pi_config,
 )
 
 
@@ -226,6 +229,28 @@ class EnsureAgentTest(unittest.TestCase):
             [f"split {Path('C:/code/myrepo')}", "start myrepo-maker pi w9:p101"],
         )
 
+    def test_a_new_pane_gets_a_remote_pi_config_that_turns_the_relay_on(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "myrepo"
+            repo.mkdir()
+            gitcmd.run_git(repo, "init", "-b", "main")
+            gitcmd.run_git(repo, "config", "user.email", "test@example.com")
+            gitcmd.run_git(repo, "config", "user.name", "Test")
+            (repo / "readme.md").write_text("x\n", encoding="utf-8")
+            gitcmd.run_git(repo, "add", "readme.md")
+            gitcmd.run_git(repo, "commit", "-m", "first")
+
+            mux = StubMux([])
+            result = ensure_agent(mux, "myrepo", repo, role="maker")
+            self.assertTrue(result.ok)
+
+            space = repo / ".worktrees" / "myrepo-maker"
+            config = space / ".pi" / "remote-pi" / "config.json"
+            self.assertTrue(config.is_file(), "the new pane can reach the relay")
+            data = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(data["agent_name"], "myrepo-maker")
+            self.assertIs(data["auto_start_relay"], True)
+
     def test_the_crew_identity_reaches_the_new_panes_environment(self) -> None:
         identity = Identity("clowder-bot", "bot@example.com")
         mux = StubMux([])
@@ -324,6 +349,36 @@ class EnsureAgentTest(unittest.TestCase):
         mux = StubMux([])
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         json.dumps(result.as_dict())
+
+
+class WriteRemotePiConfigTest(unittest.TestCase):
+    def test_it_writes_the_name_and_turns_the_relay_on(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_remote_pi_config(tmp, "myrepo-maker")
+            assert path is not None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["agent_name"], "myrepo-maker")
+            self.assertIs(data["auto_start_relay"], True)
+
+    def test_it_keeps_settings_that_are_already_there(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".pi" / "remote-pi" / "config.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps({"relay": "http://relay", "agent_name": "old"}),
+                encoding="utf-8",
+            )
+            write_remote_pi_config(tmp, "new")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["relay"], "http://relay")
+            self.assertEqual(data["agent_name"], "new")
+            self.assertIs(data["auto_start_relay"], True)
+
+    def test_a_missing_folder_is_not_created(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope"
+            self.assertIsNone(write_remote_pi_config(missing, "x"))
+            self.assertFalse(missing.exists())
 
 
 class PanePlacementTest(unittest.TestCase):

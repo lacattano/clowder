@@ -156,8 +156,14 @@ def toplevel(path: str | Path) -> str | None:
 
 
 def status_entries(path: str | Path) -> list[str]:
-    """`git status --porcelain`, one entry per changed or untracked path."""
-    answer = try_git(path, "status", "--porcelain")
+    """`git status --porcelain`, one entry per changed or untracked path.
+
+    The pane's own `.pi/` directory is local state the tool writes - the remote-pi
+    config, the skills' logs - not the agent's work. It is excluded, so a space
+    stays clean and `job open` does not refuse over the tool's own file. A repo
+    that already ignores `.pi/` is unaffected; one that does not is kept clean.
+    """
+    answer = try_git(path, "status", "--porcelain", "--", ":(exclude).pi/")
     if answer is None:
         return []
     return [line for line in answer.splitlines() if line.strip()]

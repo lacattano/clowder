@@ -10,6 +10,7 @@ module tries the first and reports clearly when it falls back to the second.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -175,6 +176,41 @@ def worktree_path(repo_path: str | Path, worktree_dir: str, name: str) -> Path:
     return Path(repo_path) / worktree_dir / name
 
 
+# Where a pane keeps its own remote-pi settings. The remote-pi extension reads it
+# from the pane's working directory, which is fixed when the pane is made.
+REMOTE_PI_CONFIG = (".pi", "remote-pi", "config.json")
+
+
+def write_remote_pi_config(workdir: str | Path, name: str) -> Path | None:
+    """Give a new pane a remote-pi config, so its Pi joins the relay on start.
+
+    The remote-pi extension auto-inits on session start only when the pane's own
+    `.pi/remote-pi/config.json` exists and `auto_start_relay` is true. A fresh
+    space has no such file, so a pane made there sits on the local mesh only, off
+    the relay, and the owner's phone never sees it. This writes the file before
+    the pane's Pi starts, merging any settings already there.
+
+    Returns the path, or None when there is no folder to write into.
+    """
+    root = Path(workdir)
+    if not root.is_dir():
+        return None
+    path = root.joinpath(*REMOTE_PI_CONFIG)
+    data: dict[str, object] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except OSError, json.JSONDecodeError:
+            loaded = None
+        if isinstance(loaded, dict):
+            data = loaded
+    data["agent_name"] = name
+    data["auto_start_relay"] = True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def ensure_agent(
     mux: Mux,
     repo_name: str,
@@ -266,6 +302,12 @@ def ensure_agent(
         )
 
     workdir, note = _prepare_worktree(repo_path, wanted, worktree_dir, base, setup)
+
+    # Before the pane's Pi starts, give it a remote-pi config that turns the relay
+    # on. Without it the extension does not auto-init, and the pane never reaches
+    # the owner's phone. Written here, before the split, so a failure leaves no
+    # half-made pane behind.
+    write_remote_pi_config(workdir, wanted)
 
     # A repo's agents are tabs in one workspace. When a peer is already there, the
     # new pane joins it as a new tab instead of landing beside whoever asked. A
