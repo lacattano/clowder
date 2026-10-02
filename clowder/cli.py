@@ -1219,6 +1219,9 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         worktree=worktree,
         branch=branch,
         base=base_ref,
+        # The true fork point. For an existing branch that is not the base tip:
+        # `merge-base` finds where the branch actually left the base.
+        base_commit=gitcmd.merge_base(worktree, base_ref, branch),
         agent=agent.name,
         commit=gitcmd.head_commit(worktree),
     )
@@ -1613,9 +1616,13 @@ def _crew_identity(config: Config) -> gitcmd.Identity:
 def _publish_branch(job: Job, identity: gitcmd.Identity) -> None:
     """Push the branch. Tests replace this; nothing else may skip the gate.
 
-    The author check runs first: a commit that is not the crew's identity, made
-    in a pane that predates this or by hand, is refused before it reaches origin.
+    Two checks run first. The recorded base must still be in `origin/<base>`: a
+    history rewrite replaces it, and the branch can show as up to date while still
+    carrying the replaced history. Then every commit must be the crew's identity: a
+    commit made in a pane that predates the identity, or by hand, is refused before
+    it reaches origin.
     """
+    gitcmd.refuse_rewritten_base(job.worktree, job.base_commit, job.base)
     gitcmd.refuse_foreign_authors(job.worktree, f"{job.base}..{job.branch}", identity)
     gitcmd.push_branch(job.worktree, job.branch)
 
