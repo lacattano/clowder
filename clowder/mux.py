@@ -277,6 +277,14 @@ class Mux:
         ]
         return self._run(argv, timeout_s if timeout_s is not None else 45.0)
 
+    def rename_agent(self, old: str, new: str, timeout_s: float = 20.0) -> MuxResult:
+        """Rename a live agent. The name is the one `agent list` reports.
+
+        The pane, its tab and its session survive; only the name changes. The
+        caller re-reads `agent list` to prove the new name is live.
+        """
+        return self._run([self.binary, "agent", "rename", old, new], timeout_s)
+
     def _result(self, argv: Sequence[str], timeout_s: float) -> object:
         """Run a command that must succeed, and hand back its JSON."""
         result = self._run(argv, timeout_s)

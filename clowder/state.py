@@ -240,6 +240,18 @@ def _with_extra(record: Any) -> dict[str, object]:
     return merged
 
 
+def _same_path(value: object, path: str | Path) -> bool:
+    """Compare two folder paths the way the filesystem does, or False."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        left = os.path.normcase(os.path.abspath(value))
+        right = os.path.normcase(os.path.abspath(str(path)))
+    except OSError:
+        return False
+    return left == right
+
+
 @contextlib.contextmanager
 def _file_lock(path: Path) -> Iterator[None]:
     """One writer at a time across processes. The OS releases it on exit."""
@@ -635,6 +647,54 @@ class StateStore:
                     del record.extra[field]
                     removed[label] += 1
         return removed
+
+    def rename_agent(
+        self,
+        old: str,
+        new: str,
+        *,
+        old_path: str | Path | None = None,
+        new_path: str | Path | None = None,
+    ) -> dict[str, int]:
+        """Point every record that names one agent, or its folder, at the new name.
+
+        Only the in-memory records change; the caller saves once, after every
+        other place the name lives has changed. A task's `agent` and `worktree`, a
+        job's `agent`, `reviewer` and `worktree`, and a queued item's `agent` all
+        carry the name or the folder.
+
+        `old_path` and `new_path` are the space folder before and after a move. A
+        record whose `worktree` is that exact folder is repointed, so a stored
+        path never names a folder that no longer exists.
+        """
+        self.load()
+        changed = {"tasks": 0, "jobs": 0, "queued": 0, "worktrees": 0}
+        repoint = old_path is not None and new_path is not None
+        for task in self._tasks.values():
+            if task.agent == old:
+                task.agent = new
+                changed["tasks"] += 1
+            if repoint and _same_path(task.worktree, old_path):  # type: ignore[arg-type]
+                task.worktree = str(new_path)
+                changed["worktrees"] += 1
+        for job in self._jobs.values():
+            hit = False
+            if job.agent == old:
+                job.agent = new
+                hit = True
+            if job.reviewer == old:
+                job.reviewer = new
+                hit = True
+            if hit:
+                changed["jobs"] += 1
+            if repoint and _same_path(job.worktree, old_path):  # type: ignore[arg-type]
+                job.worktree = str(new_path)
+                changed["worktrees"] += 1
+        for item in self._queued.values():
+            if item.agent == old:
+                item.agent = new
+                changed["queued"] += 1
+        return changed
 
     def __iter__(self) -> Iterator[Task]:
         return iter(self.all())

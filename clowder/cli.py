@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import webbrowser
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 from . import __version__, audit, gitcmd
@@ -44,6 +47,7 @@ from .topology import (
     inside,
     match_agent,
     normalise,
+    requested_name,
     sanitise,
 )
 
@@ -247,6 +251,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_reset.add_argument("--json", action="store_true")
     a_reset.set_defaults(handler=cmd_agent_reset, refreshes_board=True)
+
+    a_rename = agent_sub.add_parser(
+        "rename",
+        help="rename a live agent in the multiplexer, its space, the records and the docs",
+        parents=[common],
+    )
+    a_rename.add_argument("name", help="the agent's current name, as the multiplexer knows it")
+    a_rename.add_argument("--to", required=True, metavar="NEW", help="the new name to give it")
+    a_rename.add_argument("--json", action="store_true")
+    a_rename.set_defaults(handler=cmd_agent_rename, refreshes_board=True)
 
     checkouts = sub.add_parser(
         "checkouts", help="how far behind its remote each checkout is", parents=[common]
@@ -1928,6 +1942,229 @@ def _wait_for_session_change(
         if time.monotonic() >= deadline:
             return None
         time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
+
+
+def _space_rename(
+    cwd: Path | None, old: str, new: str, worktree_dir: str
+) -> tuple[Path, Path] | None:
+    """The folder move for a rename, or None when the agent has no linked space.
+
+    Only a linked worktree named after the agent, under the configured worktree
+    directory, is moved. An agent sitting in the main checkout has no folder of
+    its own to move, and moving the checkout is not this command's business.
+    """
+    if cwd is None:
+        return None
+    if cwd.name != old or cwd.parent.name != worktree_dir:
+        return None
+    if not gitcmd.is_linked_worktree(cwd):
+        return None
+    return cwd, cwd.parent / new
+
+
+def _rename_remote_pi(cwd: Path | None, old: str, new: str) -> tuple[Path, str] | None:
+    """Point a pane's remote-pi config at the new name, when it names the old one.
+
+    The bus name is the config's `agent_name` with any `parent/` prefix and `#N`
+    suffix stripped, so a config naming `tancat-ai/tancat` is this agent when the
+    old name is `tancat`. Returns the path and its original text, so the caller
+    can put it back.
+    """
+    if cwd is None:
+        return None
+    path = cwd / ".pi" / "remote-pi" / "config.json"
+    if not path.is_file():
+        return None
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(original)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = data.get("agent_name")
+    if not isinstance(name, str):
+        return None
+    leaf = re.split(r"[/\\]", name)[-1].split("#", 1)[0].strip()
+    if leaf != old:
+        return None
+    data["agent_name"] = new
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path, original
+
+
+def _roster_paths(config: Config) -> list[Path]:
+    """The shared documents that list agents, when a workspace root is set."""
+    if config.workspace_root is None:
+        return []
+    return [config.workspace_root / "roster.md", config.workspace_root / "AGENTS.md"]
+
+
+def _replace_name(text: str, old: str, new: str) -> str:
+    """Replace one agent name and never a longer name that contains it.
+
+    `maker` must not touch `tancat-maker`, so the name must stand alone: the
+    characters around it are not part of a name. Name characters are letters,
+    digits, `_` and `-`.
+    """
+    pattern = rf"(?<![A-Za-z0-9_-]){re.escape(old)}(?![A-Za-z0-9_-])"
+    return re.sub(pattern, new, text)
+
+
+def cmd_agent_rename(args: argparse.Namespace) -> int:
+    """Rename one live agent everywhere its name lives, or change nothing.
+
+    A name lives in six places that do not check each other: the multiplexer's
+    agent list, the space folder, the state records for tasks and jobs, the
+    pane's remote-pi config, and the two shared documents `roster.md` and
+    `AGENTS.md` under the workspace root. They change together, and every change
+    already made is undone if a later one fails.
+    """
+    config, store = _context(args)
+    old = args.name.strip()
+    new = requested_name(args.to)
+    if old == new:
+        raise UsageError(f"{old!r} is already its own name; nothing to rename")
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    agents = mux.list_agents()
+    agent = next((item for item in agents if item.name == old), None)
+    if agent is None:
+        live = ", ".join(sorted(item.name for item in agents)) or "none"
+        raise DispatchError(f"no live agent named {old!r}. Live agents: {live}.")
+    if any(item.name == new for item in agents):
+        raise DispatchError(f"{new!r} is already a live agent; a name names one pane.")
+
+    # The space is a build cache. Moving it under an open job or an open step,
+    # or over unsaved work, would lose the job's code, so all three refuse
+    # before anything changes.
+    blockers = [
+        job.id for job in store.all_jobs() if job.is_open and old in (job.agent, job.reviewer)
+    ]
+    if blockers:
+        raise StateError(
+            f"{old} has an open job ({', '.join(sorted(blockers))}). Rename only when "
+            "the space holds no open job: hand the job over or close it first."
+        )
+    open_steps = [task.id for task in store.all() if task.agent == old and task.is_open]
+    if open_steps:
+        raise StateError(
+            f"{old} has an open step ({', '.join(sorted(open_steps))}). Read it with "
+            f"`{PROGRAM} report {open_steps[0]}`, or abandon it, before a rename."
+        )
+
+    cwd = Path(agent.cwd) if agent.cwd else None
+    if cwd is not None and gitcmd.is_repo(cwd) and not gitcmd.is_clean(cwd):
+        raise StateError(
+            f"{old}'s space at {cwd} has unsaved work. Commit or stash it before a rename."
+        )
+
+    move = _space_rename(cwd, old, new, config.worktree_dir)
+    if move is not None and move[1].exists():
+        raise StateError(
+            f"a folder already exists at {move[1]}, so the space cannot move there. "
+            "Choose another name."
+        )
+    if cwd is not None and gitcmd.is_repo(cwd) and gitcmd.branch_exists(cwd, new):
+        raise StateError(
+            f"a branch named {new!r} already exists. Choose another name, so a name "
+            "still points at one thing."
+        )
+    new_cwd = move[1] if move is not None else cwd
+
+    undo: list[Callable[[], object]] = []
+    counts = {"tasks": 0, "jobs": 0, "queued": 0, "worktrees": 0}
+    touched_config: Path | None = None
+    touched_docs: list[Path] = []
+    try:
+        renamed = mux.rename_agent(old, new)
+        if not renamed.ok:
+            raise MuxError(f"could not rename {old} to {new}: {renamed.error_text()}")
+        undo.append(lambda: mux.rename_agent(new, old))
+
+        if move is not None:
+            gitcmd.move_worktree(move[0], move[1])
+            undo.append(lambda: gitcmd.move_worktree(move[1], move[0]))
+
+        config_change = _rename_remote_pi(new_cwd, old, new)
+        if config_change is not None:
+            config_path, original = config_change
+            touched_config = config_path
+            undo.append(partial(config_path.write_text, original, encoding="utf-8"))
+
+        for path in _roster_paths(config):
+            if not path.is_file():
+                continue
+            original = path.read_text(encoding="utf-8")
+            updated = _replace_name(original, old, new)
+            if updated == original:
+                continue
+            path.write_text(updated, encoding="utf-8")
+            touched_docs.append(path)
+            undo.append(partial(path.write_text, original, encoding="utf-8"))
+
+        # Prove the multiplexer really carries the new name before the state is
+        # written. A rename that did not take must leave nothing behind.
+        after = mux.list_agents()
+        if not any(item.name == new for item in after):
+            raise StateError(f"{new} is not in the live agent list after the rename")
+
+        counts = store.rename_agent(
+            old,
+            new,
+            old_path=move[0] if move is not None else None,
+            new_path=move[1] if move is not None else None,
+        )
+        store.save()
+    except Exception as exc:
+        failures: list[str] = []
+        for step in reversed(undo):
+            try:
+                step()
+            except Exception as undo_exc:
+                failures.append(str(undo_exc))
+        if failures:
+            raise StateError(
+                f"the rename failed ({exc}) and could not be fully undone: "
+                f"{'; '.join(failures)}. Check the space and the records before "
+                "trying again."
+            ) from exc
+        raise
+
+    if args.json:
+        _emit_json(
+            {
+                "agent": old,
+                "new_name": new,
+                "space_from": str(move[0]) if move is not None else None,
+                "space_to": str(move[1]) if move is not None else None,
+                "remote_pi_config": str(touched_config) if touched_config else None,
+                "documents": [str(path) for path in touched_docs],
+                **counts,
+            }
+        )
+        return 0
+
+    where = f"; space {move[0].name} -> {move[1].name}" if move is not None else ""
+    print(f"{old} renamed to {new}{where}")
+    print(
+        f"{INDENT}tasks {counts['tasks']}, jobs {counts['jobs']}, "
+        f"queued {counts['queued']}, worktree paths {counts['worktrees']}"
+    )
+    if touched_config is not None:
+        print(f"{INDENT}remote-pi name: {touched_config}")
+    else:
+        print(f"{INDENT}no remote-pi config named {old} was found")
+    if touched_docs:
+        print(f"{INDENT}documents: {', '.join(str(path) for path in touched_docs)}")
+    else:
+        print(f"{INDENT}no roster.md or AGENTS.md under the workspace root")
+    if move is None:
+        print(f"{INDENT}{old} is not in a linked space, so no folder moved")
+    return 0
 
 
 def _checkout_repos(config: Config, store: StateStore, names: list[str]) -> list[Path]:
