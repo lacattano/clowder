@@ -156,8 +156,21 @@ def toplevel(path: str | Path) -> str | None:
 
 
 def status_entries(path: str | Path) -> list[str]:
-    """`git status --porcelain`, one entry per changed or untracked path."""
-    answer = try_git(path, "status", "--porcelain")
+    """`git status --porcelain`, one entry per changed or untracked path.
+
+    The one exception is the pane's own `.pi/remote-pi/config.json`, the local
+    state the tool writes so a pane joins the relay. Without it, `job open` would
+    refuse the space the tool just made as dirty in a repo that does not ignore
+    `.pi/`. The exclusion is that exact file: a tracked change anywhere else under
+    `.pi/`, and a nested `.pi/`, still show.
+    """
+    answer = try_git(
+        path,
+        "status",
+        "--porcelain",
+        "--",
+        ":(exclude).pi/remote-pi/config.json",
+    )
     if answer is None:
         return []
     return [line for line in answer.splitlines() if line.strip()]

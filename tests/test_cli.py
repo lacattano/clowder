@@ -877,6 +877,15 @@ class CliTest(unittest.TestCase):
         self.assertIn("j-0001 is still open", err)
         self.assertIn("task/refund", err)
 
+    def test_job_open_writes_the_pane_remote_pi_config(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.assertTrue(job_id)
+        config = maker_folder / ".pi" / "remote-pi" / "config.json"
+        self.assertTrue(config.is_file(), "the pane can reach the relay")
+        data = json.loads(config.read_text(encoding="utf-8"))
+        self.assertEqual(data["agent_name"], "myrepo-maker")
+        self.assertIs(data["auto_start_relay"], True)
+
     def test_job_open_is_idempotent_for_the_same_job(self) -> None:
         self.seed_mux([])
         self.assertEqual(self.open_job()[0], 0)
