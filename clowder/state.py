@@ -129,6 +129,9 @@ class Job:
     branch: str
     base: str
     agent: str
+    # The commit the branch forked from, recorded at `job open`. A history rewrite
+    # replaces it; the publish gate tests that it is still in `origin/<base>`.
+    base_commit: str | None = None
     status: str = OPEN
     created_at: str = field(default_factory=now_iso)
     closed_at: str | None = None

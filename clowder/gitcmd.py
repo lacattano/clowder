@@ -215,6 +215,14 @@ def count_commits(path: str | Path, rev_range: str) -> int:
         return 0
 
 
+def is_ancestor(path: str | Path, ancestor: str, descendant: str) -> bool:
+    """Is `ancestor` in `descendant`'s history? One `merge-base` call.
+
+    False when either ref is unknown, so a missing ref is never called an ancestor.
+    """
+    return try_git(path, "merge-base", "--is-ancestor", ancestor, descendant) is not None
+
+
 def is_linked_worktree(path: str | Path) -> bool:
     """True for a worktree made beside the repo, false for the main checkout."""
     git_dir = try_git(path, "rev-parse", "--absolute-git-dir")
@@ -607,6 +615,33 @@ def refuse_foreign_authors(
         f"{identity.name} <{identity.email}>: {shown}{more}. The crew's commits must "
         "use the crew's identity. Amend or rebase them under the crew identity, then "
         "publish again."
+    )
+
+
+def refuse_rewritten_base(
+    path: str | Path, base_commit: str | None, base: str, remote: str = "origin"
+) -> None:
+    """Refuse to publish when the job's base is no longer in `origin/<base>`.
+
+    A history rewrite replaces the commits a job forked from. The branch can show
+    as up to date (behind = 0) and still carry the old history, so a behind-count
+    cannot catch it. Ancestry can: `git merge-base --is-ancestor` is one call.
+
+    A job with no recorded base commit, or a repo with no remote-tracking ref to
+    compare against, has nothing to prove, so it is not refused.
+    """
+    if not base_commit:
+        return
+    remote_ref = f"refs/remotes/{remote}/{base}"
+    if try_git(path, "rev-parse", "--verify", "--quiet", remote_ref) is None:
+        return
+    if is_ancestor(path, base_commit, remote_ref):
+        return
+    raise GitError(
+        f"refusing to publish: the job's recorded base {base_commit[:7]} is not an "
+        f"ancestor of {remote}/{base}. {remote}/{base} was rewritten after this job "
+        "forked from it, so publishing would carry the replaced history back. Rebase "
+        f"the branch onto {remote}/{base}, then open a fresh job."
     )
 
 

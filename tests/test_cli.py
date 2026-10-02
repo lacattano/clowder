@@ -1512,6 +1512,53 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         pushed.assert_called_once()
 
+    def test_job_open_records_the_base_commit(self) -> None:
+        self.add_origin_at_head()
+        job_id, _ = self.open_a_job()
+        base = gitcmd.head_commit(self.repo_path, short=False)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["base_commit"], base)
+
+    def test_publish_refuses_a_base_that_was_rewritten(self) -> None:
+        origin = self.add_origin_at_head()
+        base = gitcmd.head_commit(self.repo_path, short=False)
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+
+        # Rewrite origin/main to a fresh history that does not contain `base`.
+        other = self.root / "other"
+        gitcmd.run_git(self.root, "clone", str(origin), str(other))
+        gitcmd.run_git(other, "config", "user.email", "test@example.com")
+        gitcmd.run_git(other, "config", "user.name", "Test")
+        gitcmd.run_git(other, "checkout", "--orphan", "rewritten")
+        gitcmd.run_git(other, "rm", "-rf", ".")
+        (other / "new.txt").write_text("rewritten\n", encoding="utf-8")
+        gitcmd.run_git(other, "add", "new.txt")
+        gitcmd.run_git(other, "commit", "-m", "rewritten root")
+        gitcmd.run_git(other, "push", "--force", "origin", "rewritten:main")
+        gitcmd.run_git(maker_folder, "fetch", "origin")
+
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 2)
+        self.assertIn("not an ancestor", err)
+        self.assertIn(base[:7], err)
+        self.assertIn("rewritten", err)
+        pushed.assert_not_called()
+
+    def test_publish_allows_a_base_that_is_still_an_ancestor(self) -> None:
+        self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        pushed.assert_called_once()
+
     def test_the_held_ref_keeps_the_commit_when_the_branch_is_deleted(self) -> None:
         job_id, maker_folder = self.open_a_job()
         commit = self.save_something(maker_folder)
@@ -2223,6 +2270,14 @@ class CliTest(unittest.TestCase):
         gitcmd.run_git(other, "add", "ahead.txt")
         gitcmd.run_git(other, "commit", "-m", "ahead")
         gitcmd.run_git(other, "push", "origin", "main")
+
+    def add_origin_at_head(self) -> Path:
+        """An origin whose main equals local main, with no extra commit."""
+        origin = self.root / "origin.git"
+        gitcmd.run_git(self.root, "init", "--bare", "-b", "main", str(origin))
+        gitcmd.run_git(self.repo_path, "remote", "add", "origin", str(origin))
+        gitcmd.run_git(self.repo_path, "push", "-u", "origin", "main")
+        return origin
 
     def test_job_open_refuses_a_base_that_is_behind_its_remote(self) -> None:
         self.add_origin()
