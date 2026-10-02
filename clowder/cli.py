@@ -1205,7 +1205,9 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         worktree=worktree,
         branch=branch,
         base=base_ref,
-        base_commit=gitcmd.commit_of(repo_path, base_ref),
+        # The true fork point. For an existing branch that is not the base tip:
+        # `merge-base` finds where the branch actually left the base.
+        base_commit=gitcmd.merge_base(worktree, base_ref, branch),
         agent=agent.name,
         commit=gitcmd.head_commit(worktree),
     )

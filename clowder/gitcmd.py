@@ -223,6 +223,18 @@ def is_ancestor(path: str | Path, ancestor: str, descendant: str) -> bool:
     return try_git(path, "merge-base", "--is-ancestor", ancestor, descendant) is not None
 
 
+def merge_base(path: str | Path, left: str, right: str) -> str | None:
+    """The commit two refs last shared, or None when they have no common root.
+
+    This is a branch's true fork point. It is not the base tip when the branch
+    already existed before the job was opened.
+    """
+    answer = try_git(path, "merge-base", left, right)
+    if answer is None or not answer.strip():
+        return None
+    return answer.strip().splitlines()[0].strip()
+
+
 def is_linked_worktree(path: str | Path) -> bool:
     """True for a worktree made beside the repo, false for the main checkout."""
     git_dir = try_git(path, "rev-parse", "--absolute-git-dir")
@@ -621,28 +633,58 @@ def refuse_foreign_authors(
 def refuse_rewritten_base(
     path: str | Path, base_commit: str | None, base: str, remote: str = "origin"
 ) -> None:
-    """Refuse to publish when the job's base is no longer in `origin/<base>`.
+    """Refuse to publish when the job's base is no longer in the remote's <base>.
 
     A history rewrite replaces the commits a job forked from. The branch can show
     as up to date (behind = 0) and still carry the old history, so a behind-count
-    cannot catch it. Ancestry can: `git merge-base --is-ancestor` is one call.
+    cannot catch it. Ancestry can.
 
-    A job with no recorded base commit, or a repo with no remote-tracking ref to
-    compare against, has nothing to prove, so it is not refused.
+    The local `origin/<base>` ref cannot be trusted: a rewrite that has not been
+    fetched still names the old history, and the check would pass. So the remote
+    is asked directly with `git ls-remote` - one small round trip that downloads
+    nothing - and then the one base branch is fetched so its tip is a local object
+    the ancestry test can use. Cost: two round trips, no working-tree change.
+
+    A job with no recorded base commit, a repo with no remote, or a remote with no
+    such branch has nothing to prove, so it is not refused.
     """
     if not base_commit:
         return
-    remote_ref = f"refs/remotes/{remote}/{base}"
-    if try_git(path, "rev-parse", "--verify", "--quiet", remote_ref) is None:
+    if not has_remote(path, remote):
         return
-    if is_ancestor(path, base_commit, remote_ref):
+    remote_commit = remote_branch_commit(path, base, remote)
+    if remote_commit is None:
+        return
+    # The ancestry test needs the remote's tip as a local object. Fetch that one
+    # branch, then use the tip it reports.
+    run_git(path, "fetch", remote, base)
+    fetched = try_git(path, "rev-parse", "FETCH_HEAD")
+    if fetched and fetched.strip():
+        remote_commit = fetched.strip().splitlines()[0].strip()
+    if is_ancestor(path, base_commit, remote_commit):
         return
     raise GitError(
         f"refusing to publish: the job's recorded base {base_commit[:7]} is not an "
-        f"ancestor of {remote}/{base}. {remote}/{base} was rewritten after this job "
-        "forked from it, so publishing would carry the replaced history back. Rebase "
-        f"the branch onto {remote}/{base}, then open a fresh job."
+        f"ancestor of {remote}/{base} ({remote_commit[:7]}). {remote}/{base} was "
+        "rewritten after this job forked from it, so publishing would carry the "
+        f"replaced history back. Rebase the branch onto {remote}/{base}, then open a "
+        "fresh job."
     )
+
+
+def remote_branch_commit(path: str | Path, base: str, remote: str = "origin") -> str | None:
+    """The remote's current tip for one branch, or None when it has none.
+
+    One `git ls-remote` call. It downloads no objects and it does not read the
+    local remote-tracking ref, so a rewrite that has not been fetched cannot hide
+    behind a stale `origin/<base>`.
+    """
+    answer = run_git(path, "ls-remote", remote, f"refs/heads/{base}")
+    for line in answer.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == f"refs/heads/{base}":
+            return parts[0]
+    return None
 
 
 def push_branch(path: str | Path, branch: str, remote: str = "origin") -> None:
