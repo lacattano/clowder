@@ -83,6 +83,34 @@ class GitTest(unittest.TestCase):
         self.assertTrue(any("scratch.txt" in entry for entry in entries))
         self.assertFalse(any(".pi" in entry for entry in entries))
 
+    def test_a_tracked_change_under_pi_still_shows(self) -> None:
+        # The exclusion is the tool's own file, not all of `.pi/`. A repo that
+        # tracks a file there keeps git honest about its changes.
+        path = self.repo.root / ".pi" / "tracked.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("one\n", encoding="utf-8")
+        gitcmd.run_git(self.repo.root, "add", ".pi/tracked.json")
+        gitcmd.run_git(self.repo.root, "commit", "-m", "track a pi file")
+        path.write_text("two\n", encoding="utf-8")
+        entries = gitcmd.status_entries(self.repo.root)
+        self.assertTrue(any("tracked.json" in entry for entry in entries))
+        self.assertFalse(gitcmd.is_clean(self.repo.root))
+
+    def test_another_file_under_pi_still_shows(self) -> None:
+        other = self.repo.root / ".pi" / "other.json"
+        other.parent.mkdir(parents=True)
+        other.write_text("x\n", encoding="utf-8")
+        entries = gitcmd.status_entries(self.repo.root)
+        # git collapses an untracked directory, so the entry is `.pi/` itself.
+        self.assertTrue(any(".pi" in entry for entry in entries))
+
+    def test_a_nested_pi_still_shows(self) -> None:
+        nested = self.repo.root / "sub" / ".pi" / "nested.json"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("x\n", encoding="utf-8")
+        entries = gitcmd.status_entries(self.repo.root)
+        self.assertTrue(any("sub" in entry for entry in entries))
+
     def test_an_edited_file_makes_it_dirty(self) -> None:
         (self.repo.root / "readme.md").write_text("changed\n", encoding="utf-8")
         self.assertFalse(gitcmd.is_clean(self.repo.root))

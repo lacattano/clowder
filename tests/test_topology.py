@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from clowder import gitcmd
 from clowder.errors import UsageError
@@ -251,6 +252,21 @@ class EnsureAgentTest(unittest.TestCase):
             self.assertEqual(data["agent_name"], "myrepo-maker")
             self.assertIs(data["auto_start_relay"], True)
 
+    def test_a_write_failure_leaves_no_pane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "myrepo"
+            repo.mkdir()
+            mux = StubMux([])
+            with (
+                mock.patch(
+                    "clowder.topology.write_remote_pi_config",
+                    side_effect=OSError("disk full"),
+                ),
+                self.assertRaises(OSError),
+            ):
+                ensure_agent(mux, "myrepo", repo, role="maker")
+            self.assertEqual(mux.actions, [], "no pane was made")
+
     def test_the_crew_identity_reaches_the_new_panes_environment(self) -> None:
         identity = Identity("clowder-bot", "bot@example.com")
         mux = StubMux([])
@@ -379,6 +395,24 @@ class WriteRemotePiConfigTest(unittest.TestCase):
             missing = Path(tmp) / "nope"
             self.assertIsNone(write_remote_pi_config(missing, "x"))
             self.assertFalse(missing.exists())
+
+    def test_an_existing_false_is_kept(self) -> None:
+        # A pane deliberately taken off the relay stays off.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".pi" / "remote-pi" / "config.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"auto_start_relay": False}), encoding="utf-8")
+            write_remote_pi_config(tmp, "myrepo-maker")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIs(data["auto_start_relay"], False)
+            self.assertEqual(data["agent_name"], "myrepo-maker")
+
+    def test_a_new_file_turns_the_relay_on(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_remote_pi_config(tmp, "myrepo-maker")
+            assert path is not None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIs(data["auto_start_relay"], True)
 
 
 class PanePlacementTest(unittest.TestCase):

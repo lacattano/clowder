@@ -188,7 +188,11 @@ def write_remote_pi_config(workdir: str | Path, name: str) -> Path | None:
     `.pi/remote-pi/config.json` exists and `auto_start_relay` is true. A fresh
     space has no such file, so a pane made there sits on the local mesh only, off
     the relay, and the owner's phone never sees it. This writes the file before
-    the pane's Pi starts, merging any settings already there.
+    the pane's Pi starts.
+
+    A new file gets `auto_start_relay: true`, so a new pane joins the relay with
+    no hand step. An existing value is kept, so a pane deliberately taken off the
+    relay stays off, and other settings already in the file are kept too.
 
     Returns the path, or None when there is no folder to write into.
     """
@@ -200,12 +204,15 @@ def write_remote_pi_config(workdir: str | Path, name: str) -> Path | None:
     if path.is_file():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except OSError:
+            loaded = None
+        except json.JSONDecodeError:
             loaded = None
         if isinstance(loaded, dict):
             data = loaded
     data["agent_name"] = name
-    data["auto_start_relay"] = True
+    if "auto_start_relay" not in data:
+        data["auto_start_relay"] = True
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
