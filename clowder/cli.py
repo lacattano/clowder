@@ -1977,8 +1977,11 @@ def _rename_remote_pi(cwd: Path | None, old: str, new: str) -> tuple[Path, str] 
         return None
     try:
         original = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
         data = json.loads(original)
-    except OSError, json.JSONDecodeError:
+    except json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
         return None
@@ -2035,8 +2038,9 @@ def cmd_agent_rename(args: argparse.Namespace) -> int:
     if any(item.name == new for item in agents):
         raise DispatchError(f"{new!r} is already a live agent; a name names one pane.")
 
-    # The space is a build cache. Moving it under an open job or unsaved work
-    # would lose the job's code, so both refuse before anything changes.
+    # The space is a build cache. Moving it under an open job or an open step,
+    # or over unsaved work, would lose the job's code, so all three refuse
+    # before anything changes.
     blockers = [
         job.id for job in store.all_jobs() if job.is_open and old in (job.agent, job.reviewer)
     ]
@@ -2044,6 +2048,12 @@ def cmd_agent_rename(args: argparse.Namespace) -> int:
         raise StateError(
             f"{old} has an open job ({', '.join(sorted(blockers))}). Rename only when "
             "the space holds no open job: hand the job over or close it first."
+        )
+    open_steps = [task.id for task in store.all() if task.agent == old and task.is_open]
+    if open_steps:
+        raise StateError(
+            f"{old} has an open step ({', '.join(sorted(open_steps))}). Read it with "
+            f"`{PROGRAM} report {open_steps[0]}`, or abandon it, before a rename."
         )
 
     cwd = Path(agent.cwd) if agent.cwd else None
@@ -2053,10 +2063,20 @@ def cmd_agent_rename(args: argparse.Namespace) -> int:
         )
 
     move = _space_rename(cwd, old, new, config.worktree_dir)
+    if move is not None and move[1].exists():
+        raise StateError(
+            f"a folder already exists at {move[1]}, so the space cannot move there. "
+            "Choose another name."
+        )
+    if cwd is not None and gitcmd.is_repo(cwd) and gitcmd.branch_exists(cwd, new):
+        raise StateError(
+            f"a branch named {new!r} already exists. Choose another name, so a name "
+            "still points at one thing."
+        )
     new_cwd = move[1] if move is not None else cwd
 
     undo: list[Callable[[], object]] = []
-    counts = {"tasks": 0, "jobs": 0, "queued": 0}
+    counts = {"tasks": 0, "jobs": 0, "queued": 0, "worktrees": 0}
     touched_config: Path | None = None
     touched_docs: list[Path] = []
     try:
@@ -2092,14 +2112,26 @@ def cmd_agent_rename(args: argparse.Namespace) -> int:
         if not any(item.name == new for item in after):
             raise StateError(f"{new} is not in the live agent list after the rename")
 
-        counts = store.rename_agent(old, new)
+        counts = store.rename_agent(
+            old,
+            new,
+            old_path=move[0] if move is not None else None,
+            new_path=move[1] if move is not None else None,
+        )
         store.save()
-    except Exception:
+    except Exception as exc:
+        failures: list[str] = []
         for step in reversed(undo):
             try:
                 step()
-            except Exception:
-                pass
+            except Exception as undo_exc:
+                failures.append(str(undo_exc))
+        if failures:
+            raise StateError(
+                f"the rename failed ({exc}) and could not be fully undone: "
+                f"{'; '.join(failures)}. Check the space and the records before "
+                "trying again."
+            ) from exc
         raise
 
     if args.json:
@@ -2118,7 +2150,10 @@ def cmd_agent_rename(args: argparse.Namespace) -> int:
 
     where = f"; space {move[0].name} -> {move[1].name}" if move is not None else ""
     print(f"{old} renamed to {new}{where}")
-    print(f"{INDENT}tasks {counts['tasks']}, jobs {counts['jobs']}, queued {counts['queued']}")
+    print(
+        f"{INDENT}tasks {counts['tasks']}, jobs {counts['jobs']}, "
+        f"queued {counts['queued']}, worktree paths {counts['worktrees']}"
+    )
     if touched_config is not None:
         print(f"{INDENT}remote-pi name: {touched_config}")
     else:
