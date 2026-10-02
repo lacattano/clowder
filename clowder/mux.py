@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,18 +168,14 @@ class Mux:
 
     # -- creating topology -------------------------------------------------
 
-    def split_pane(
+    def build_split_argv(
         self,
         cwd: str | Path,
         direction: str = "right",
         focus: bool = False,
-        timeout_s: float = 20.0,
-    ) -> str:
-        """Open a sibling pane whose working directory is `cwd`.
-
-        A pane gets its directory when it is made and cannot be moved later, so
-        this is the only place the directory can be set. Returns the pane id.
-        """
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        """The command that makes a pane. `env` reaches the pane's own shell."""
         argv = [
             self.binary,
             "pane",
@@ -191,6 +187,27 @@ class Mux:
             direction,
             "--focus" if focus else "--no-focus",
         ]
+        for key, value in (env or {}).items():
+            argv.extend(["--env", f"{key}={value}"])
+        return argv
+
+    def split_pane(
+        self,
+        cwd: str | Path,
+        direction: str = "right",
+        focus: bool = False,
+        env: Mapping[str, str] | None = None,
+        timeout_s: float = 20.0,
+    ) -> str:
+        """Open a sibling pane whose working directory is `cwd`.
+
+        A pane gets its directory when it is made and cannot be moved later, so
+        this is the only place the directory can be set. `env` is set for the
+        pane's shell, and every agent started in the pane inherits it, so it is
+        also the only place a crew-wide git identity can reach a new pane.
+        Returns the pane id.
+        """
+        argv = self.build_split_argv(cwd, direction, focus, env)
         payload = self._result(argv, timeout_s)
         pane_id = _dig(payload, "result", "pane", "pane_id")
         if not isinstance(pane_id, str) or not pane_id:

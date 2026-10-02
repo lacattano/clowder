@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from clowder.errors import UsageError
+from clowder.gitcmd import Identity
 from clowder.mux import AgentInfo, MuxResult
 from clowder.topology import (
     agents_in_repo,
@@ -42,14 +43,16 @@ class StubMux:
         self.actions: list[str] = []
         self.moves: list[tuple[str, str]] = []
         self.last_cwd = ""
+        self.last_env: dict[str, str] | None = None
         self.pane = 100
 
     def list_agents(self, timeout_s: float = 15.0) -> list[AgentInfo]:
         return self.existing + self.made
 
-    def split_pane(self, cwd, direction="right", focus=False, timeout_s=20.0) -> str:
+    def split_pane(self, cwd, direction="right", focus=False, env=None, timeout_s=20.0) -> str:
         self.actions.append(f"split {cwd}")
         self.last_cwd = str(cwd)
+        self.last_env = dict(env) if env else None
         self.pane += 1
         return f"w9:p{self.pane}"
 
@@ -222,6 +225,19 @@ class EnsureAgentTest(unittest.TestCase):
             mux.actions,
             [f"split {Path('C:/code/myrepo')}", "start myrepo-maker pi w9:p101"],
         )
+
+    def test_the_crew_identity_reaches_the_new_panes_environment(self) -> None:
+        identity = Identity("clowder-bot", "bot@example.com")
+        mux = StubMux([])
+        ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker", identity=identity)
+        self.assertEqual(mux.last_env, identity.env())
+        self.assertEqual(mux.last_env["GIT_AUTHOR_EMAIL"], "bot@example.com")
+        self.assertEqual(mux.last_env["GIT_COMMITTER_NAME"], "clowder-bot")
+
+    def test_no_identity_leaves_the_pane_environment_alone(self) -> None:
+        mux = StubMux([])
+        ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertIsNone(mux.last_env)
 
     def test_a_repo_that_is_not_git_gets_no_worktree_and_says_so(self) -> None:
         # Nothing to work in: it uses the checkout itself, and reports the reason.

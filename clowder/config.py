@@ -27,6 +27,12 @@ DEFAULT_DELIVERY = "local-only"
 DELIVERY_MODES = ("local-only", "direct-PR", "no-mistakes")
 BUILT_DELIVERY_MODES = ("local-only",)
 
+# The identity every commit the crew makes carries. It is a bot, not the owner,
+# so his own global git config stays his. One default for every repo the crew
+# touches, and one place to change it.
+DEFAULT_GIT_NAME = "clowder-bot"
+DEFAULT_GIT_EMAIL = "94532220+lacattano@users.noreply.github.com"
+
 SEARCH_NAMES = ("clowder.config.toml", "clowder.toml")
 
 
@@ -57,6 +63,8 @@ class Config:
     worktree_setup: str | None = None
     job_branch_prefix: str = "task/"
     delivery_mode: str = "local-only"
+    git_name: str = DEFAULT_GIT_NAME
+    git_email: str = DEFAULT_GIT_EMAIL
 
     def resolve_repo(self, name: str) -> Path:
         """Turn a repo name into a path.
@@ -98,6 +106,8 @@ class Config:
             "worktree_setup": self.worktree_setup,
             "job_branch_prefix": self.job_branch_prefix,
             "delivery_mode": self.delivery_mode,
+            "git_name": self.git_name,
+            "git_email": self.git_email,
         }
 
 
@@ -164,6 +174,7 @@ def load_config(explicit: str | Path | None = None) -> Config:
     dispatch = _table(raw, "dispatch", source)
     front_door = _table(raw, "front_door", source)
     worktree = _table(raw, "worktree", source)
+    git = _table(raw, "git", source)
 
     workspace_root = _opt_path(os.environ.get("CLOWDER_WORKSPACE") or workspace.get("root"))
 
@@ -212,6 +223,18 @@ def load_config(explicit: str | Path | None = None) -> Config:
     if delivery not in DELIVERY_MODES:
         raise ConfigError(f"{source}: worktree.delivery must be one of {DELIVERY_MODES}")
 
+    unknown_git = set(git) - {"name", "email"}
+    if unknown_git:
+        raise ConfigError(f"{source}: unknown git keys: {sorted(unknown_git)}")
+    for key in ("name", "email"):
+        value = git.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ConfigError(f"{source}: git.{key} must be a string")
+    git_name = str(os.environ.get("CLOWDER_GIT_NAME") or git.get("name") or DEFAULT_GIT_NAME)
+    git_email = str(
+        os.environ.get("CLOWDER_GIT_EMAIL") or git.get("email") or DEFAULT_GIT_EMAIL
+    )
+
     return Config(
         home=home,
         source=source,
@@ -228,6 +251,8 @@ def load_config(explicit: str | Path | None = None) -> Config:
         worktree_setup=_opt_str(worktree.get("setup")),
         job_branch_prefix=str(worktree.get("job_prefix") or "task/"),
         delivery_mode=delivery,
+        git_name=git_name,
+        git_email=git_email,
     )
 
 

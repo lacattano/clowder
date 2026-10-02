@@ -187,6 +187,7 @@ def ensure_agent(
     worktree_dir: str = ".worktrees",
     base: str | None = None,
     setup: str | None = None,
+    identity: gitcmd.Identity | None = None,
 ) -> EnsureResult:
     """Return an agent that serves this repo, making one if allowed to.
 
@@ -194,6 +195,9 @@ def ensure_agent(
     on the current base. That is the resting state - free, clean, and holding its
     install, so the next piece of work does not rebuild one. A piece of work puts a
     branch on the space; finishing it takes the branch off again.
+
+    `identity`, when given, is set in the new pane's environment, so every commit
+    the agent makes in it carries the crew's identity rather than the checkout's.
     """
     agents = mux.list_agents()
     candidates = sorted(agent.name for agent in agents_in_repo(agents, repo_path))
@@ -268,7 +272,11 @@ def ensure_agent(
     # peer with no workspace reported (or no peer at all) keeps the old split.
     workspace_id = workspace_for_repo(agents, repo_path)
 
-    pane_id = mux.split_pane(cwd=str(workdir), direction=direction)
+    pane_id = mux.split_pane(
+        cwd=str(workdir),
+        direction=direction,
+        env=identity.env() if identity else None,
+    )
     if workspace_id:
         moved = mux.move_pane(pane_id, workspace_id)
         if not moved.ok:

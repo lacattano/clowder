@@ -60,6 +60,17 @@ class BuildArgvTest(unittest.TestCase):
             ["herdr", "agent", "send-keys", "maker", "/", "n", "e", "w", "enter"],
         )
 
+    def test_split_argv_carries_the_pane_environment(self) -> None:
+        mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
+        argv = mux.build_split_argv("C:/code/myrepo", env={"GIT_AUTHOR_NAME": "clowder-bot"})
+        self.assertEqual(argv[argv.index("--cwd") + 1], "C:/code/myrepo")
+        self.assertIn("--env", argv)
+        self.assertIn("GIT_AUTHOR_NAME=clowder-bot", argv)
+
+    def test_split_argv_has_no_env_by_default(self) -> None:
+        mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
+        self.assertNotIn("--env", mux.build_split_argv("C:/code/myrepo"))
+
 
 class ParseAgentListTest(unittest.TestCase):
     def test_reads_the_real_shape(self) -> None:
@@ -177,6 +188,16 @@ class RealProcessTest(unittest.TestCase):
         with clean_env(**self.mux_env()):
             pane_id = self.make_mux().split_pane(cwd="C:/code/myrepo")
         self.assertTrue(pane_id.startswith("w9:p"), pane_id)
+
+    def test_split_pane_sends_the_identity_environment(self) -> None:
+        log = Path(self.tmp.name) / "split.jsonl"
+        with clean_env(**self.mux_env(CLOWDER_FAKE_LOG=str(log))):
+            self.make_mux().split_pane(
+                cwd="C:/code/myrepo", env={"GIT_AUTHOR_EMAIL": "bot@example.com"}
+            )
+        argv = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertIn("--env", argv)
+        self.assertIn("GIT_AUTHOR_EMAIL=bot@example.com", argv)
 
     def test_start_agent_then_the_live_list_shows_it(self) -> None:
         with clean_env(**self.mux_env()):

@@ -33,6 +33,14 @@ class ScratchRepo:
         gitcmd.run_git(self.root, "commit", "-m", f"add {name}")
         return gitcmd.head_commit(self.root) or ""
 
+    def commit_as(self, name: str, identity: gitcmd.Identity, text: str = "x\n") -> str:
+        """A commit made the way a crew pane makes one: identity in the env."""
+        path = self.root / name
+        path.write_text(text, encoding="utf-8")
+        gitcmd.run_git(self.root, "add", name)
+        gitcmd.run_git(self.root, "commit", "-m", f"add {name}", env=identity.env())
+        return gitcmd.head_commit(self.root, short=False) or ""
+
 
 class GitTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -362,6 +370,77 @@ class GitTest(unittest.TestCase):
         self.assertTrue(gitcmd.fetch(self.repo.root))
         self.assertEqual(gitcmd.branch_behind(self.repo.root, "main"), 1)
         self.assertEqual(gitcmd.branch_behind(self.repo.root, "task/nope"), None)
+
+    # -- the crew identity -------------------------------------------------
+
+    def test_identity_env_sets_author_and_committer(self) -> None:
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        self.assertEqual(
+            identity.env(),
+            {
+                "GIT_AUTHOR_NAME": "clowder-bot",
+                "GIT_AUTHOR_EMAIL": "bot@example.com",
+                "GIT_COMMITTER_NAME": "clowder-bot",
+                "GIT_COMMITTER_EMAIL": "bot@example.com",
+            },
+        )
+
+    def test_a_commit_under_the_identity_ignores_a_foreign_local_config(self) -> None:
+        # The checkout's own config names Test <t@example.com>. The environment
+        # still decides, which is the fix: the config is not trusted.
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        self.repo.commit_as("crew.txt", identity)
+        shown = gitcmd.run_git(self.repo.root, "log", "-1", "--format=%an|%ae|%cn|%ce").strip()
+        self.assertEqual(shown, "clowder-bot|bot@example.com|clowder-bot|bot@example.com")
+
+    def test_the_guard_refuses_a_foreign_author(self) -> None:
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        foreign = self.repo.commit("foreign.txt")  # Test <t@example.com>
+        found = gitcmd.foreign_commits(self.repo.root, "main..task/x", identity)
+        self.assertEqual([item.commit[:7] for item in found], [foreign])
+        with self.assertRaises(GitError) as caught:
+            gitcmd.refuse_foreign_authors(self.repo.root, "main..task/x", identity)
+        self.assertIn("refusing to publish", str(caught.exception))
+        self.assertIn("t@example.com", str(caught.exception))
+
+    def test_the_guard_passes_a_crew_commit(self) -> None:
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        commit = self.repo.commit_as("crew.txt", identity)
+        self.assertEqual(gitcmd.foreign_commits(self.repo.root, "main..task/x", identity), [])
+        gitcmd.refuse_foreign_authors(self.repo.root, "main..task/x", identity)
+        self.assertEqual(gitcmd.commit_of(self.repo.root, "task/x"), commit)
+
+    def test_the_guard_ignores_commits_already_on_the_base(self) -> None:
+        # The base commit is Test's. It is not being published, so it is not the
+        # crew's business; only the branch's own commits are checked.
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        self.repo.commit_as("crew.txt", identity)
+        gitcmd.refuse_foreign_authors(self.repo.root, "main..task/x", identity)
+
+    def test_the_guard_checks_the_committer_too(self) -> None:
+        identity = gitcmd.Identity("clowder-bot", "bot@example.com")
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        (self.repo.root / "mixed.txt").write_text("x\n", encoding="utf-8")
+        gitcmd.run_git(self.repo.root, "add", "mixed.txt")
+        gitcmd.run_git(
+            self.repo.root,
+            "commit",
+            "-m",
+            "mixed",
+            env={
+                "GIT_AUTHOR_NAME": "clowder-bot",
+                "GIT_AUTHOR_EMAIL": "bot@example.com",
+                "GIT_COMMITTER_NAME": "Someone",
+                "GIT_COMMITTER_EMAIL": "someone@example.com",
+            },
+        )
+        found = gitcmd.foreign_commits(self.repo.root, "main..task/x", identity)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].committer_email, "someone@example.com")
 
 
 if __name__ == "__main__":

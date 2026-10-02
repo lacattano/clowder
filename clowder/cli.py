@@ -1085,6 +1085,7 @@ def _ensure(
         worktree_dir=config.worktree_dir,
         base=config.worktree_base,
         setup=config.worktree_setup,
+        identity=_crew_identity(config),
     )
 
 
@@ -1590,8 +1591,18 @@ def _require_merge_word(job: Job) -> None:
         )
 
 
-def _publish_branch(job: Job) -> None:
-    """Push the branch. Tests replace this; nothing else may skip the gate."""
+def _crew_identity(config: Config) -> gitcmd.Identity:
+    """The commit identity every pane the crew makes is launched with."""
+    return gitcmd.Identity(config.git_name, config.git_email)
+
+
+def _publish_branch(job: Job, identity: gitcmd.Identity) -> None:
+    """Push the branch. Tests replace this; nothing else may skip the gate.
+
+    The author check runs first: a commit that is not the crew's identity, made
+    in a pane that predates this or by hand, is refused before it reaches origin.
+    """
+    gitcmd.refuse_foreign_authors(job.worktree, f"{job.base}..{job.branch}", identity)
     gitcmd.push_branch(job.worktree, job.branch)
 
 
@@ -1601,10 +1612,10 @@ def _merge_pull_request(job: Job, pr: str) -> None:
 
 
 def cmd_job_publish(args: argparse.Namespace) -> int:
-    _, store = _context(args)
+    config, store = _context(args)
     job = store.get_job(args.id)
     _require_pass(job)
-    _publish_branch(job)
+    _publish_branch(job, _crew_identity(config))
     job.published_at = now_iso()
     # The space may be released, so read the commit from the branch or the held
     # ref, never from the worktree HEAD (which sits on the base once released).
