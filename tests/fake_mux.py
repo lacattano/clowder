@@ -192,6 +192,23 @@ def main(argv: list[str]) -> int:
             {"id": "cli:agent:send-keys", "result": {"agent": {"name": target, "keys": keys}}}
         )
 
+    if argv[:2] == ["agent", "rename"]:
+        if _state_path() is None:
+            return _fail("no_state", "the fake has no state file to rename an agent in", 6)
+        old = argv[2] if len(argv) > 2 else ""
+        new = argv[3] if len(argv) > 3 else ""
+        state = _load()
+        agents = state.get("agents") or []
+        assert isinstance(agents, list)
+        found = next((a for a in agents if a.get("name") == old), None)
+        if found is None:
+            return _fail("no_such_agent", f"agent {old} is not live", 5)
+        if any(a.get("name") == new for a in agents):
+            return _fail("name_taken", f"agent {new} is already live", 5)
+        found["name"] = new
+        _save(state)
+        return _emit({"id": "cli:agent:rename", "result": {"agent": {"name": new}}})
+
     if argv[:2] == ["agent", "start"]:
         if os.environ.get("CLOWDER_FAKE_START_FAIL") == "1":
             return _fail("agent_not_ready", "the agent blocked during startup")

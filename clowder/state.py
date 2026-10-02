@@ -636,5 +636,34 @@ class StateStore:
                     removed[label] += 1
         return removed
 
+    def rename_agent(self, old: str, new: str) -> dict[str, int]:
+        """Point every record that names one agent at a new name.
+
+        Only the in-memory records change; the caller saves once, after every
+        other place the name lives has changed. A task's `agent`, a job's `agent`
+        and `reviewer`, and a queued item's `agent` all carry the name.
+        """
+        self.load()
+        changed = {"tasks": 0, "jobs": 0, "queued": 0}
+        for task in self._tasks.values():
+            if task.agent == old:
+                task.agent = new
+                changed["tasks"] += 1
+        for job in self._jobs.values():
+            hit = False
+            if job.agent == old:
+                job.agent = new
+                hit = True
+            if job.reviewer == old:
+                job.reviewer = new
+                hit = True
+            if hit:
+                changed["jobs"] += 1
+        for item in self._queued.values():
+            if item.agent == old:
+                item.agent = new
+                changed["queued"] += 1
+        return changed
+
     def __iter__(self) -> Iterator[Task]:
         return iter(self.all())

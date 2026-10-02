@@ -535,6 +535,19 @@ def remove_worktree(repo: str | Path, target: str | Path) -> None:
     run_git(repo, "worktree", "remove", str(target))
 
 
+def move_worktree(path: str | Path, target: str | Path) -> None:
+    """Move a linked worktree to a new folder, keeping its branch and its ref.
+
+    The main repo keeps the worktree registered at the new path. The caller has
+    already refused a dirty tree and an open job, so nothing is using the folder.
+
+    git runs from the parent, not from inside the worktree: on Windows a folder
+    that is a process's current directory cannot be renamed.
+    """
+    here = Path(path)
+    run_git(here.parent, "worktree", "move", str(here), str(target))
+
+
 def delete_branch(path: str | Path, branch: str) -> None:
     """Delete a merged branch. Refuses on an unmerged one, on purpose."""
     run_git(path, "branch", "-d", branch)
