@@ -274,6 +274,42 @@ class SkillTest(unittest.TestCase):
                 step, front, f"the walkthrough step is still in the front-door skill: {step}"
             )
 
+    def test_the_reviewer_skill_states_the_recall_check_and_its_order(self) -> None:
+        # The recall check sits between the file walk and the pass: his four questions
+        # with the reviewer's answers hidden, his attempt in his own words, then the
+        # reveal. It gates nothing - no score, no pass mark.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        for piece in (
+            "The recall check, after the walk and before the pass",
+            "OWNER ANSWERS A-D hidden",
+            "in his own words",
+            "only then do you reveal",
+            "no other set",
+            "It gates nothing",
+            "No score, no pass mark",
+            "may pass having missed every question",
+            "re-teaches",
+            "no new field or store",
+        ):
+            self.assertIn(piece.lower(), text.lower(), f"the recall step is missing: {piece}")
+        # The reveal order, as the brief states it.
+        low = text.lower()
+        self.assertLess(
+            low.index("a-d hidden"),
+            low.index("in his own words"),
+            "his attempt comes after the answers are hidden",
+        )
+        self.assertLess(
+            low.index("in his own words"),
+            low.index("only then do you reveal"),
+            "the reveal comes after his attempt",
+        )
+        # It uses his own four questions, and names no second set.
+        self.assertIn("the ones above", text, "the recall uses the four questions above")
+        self.assertIn("no other set", text, "the recall names no second question set")
+        self.assertIn("A-D", text, "the reveal names the OWNER ANSWERS block")
+
     def test_the_skill_does_not_restate_the_gate_chain(self) -> None:
         text = " ".join(read_skill().split())
         for old in (
