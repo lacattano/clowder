@@ -84,7 +84,17 @@ no new work from them.
    is enough. Do not dump the diff, and do not read code aloud.
 3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
    not run the code.
-4. The front door records his answer on that line of work: passed, or what to change. A pass is
+4. **The recall check, after the walk and before the pass.** Put his four questions to him -
+   the ones above, and no other set - with your OWNER ANSWERS A-D hidden. He tries each in his
+   own words. Only then do you reveal your A-D, one at a time, and note what he missed.
+   - It gates nothing. No score, no pass mark, and he may pass having missed every question.
+     Understanding is for him, not a test.
+   - A miss re-teaches rather than fails: re-explain that piece, or let him pass anyway. He
+     decides.
+   - It needs no new field or store. His restatement is already the `--answer` you record when
+     the front door passes it. What he missed goes in this step's report, where the block above
+     already lives, so a later learning record (q-0056) can use it.
+5. The front door records his answer on that line of work: passed, or what to change. A pass is
    recorded with `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is
    separate, with `clowder job word <job> --word TEXT --by NAME`. A change means the worker fixes
    it, and you walk him through the new commits the same way.
