@@ -107,6 +107,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: add the refund page",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(),
         )
         self.assertEqual(code, 0)
@@ -132,6 +134,8 @@ class CliTest(unittest.TestCase):
             "ship: add the refund page",
             "--from",
             "topcat",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(),
         )
         sent = self.only_task()["mux_argv"][-1]
@@ -151,6 +155,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: add the refund page now",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(CLOWDER_FAKE_LOG=str(log)),
         )
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
@@ -166,7 +172,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.only_task()["sender"], "the front door")
 
     def test_the_marker_names_the_front_door_by_default(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: do the thing")
+        self.dispatch(
+            "maker", "myrepo", "ship: do the thing", "--worktree", str(self.repo_path)
+        )
         self.assertEqual(self.only_task()["sender"], "the front door")
 
     def test_no_marker_sends_the_bare_brief(self) -> None:
@@ -176,6 +184,8 @@ class CliTest(unittest.TestCase):
             "myrepo",
             "ship: do the thing",
             "--no-marker",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(),
         )
         task = self.only_task()
@@ -190,7 +200,9 @@ class CliTest(unittest.TestCase):
             state={"path": str(self.state)},
             dispatch={"marker": False},
         )
-        self.dispatch("maker", "myrepo", "ship: do the thing")
+        self.dispatch(
+            "maker", "myrepo", "ship: do the thing", "--worktree", str(self.repo_path)
+        )
         self.assertIsNone(self.only_task()["sender"])
 
     def test_front_door_name_is_used_as_the_sender(self) -> None:
@@ -201,12 +213,20 @@ class CliTest(unittest.TestCase):
             state={"path": str(self.state)},
             front_door={"name": "topcat"},
         )
-        self.dispatch("maker", "myrepo", "ship: do the thing")
+        self.dispatch(
+            "maker", "myrepo", "ship: do the thing", "--worktree", str(self.repo_path)
+        )
         self.assertEqual(self.only_task()["sender"], "topcat")
 
     def test_an_unknown_agent_is_refused_before_anything_is_sent(self) -> None:
         code, _, err = self.cli(
-            "dispatch", "ghost", "myrepo", "ship: do it", env=self.fake_env()
+            "dispatch",
+            "ghost",
+            "myrepo",
+            "ship: do it",
+            "--worktree",
+            str(self.repo_path),
+            env=self.fake_env(),
         )
         self.assertEqual(code, 2)
         self.assertIn("no agent named 'ghost'", err)
@@ -222,6 +242,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: do it",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(CLOWDER_FAKE_CWD=str(other)),
         )
         self.assertEqual(code, 2)
@@ -237,6 +259,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: do it",
+            "--worktree",
+            str(worktree),
             env=self.fake_env(CLOWDER_FAKE_CWD=str(worktree)),
         )
         self.assertEqual(code, 0, "a pane inside a worktree of the repo is fine")
@@ -250,6 +274,8 @@ class CliTest(unittest.TestCase):
             "myrepo",
             "ship: do it",
             "--force",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(CLOWDER_FAKE_CWD=str(other)),
         )
         self.assertEqual(code, 0)
@@ -260,7 +286,9 @@ class CliTest(unittest.TestCase):
             "dispatch",
             "maker",
             "myrepo",
-            "ship: do it",
+            "scout: do it",
+            "--shape",
+            "scout",
             "--dry-run",
             env=self.fake_env(),
         )
@@ -276,6 +304,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: do it",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(CLOWDER_FAKE_PROMPT_FAIL="1"),
         )
         self.assertEqual(code, 2)
@@ -293,6 +323,8 @@ class CliTest(unittest.TestCase):
             "myrepo",
             "--brief-file",
             str(brief_path),
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(),
         )
         self.assertEqual(code, 0)
@@ -320,7 +352,13 @@ class CliTest(unittest.TestCase):
 
     def test_an_overlong_brief_is_refused(self) -> None:
         code, _, err = self.cli(
-            "dispatch", "maker", "myrepo", "ship: " + "x" * 9000, env=self.fake_env()
+            "dispatch",
+            "maker",
+            "myrepo",
+            "ship: " + "x" * 9000,
+            "--worktree",
+            str(self.repo_path),
+            env=self.fake_env(),
         )
         self.assertEqual(code, 2)
         self.assertIn("--brief-file", err)
@@ -328,7 +366,13 @@ class CliTest(unittest.TestCase):
 
     def test_a_brief_that_omits_the_shape_is_noted(self) -> None:
         code, _, err = self.cli(
-            "dispatch", "maker", "myrepo", "look into the billing page", env=self.fake_env()
+            "dispatch",
+            "maker",
+            "myrepo",
+            "look into the billing page",
+            "--worktree",
+            str(self.repo_path),
+            env=self.fake_env(),
         )
         self.assertEqual(code, 0)
         self.assertIn("does not say", err)
@@ -366,7 +410,9 @@ class CliTest(unittest.TestCase):
     # -- tasks -------------------------------------------------------------
 
     def test_tasks_lists_the_dispatched_task(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, _ = self.cli("tasks", env=self.fake_env())
         self.assertEqual(code, 0)
         self.assertIn("t-0001", out)
@@ -375,7 +421,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("1 task(s), 1 still open", out)
 
     def test_tasks_open_filter(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns(count=1, after_dispatch=True)
         self.cli("report", "t-0001", env=self.fake_env())
 
@@ -430,7 +478,9 @@ class CliTest(unittest.TestCase):
         return path
 
     def test_report_reads_the_session_file(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         code, out, _ = self.cli("report", "t-0001", env=self.fake_env())
 
@@ -449,7 +499,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(task["usage"]["total_tokens"], 1200)
 
     def test_report_does_not_settle_a_working_agent(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         code, out, _ = self.cli(
             "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_STATUS="working")
@@ -461,13 +513,17 @@ class CliTest(unittest.TestCase):
         self.assertIsNone(task["answer"])
 
     def test_report_before_any_answer_says_so(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, _ = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0)
         self.assertIn("no answer yet", out)
 
     def test_report_no_save_leaves_the_record_alone(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         before = self.state.read_text(encoding="utf-8")
         code, out, _ = self.cli("report", "t-0001", "--no-save", env=self.fake_env())
@@ -476,7 +532,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.state.read_text(encoding="utf-8"), before)
 
     def test_report_records_one_open_decision(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         _, out, _ = self.cli(
             "report",
@@ -489,7 +547,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.only_task()["open_decision"], "14 days or 30?")
 
     def test_report_decide_answers_a_decision_and_it_leaves_the_board(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         self.cli("report", "t-0001", "--open-decision", "14 days or 30?", env=self.fake_env())
         page = (self.root / "board.html").read_text(encoding="utf-8")
@@ -504,7 +564,9 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("14 days or 30?", page, "an answered decision leaves his section")
 
     def test_report_json_carries_state_usage_and_answer(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         code, out, _ = self.cli("report", "t-0001", "--json", env=self.fake_env())
         self.assertEqual(code, 0)
@@ -516,7 +578,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["session_file"], str(self.session_file))
 
     def test_report_verbose_shows_the_breakdown(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         _, out, _ = self.cli("report", "t-0001", "--verbose", env=self.fake_env())
         self.assertIn("turns: 1", out)
@@ -524,7 +588,9 @@ class CliTest(unittest.TestCase):
         self.assertIn(str(self.session_file), out)
 
     def test_report_shows_the_model_and_the_line_keeps_it(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         code, out, err = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
@@ -534,15 +600,99 @@ class CliTest(unittest.TestCase):
 
     def test_a_reported_step_records_the_model_it_ran_on(self) -> None:
         # Recorded from the step's own session, so it is measurement not invention.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         self.assertEqual(self.cli("report", "t-0001", env=self.fake_env())[0], 0)
         task = self.only_task()
         self.assertEqual(task["model"], "test-model")
         self.assertEqual(task["provider"], "test-provider")
 
+    def test_a_ship_dispatch_with_no_place_is_refused(self) -> None:
+        # The other half of the queue refusal: a ship's save belongs on a job's
+        # branch or in a folder, so a ship must name one. Nothing is sent, and
+        # nothing is recorded.
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "ship: add the refund page",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("needs a place", err)
+        self.assertIn("--job", err, "the refusal must name the fix")
+        self.assertIn("--worktree", err, "and the deliberate alternative")
+        self.assertFalse(self.state.exists(), "a refused dispatch records nothing")
+
+    def test_a_ship_dispatch_dispatches_with_a_job(self) -> None:
+        job_id, worktree = self.open_a_job()
+        code, out, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "ship: add the refund page",
+            "--job",
+            job_id,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-maker", out)
+        task = self.only_task()
+        self.assertEqual(task["job"], job_id)
+        self.assertEqual(task["branch"], "task/refund")
+        self.assertEqual(task["worktree"], str(worktree))
+
+    def test_a_ship_dispatch_dispatches_with_a_worktree(self) -> None:
+        folder = self.root / "elsewhere"
+        folder.mkdir()
+        code, out, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "ship: add the refund page",
+            "--worktree",
+            str(folder),
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertEqual(self.only_task()["worktree"], str(folder))
+
+    def test_a_scout_with_no_place_is_still_allowed(self) -> None:
+        # A scout changes nothing, so it has no save to place.
+        code, out, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: read the terms page",
+            "--shape",
+            "scout",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertEqual(self.only_task()["shape"], "scout")
+
+    def test_force_does_not_bypass_the_no_place_refusal(self) -> None:
+        # A deliberate place is `--worktree`, which is a name rather than an
+        # override, so --force is not the way past this.
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "ship: add the refund page",
+            "--force",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("needs a place", err)
+
     def test_report_survives_a_missing_session_file(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_file.unlink()
         code, out, _ = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0)
@@ -551,7 +701,9 @@ class CliTest(unittest.TestCase):
     def test_report_keeps_the_recorded_session_after_a_restart(self) -> None:
         # A restart gives the pane a fresh session. The answer to the step lives
         # in the session it was dispatched into, so that is the one to read.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         restarted = self.live_session("restart")
         code, out, _ = self.cli(
@@ -562,7 +714,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.only_task()["agent_session"], str(self.session_file))
 
     def test_report_uses_the_live_session_when_the_recorded_one_is_gone(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_file.unlink()
         live = self.live_session("live")
         self.session_turns(path=live)
@@ -576,7 +730,9 @@ class CliTest(unittest.TestCase):
     def test_report_does_not_move_the_pointer_to_a_fresh_session(self) -> None:
         # The restart case: the recorded pointer must survive a session that
         # holds nothing, or the answer is unreachable for good.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         restarted = self.live_session("restart")
         code, out, _ = self.cli(
             "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(restarted))
@@ -588,7 +744,9 @@ class CliTest(unittest.TestCase):
     def test_inbox_reads_the_recorded_session(self) -> None:
         # inbox and report share the rule, so they agree about which session a
         # step used.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         restarted = self.live_session("restart")
         code, out, _ = self.cli("inbox", env=self.fake_env(CLOWDER_FAKE_SESSION=str(restarted)))
@@ -600,7 +758,9 @@ class CliTest(unittest.TestCase):
         # The mirror of the restart case: the pane restarted before the worker
         # answered, so the recorded session says nothing about this step and the
         # answer is in the live one. It must be found, and the pointer must move.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         live = self.live_session("live")
         self.session_turns(path=live)
         code, out, _ = self.cli(
@@ -611,7 +771,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.only_task()["agent_session"], str(live))
 
     def test_inbox_reads_the_live_session_when_the_recorded_one_is_empty(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         live = self.live_session("live")
         self.session_turns(path=live)
         code, out, _ = self.cli("inbox", env=self.fake_env(CLOWDER_FAKE_SESSION=str(live)))
@@ -622,7 +784,9 @@ class CliTest(unittest.TestCase):
     def test_the_recorded_session_wins_over_a_live_session_with_its_own_answer(self) -> None:
         # Precedence, stated: when both sessions hold an answer for this step, the
         # one the step was dispatched into wins, and the pointer does not move.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         live = self.live_session("live")
         write_session(
@@ -740,6 +904,8 @@ class CliTest(unittest.TestCase):
             "myrepo-maker",
             "myrepo",
             "ship: add the refund page",
+            "--worktree",
+            str(self.repo_path / ".worktrees" / "myrepo-maker"),
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
@@ -754,6 +920,8 @@ class CliTest(unittest.TestCase):
             "myrepo-maker",
             "myrepo",
             "ship: add the refund page",
+            "--worktree",
+            str(self.repo_path / ".worktrees" / "myrepo-maker"),
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
@@ -1941,7 +2109,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("job handover", err)
 
     def test_board_writes_a_page(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         target = Path(out.strip())
@@ -1954,7 +2124,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("the main checkout", html, "the space is marked as the user's own")
 
     def test_board_json_says_what_is_on_it(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, _ = self.cli("board", "--json", env=self.fake_env())
         self.assertEqual(code, 0)
         payload = json.loads(out)
@@ -1972,7 +2144,9 @@ class CliTest(unittest.TestCase):
         self.assertTrue(target.is_file())
 
     def test_the_board_still_works_with_no_live_agent_list(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, _ = self.cli("board", env=self.fake_env(CLOWDER_FAKE_LIST_FAIL="1"))
         self.assertEqual(code, 0, "state alone is still worth showing")
         html = Path(out.strip()).read_text(encoding="utf-8")
@@ -1986,7 +2160,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("Nothing is recorded as waiting on you.", html)
 
     def test_an_owner_item_shows_and_clears(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         code, out, err = self.cli(
             "owner",
             "t-0001",
@@ -2008,16 +2184,20 @@ class CliTest(unittest.TestCase):
         self.assertIn("Nothing is recorded as waiting on you.", html)
 
     def test_owner_items_are_numbered_on_the_board(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: first thing")
+        self.dispatch("maker", "myrepo", "ship: first thing", "--worktree", str(self.repo_path))
         self.cli("owner", "t-0001", "--item", "choose A or B", env=self.fake_env())
-        self.dispatch("maker", "myrepo", "ship: second thing")
+        self.dispatch(
+            "maker", "myrepo", "ship: second thing", "--worktree", str(self.repo_path)
+        )
         self.cli("owner", "t-0002", "--item", "choose C or D", env=self.fake_env())
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertIn("<b>1.</b> choose A or B", html)
         self.assertIn("<b>2.</b> choose C or D", html)
 
     def test_recording_the_answer_clears_the_owner_item(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.cli(
             "owner",
             "t-0001",
@@ -2149,7 +2329,9 @@ class CliTest(unittest.TestCase):
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         page = self.root / "board.html"
         self.assertTrue(page.is_file(), "dispatch wrote the page next to the state file")
         html = page.read_text(encoding="utf-8")
@@ -2164,6 +2346,8 @@ class CliTest(unittest.TestCase):
                 "maker",
                 "myrepo",
                 "ship: add the refund page",
+                "--worktree",
+                str(self.repo_path),
                 env=self.fake_env(),
             )
         self.assertEqual(code, 0, "the page is a byproduct, not the command")
@@ -2396,8 +2580,10 @@ class CliTest(unittest.TestCase):
     def test_a_no_job_step_records_the_agents_own_space(self) -> None:
         # The sibling defect: a step sent to an agent whose space holds an open job
         # was recorded with no folder, and a report then called it the main checkout.
+        # A ship now has to name a place, so this case is a scout - the shape that
+        # still needs no place, and still has to record where it ran.
         job_id, worktree = self.open_a_job()
-        self.assertEqual(self.step("ship: add the refund page")[0], 0)
+        self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
         task = self.only_task()
         self.assertIsNone(task["job"], "the step is not part of a job")
         self.assertEqual(task["worktree"], str(worktree), "the folder it ran in is recorded")
@@ -2453,7 +2639,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("state file does not exist yet", out)
 
     def test_state_leaves_no_temp_fragments(self) -> None:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         self.session_turns()
         self.cli("report", "t-0001", env=self.fake_env())
         siblings = sorted(p.name for p in self.root.iterdir() if p.name.startswith("state"))
@@ -2468,6 +2656,8 @@ class CliTest(unittest.TestCase):
             "maker",
             "myrepo",
             "ship: add the refund page",
+            "--worktree",
+            str(self.repo_path),
             env=self.fake_env(CLOWDER_STATE=str(other)),
         )
         self.assertEqual(code, 0)
@@ -2686,7 +2876,9 @@ class CliTest(unittest.TestCase):
     # -- state repair ------------------------------------------------------
 
     def write_unknown_field(self, field: str = "surprise") -> tuple[str, str]:
-        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
         payload = json.loads(self.state.read_text(encoding="utf-8"))
         tid = next(iter(payload["tasks"]))
         payload["tasks"][tid][field] = "left by a stale copy"
@@ -2929,8 +3121,9 @@ class CliTest(unittest.TestCase):
     def test_step_close_frees_the_agent_for_a_reset_and_a_rename(self) -> None:
         job_id, _ = self.open_a_job()
         # A step with no job of its own: the other half of the stale record, and
-        # the case where the step alone is what blocks the agent.
-        self.assertEqual(self.step("ship: add the refund page")[0], 0)
+        # the case where the step alone is what blocks the agent. A scout, since a
+        # ship now has to name a place.
+        self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
         self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
 
         # While the step reads as open, both are refused for that agent.

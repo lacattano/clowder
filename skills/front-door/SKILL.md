@@ -218,8 +218,12 @@ branch name on it. The writer keeps its branch and can carry on.
 ### The brief
 
 1. **Shape** - `ship` (change a repo, deliver a diff) or `scout` (change nothing, deliver a
-   report). Pass the same word to `--shape`.
+   report). Pass the same word to `--shape`; `--shape` defaults to `ship`, so a scout must
+   say so there, not only in the brief.
 2. **The job** - the exact command, the working directory, and the test that says it passed.
+   A **ship** needs a place: `--job` to put its save on that job's branch, or `--worktree`
+   when the folder is deliberate. A ship with neither is refused before anything is sent,
+   and `--force` does not get past it. A scout changes nothing, so it needs no place.
 3. **Who receives the answer** - you, unless the user is the reader. Say so.
 4. **What to report** - and what to ignore.
 5. **What not to do** - in particular: do not start a heavy run without an explicit go-ahead.
