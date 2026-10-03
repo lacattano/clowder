@@ -538,6 +538,79 @@ class ModelRollupTest(unittest.TestCase):
         self.assertIn("nothing here gates anything", html, "the figure is not a gate")
 
 
+class PlainNameTest(unittest.TestCase):
+    """Work named in the owner's words, so he needs no handle to follow it."""
+
+    def test_state_in_words_is_derived_correctly(self) -> None:
+        # Derived from the pass and merge word he actually gave, never stored.
+        self.assertEqual(job().state_in_words, "in progress")
+        self.assertEqual(
+            job(reviewer="verifier", review_commit="a" * 40).state_in_words,
+            "waiting on a walkthrough",
+        )
+        self.assertEqual(job(pass_at="2026-09-27T10:00:00Z").state_in_words, "passed")
+        self.assertEqual(
+            job(
+                pass_at="2026-09-27T10:00:00Z", published_at="2026-09-27T10:05:00Z"
+            ).state_in_words,
+            "waiting on your merge word",
+        )
+        self.assertEqual(
+            job(
+                pass_at="2026-09-27T10:00:00Z",
+                published_at="2026-09-27T10:05:00Z",
+                merged_at="2026-09-27T10:30:00Z",
+            ).state_in_words,
+            "merged",
+        )
+
+    def test_a_job_with_no_title_falls_back_to_readable_words(self) -> None:
+        # Never a bare id: the label is already words, and the effect falls back
+        # to the branch rather than nothing.
+        plain = job()
+        self.assertEqual(plain.name_in_words, plain.label)
+        self.assertNotEqual(plain.name_in_words, plain.id)
+        self.assertEqual(plain.effect_in_words, plain.branch)
+
+    def test_a_title_and_effect_are_used_when_given(self) -> None:
+        named = job(title="the page-context fix", effect="a second page opens in context")
+        self.assertEqual(named.name_in_words, "the page-context fix")
+        self.assertEqual(named.effect_in_words, "a second page opens in context")
+
+    def test_the_board_shows_the_title_before_the_identifier(self) -> None:
+        named = job(
+            title="the page-context fix",
+            effect="a second page opens in context",
+            pass_at="2026-09-27T10:00:00Z",
+        )
+        html = render_board(data(jobs=[named]))
+        self.assertIn("the page-context fix", html)
+        self.assertIn("a second page opens in context", html)
+        self.assertIn("passed", html)
+        # The title opens the row; the id sits in brackets after it.
+        row = html[html.index("rows-jobs") :]
+        self.assertLess(
+            row.index("the page-context fix"),
+            row.index(f"[{named.id}]"),
+            "the title comes before the id",
+        )
+
+    def test_the_title_is_a_declared_filter_column(self) -> None:
+        # q-0142's field list, reused: title and state are declared once, and
+        # both the controls and the row data come from it.
+        names = [field.name for field in FILTERABLE_FIELDS]
+        self.assertIn("title", names)
+        self.assertIn("state", names)
+        named = job(title="the busy-board fix")
+        html = render_board(data(jobs=[named]))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-title="the busy-board fix"', row)
+        self.assertIn('data-state="in progress"', row)
+        for name in ("title", "state"):
+            self.assertIn(f'data-filter="{name}"', html, f"the {name} control is missing")
+
+
 class SafetyTest(unittest.TestCase):
     def test_agent_text_is_escaped(self) -> None:
         nasty = task(

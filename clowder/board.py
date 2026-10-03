@@ -18,7 +18,7 @@ from html import escape
 from pathlib import Path
 
 from .report import format_cost, format_tokens
-from .state import CLOSED, Job, Queued, Task
+from .state import CLOSED, REPORTED, Job, Queued, Task
 from .timeutil import elapsed_seconds, human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
@@ -216,6 +216,25 @@ class FilterField:
 # a column is never typed twice. When the store moves to SQL this list is the column set.
 FILTERABLE_FIELDS: tuple[FilterField, ...] = (
     FilterField("repo", "repo", "text", note="the record's repo"),
+    FilterField(
+        "title",
+        "title",
+        "text",
+        note="the change in the owner's words, title or label",
+    ),
+    FilterField(
+        "state",
+        "state",
+        "choice",
+        (
+            "in progress",
+            "waiting on a walkthrough",
+            "passed",
+            "waiting on your merge word",
+            "merged",
+        ),
+        "derived from the pass and merge word the owner gave, never stored",
+    ),
     FilterField("kind", "kind", "choice", ("scout", "ship"), "the record's shape"),
     FilterField("status", "status", "choice", (), "the record's status"),
     FilterField("agent", "agent", "choice", (), "the record's agent"),
@@ -398,8 +417,9 @@ def waiting_on_you(data: BoardData) -> list[str]:
         seconds = elapsed_seconds(job.handed_over_at, None)
         quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
         lines.append(
-            f"<b>held for your review</b> {_e(job.branch)} was handed to {_e(job.reviewer)} "
-            f"<span class='why'>[{_e(job.id)}] {_e(job.label)}; waiting "
+            f"<b>held for your review</b> {_e(job.name_in_words)} was handed to "
+            f"{_e(job.reviewer)} "
+            f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; waiting "
             f"{_e(human_age(seconds))}{quiet}. Walk it in the reviewer's space.</span>"
         )
 
@@ -410,9 +430,10 @@ def waiting_on_you(data: BoardData) -> list[str]:
         if not open_steps and job.has_pass and not job.has_merge_word:
             reviewed_by = f" was reviewed by {_e(job.reviewer)}" if job.reviewer else ""
             lines.append(
-                f"<b>your word</b> {_e(job.branch)}{reviewed_by} "
-                f"<span class='why'>[{_e(job.id)}] {_e(job.label)}; the front door merges "
-                "it once you give your merge word and the checks are green</span>"
+                f"<b>your word</b> {_e(job.name_in_words)}{reviewed_by} "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; "
+                "the front door merges it once you give your merge word and the "
+                "checks are green</span>"
             )
 
     return lines
@@ -501,6 +522,8 @@ def _job_fields(job: Job) -> dict[str, str]:
     waiting = not job.has_pass or not job.has_merge_word
     return {
         "repo": job.repo,
+        "title": job.name_in_words,
+        "state": job.state_in_words,
         # A job records no shape; its steps do. Empty until a job records one.
         "kind": getattr(job, "shape", "") or "",
         "status": job.status,
@@ -514,12 +537,36 @@ def _job_fields(job: Job) -> dict[str, str]:
     }
 
 
-def _task_fields(task: Task) -> dict[str, str]:
-    """A step's filterable values, each read from a field the step records."""
+def _step_state_in_words(task: Task) -> str:
+    """Where a step is, in words, derived from what it holds. Never stored."""
+    if task.status == REPORTED:
+        return "answered"
+    if task.is_abandoned:
+        return "abandoned, no answer came"
+    if task.is_closed:
+        return "closed, no answer came"
+    return "in progress"
+
+
+def _job_by_id(data: BoardData) -> dict[str, Job]:
+    return {job.id: job for job in data.jobs}
+
+
+def _task_fields(task: Task, jobs: dict[str, Job] | None = None) -> dict[str, str]:
+    """A step's filterable values, each read from a field the step records.
+
+    A step has no title of its own: it inherits the words from the job it is a
+    step of, and falls back to its own branch when it has no job.
+    """
     updated = _newest(task.reported_at, task.abandoned_at, task.closed_at)
     waiting = bool(task.owner_item) or bool(task.decision_is_open)
+    job = (jobs or {}).get(task.job or "")
+    title = job.name_in_words if job else (task.branch or task.question)
+    state = job.state_in_words if job else _step_state_in_words(task)
     return {
         "repo": task.repo,
+        "title": title,
+        "state": state,
         "kind": task.shape,
         "status": task.status,
         "agent": task.agent,
@@ -660,7 +707,7 @@ def render_board(data: BoardData) -> str:
                 _e(_clip(task.question, 120)),
                 _agent_state(data, task.agent),
             ],
-            _task_fields(task),
+            _task_fields(task, _job_by_id(data)),
         )
         for task in open_tasks(data.tasks)
     ]
@@ -728,9 +775,12 @@ def render_board(data: BoardData) -> str:
     job_rows = [
         (
             [
-                _id(job.id),
-                f"<span class='pill {'open' if job.is_open else ''}'>{_e(job.status)}</span>",
-                _e(job.label),
+                # Title first: the change named in his words. The id follows in
+                # brackets, for the places he has to type it.
+                f"<b>{_e(job.name_in_words)}</b> <span class='id'>[{_e(job.id)}]</span>",
+                _e(job.effect_in_words),
+                f"<span class='pill {'open' if job.is_open else ''}'>"
+                f"{_e(job.state_in_words)}</span>",
                 _e(job.branch),
                 _e(job.agent),
                 _e(job.reviewer or "-"),
@@ -747,9 +797,9 @@ def render_board(data: BoardData) -> str:
         _filter_table(
             "rows-jobs",
             [
-                "id",
+                "change",
+                "effect",
                 "state",
-                "work",
                 "branch",
                 "agent",
                 "reviewer",
