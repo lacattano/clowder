@@ -2256,6 +2256,11 @@ def _board_path(store: StateStore) -> Path:
     return store.path.parent / "board.html"
 
 
+def _risk_memo_path(store: StateStore) -> Path:
+    """The memo of at-risk answers, beside the state it describes."""
+    return store.path.parent / gitcmd.RISK_MEMO_FILENAME
+
+
 def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
     """Everything the page is drawn from."""
     agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
@@ -2265,16 +2270,23 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     # A rebase rewrites the hash but keeps the patch-id, so the old commit is
     # superseded, not lost. When the change cannot be compared, say so instead of
     # raising a false alarm.
+    #
+    # The answer is a pure function of the commit and the refs that hold it, and
+    # asking git costs a process each time, so it is memoised: one look per commit
+    # inside a write, and across writes while the refs have not moved.
     stranded: set[str] = set()
     risk_notes: dict[str, str] = {}
+    memo = gitcmd.RiskMemo(_risk_memo_path(store))
+    memo.load()
     for task in tasks:
         if not (task.commit and task.worktree):
             continue
-        risk = gitcmd.commit_risk(task.worktree, task.commit)
+        risk = memo.risk(task.worktree, task.commit)
         if risk == gitcmd.LOST:
             stranded.add(task.id)
         elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
             risk_notes[task.id] = risk
+    memo.save()
 
     return BoardData(
         tasks=tasks,
