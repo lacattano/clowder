@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 from clowder.board import (
+    FILTERABLE_FIELDS,
     BoardAgent,
     BoardData,
     open_tasks,
@@ -381,6 +383,78 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(waiting_on_you(data(jobs=[closed])), [])
 
 
+class FilterTest(unittest.TestCase):
+    """The declarative field list, and the controls and data both come from it."""
+
+    def rows(self, html: str) -> list[list[str]]:
+        """The field names on every filterable row, in order."""
+        found = []
+        for chunk in re.findall(r"<tr([^>]*)>", html):
+            names = re.findall(r"data-([a-z-]+)=", chunk)
+            if names:
+                found.append(names)
+        return found
+
+    def test_the_filterable_field_list_matches_the_rows(self) -> None:
+        # A filter may not name a field the rows do not carry, so every row on the
+        # page must expose exactly the declared fields.
+        names = [field.name for field in FILTERABLE_FIELDS]
+        self.assertTrue(names, "the column list is the point")
+        html = render_board(
+            data(
+                tasks=[task(), task(task_id="t-0002")],
+                jobs=[job(), job(job_id="j-0002")],
+            )
+        )
+        rows = self.rows(html)
+        self.assertGreaterEqual(len(rows), 4, "jobs and steps both carry the fields")
+        for row in rows:
+            self.assertEqual(row, names, "a row must expose exactly the declared fields")
+
+    def test_the_controls_are_generated_from_the_same_list(self) -> None:
+        names = {field.name for field in FILTERABLE_FIELDS}
+        html = render_board(data(tasks=[task()], jobs=[job()]))
+        controls = set(re.findall(r"data-filter=\"([a-z-]+)\"", html))
+        self.assertTrue(controls)
+        self.assertEqual(controls - names, set(), "a filter names a field not in the list")
+        for wanted in ("repo", "kind", "status", "waiting-on-you", "blocked", "age"):
+            self.assertIn(wanted, controls, f"the {wanted} filter is missing")
+        self.assertIn("data-sort", html, "the sort is there")
+        for field in FILTERABLE_FIELDS:
+            if field.control == "date":
+                continue
+            self.assertIn(
+                f"<span>{field.label}</span>", html, f"the {field.name} control is not labelled"
+            )
+
+    def test_a_filter_that_matches_nothing_shows_the_empty_state(self) -> None:
+        # A filter that keeps nothing must leave an empty state on the page, not an
+        # error and not a half-drawn table.
+        html = render_board(data(tasks=[task()], jobs=[job()]))
+        empties = re.findall(r"data-empty data-for=\"([a-z-]+)\"", html)
+        self.assertEqual(sorted(empties), ["rows-jobs", "rows-open"])
+        self.assertIn("Nothing matches those filters.", html)
+        self.assertIn("empty.hidden = shown !== 0", html, "the script shows the empty state")
+
+    def test_the_owner_section_is_first_and_is_not_filtered(self) -> None:
+        html = render_board(data(tasks=[task()], jobs=[job()]))
+        waiting = html.index("Waiting on you")
+        self.assertLess(waiting, html.index("Filters"), "what waits on him stays first")
+        self.assertLess(waiting, html.index("Open steps"))
+        # No filterable row, and no empty state, sits in his section.
+        section = html[waiting : html.index("Filters")]
+        self.assertNotIn("data-filter", section)
+        self.assertNotIn("data-empty", section)
+
+    def test_the_filters_are_client_side_only(self) -> None:
+        html = render_board(data(tasks=[task()], jobs=[job()]))
+        self.assertNotIn("http://", html)
+        self.assertNotIn("https://", html)
+        self.assertNotIn("<link", html)
+        self.assertNotIn("fetch(", html)
+        self.assertNotIn("XMLHttpRequest", html)
+
+
 class SafetyTest(unittest.TestCase):
     def test_agent_text_is_escaped(self) -> None:
         nasty = task(
@@ -389,7 +463,10 @@ class SafetyTest(unittest.TestCase):
             open_decision="</li><li>injected",
         )
         html = render_board(data(tasks=[nasty], agents=[agent()]))
-        self.assertNotIn("<script>", html)
+        # The page carries one script, its own filter loop. Nothing an agent wrote
+        # may become a tag.
+        self.assertEqual(html.count("<script>"), 1, "only the page's own filter script")
+        self.assertNotIn("<script>alert", html)
         self.assertNotIn("<img", html)
         self.assertNotIn("<li>injected", html)
         self.assertIn("&lt;script&gt;", html)

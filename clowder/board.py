@@ -4,7 +4,9 @@ A file, not a panel. It survives a fresh context, it holds far more than a
 terminal can, and it needs no server and no network.
 
 Everything here is a pure function of what it is handed, so it can be tested
-without a browser and rendered without a multiplexer running.
+without a browser and rendered without a multiplexer running. The filterable
+columns are declared once, in FILTERABLE_FIELDS, and both the controls and the
+rows' data come from that list.
 """
 
 from __future__ import annotations
@@ -29,7 +31,8 @@ HELD_QUIET_AFTER_SECONDS = 86400.0
 
 TITLE = "clowder board"
 
-# An open tab follows along on its own: no server, no script, no network.
+# An open tab follows along on its own: no server, no network. The one script is
+# the page's own filter loop, inline; nothing is fetched.
 REFRESH_SECONDS = 30
 
 STYLE = """
@@ -83,6 +86,77 @@ tbody tr:last-child td { border-bottom: 0; }
 ul { margin: 0; padding-left: 1.1rem; }
 li { margin: .25rem 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
+.controls { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
+.controls label { display: flex; gap: .3rem; align-items: baseline; font-size: .8rem; }
+.controls label span { color: var(--muted); }
+.controls select, .controls input {
+  font: inherit; font-size: .85rem; padding: .15rem .3rem;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink);
+}
+.empty { color: var(--muted); margin: .6rem 0 0; }
+"""
+
+# Client-side filtering over the data already on the page: no server, no store, no query
+# engine. Each filter reads `data-<name>` off a row, using the column names in
+# FILTERABLE_FIELDS; an age is computed from the row's `created` timestamp rather than
+# stored anywhere.
+FILTER_SCRIPT = """
+(function () {
+  var bar = document.querySelector('[data-filters]');
+  if (!bar) { return; }
+  var bodies = document.querySelectorAll('tbody[data-rows]');
+  var controls = bar.querySelectorAll('[data-filter]');
+  var sort = bar.querySelector('[data-sort]');
+
+  function cell(row, name) {
+    return (row.getAttribute('data-' + name) || '').toLowerCase();
+  }
+  function keep(row) {
+    for (var i = 0; i < controls.length; i++) {
+      var name = controls[i].getAttribute('data-filter');
+      var wanted = (controls[i].value || '').toLowerCase();
+      if (!wanted) { continue; }
+      var have = cell(row, name);
+      if (name === 'age') {
+        if (Number(have) < Number(wanted)) { return false; }
+      } else if (have !== wanted) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function newestFirst() { return sort && sort.value === 'newest'; }
+
+  function apply() {
+    var flip = newestFirst();
+    for (var b = 0; b < bodies.length; b++) {
+      var body = bodies[b];
+      var rows = body.querySelectorAll('tr');
+      var shown = 0;
+      for (var r = 0; r < rows.length; r++) {
+        var on = keep(rows[r]);
+        rows[r].hidden = !on;
+        if (on) { shown++; }
+      }
+      var ordered = [];
+      for (var k = 0; k < rows.length; k++) { ordered.push(rows[k]); }
+      ordered.sort(function (a, b) {
+        var one = Date.parse(cell(a, 'created')) || 0;
+        var two = Date.parse(cell(b, 'created')) || 0;
+        if (one === two) { return 0; }
+        return (one < two ? -1 : 1) * (flip ? -1 : 1);
+      });
+      for (var j = 0; j < ordered.length; j++) { body.appendChild(ordered[j]); }
+      var empty = document.querySelector('[data-empty][data-for="' + body.id + '"]');
+      if (empty) { empty.hidden = shown !== 0; }
+    }
+  }
+
+  for (var c = 0; c < controls.length; c++) { controls[c].addEventListener('change', apply); }
+  if (sort) { sort.addEventListener('change', apply); }
+  apply();
+})();
 """
 
 
@@ -117,6 +191,67 @@ class BoardAgent:
         if self.detached:
             return f"free, on {self.commit or 'no commit'}"
         return f"{self.branch or 'free'} @ {self.commit or 'no commit'}"
+
+
+@dataclass(frozen=True)
+class FilterField:
+    """One filterable column of the board.
+
+    The name is what a filter control uses and what a row carries as `data-<name>`.
+    The control says what kind of input it wants. Every value is read from a field the
+    record already holds; nothing here is derived state kept for filtering. The two date
+    columns are the sort and age keys, and take no control: the page computes an age from
+    `created` rather than being handed one.
+    """
+
+    name: str
+    label: str
+    control: str  # "text", "choice", "bool", or "date"
+    values: tuple[str, ...] = ()  # the choices for a "choice" or "bool" control
+    note: str = ""
+
+
+# The column set, declared once. Both the filter controls and every row's data attributes
+# are generated from this list, so a filter cannot name a field the rows do not carry, and
+# a column is never typed twice. When the store moves to SQL this list is the column set.
+FILTERABLE_FIELDS: tuple[FilterField, ...] = (
+    FilterField("repo", "repo", "text", note="the record's repo"),
+    FilterField("kind", "kind", "choice", ("scout", "ship"), "the record's shape"),
+    FilterField("status", "status", "choice", (), "the record's status"),
+    FilterField("agent", "agent", "choice", (), "the record's agent"),
+    FilterField("job", "job", "text", note="the task's job, or a job's own id"),
+    FilterField(
+        "waiting-on-you",
+        "waiting on you",
+        "bool",
+        ("yes", "no"),
+        "a task with an owner item, or a job with no pass or no merge word",
+    ),
+    FilterField(
+        "blocked",
+        "blocked",
+        "bool",
+        ("yes", "no"),
+        "blocked_by - the field is not recorded yet, so this reads empty until it lands",
+    ),
+    FilterField("created", "created", "date", (), "created_at, ISO-8601"),
+    FilterField("updated", "updated", "date", (), "the newest recorded timestamp, ISO-8601"),
+    FilterField(
+        "age",
+        "older than",
+        "age",
+        (),
+        "seconds since created, computed at render time from that recorded field",
+    ),
+)
+
+# The queue-triage work (t-0327) adds a `verdict` to queued items and a `blocked_by` to jobs.
+# When those fields are recorded, add them here and as one column each - nothing else moves:
+#
+#     FilterField("verdict", "verdict", "choice", ("do", "skip", "done")),
+#     FilterField("blocked", "blocked", "choice", (), "the record's blocked_by"),
+#
+# The `blocked` column is already above, waiting on its field.
 
 
 @dataclass
@@ -310,12 +445,136 @@ def waiting_for_worker(data: BoardData) -> list[str]:
     return lines
 
 
+def _field_names() -> tuple[str, ...]:
+    return tuple(field.name for field in FILTERABLE_FIELDS)
+
+
+def _row_attrs(values: dict[str, str]) -> str:
+    """Every filterable field on a row, generated from FILTERABLE_FIELDS.
+
+    One source of truth: the controls read these names, the controls are generated from
+    the same list, and a filter cannot name a field no row carries.
+    """
+    return "".join(f' data-{name}="{_e(values.get(name, ""))}"' for name in _field_names())
+
+
+def _job_fields(job: Job) -> dict[str, str]:
+    """A job's filterable values, each read from a field the job records."""
+    updated = _newest(job.merged_at, job.closed_at, job.published_at, job.released_at)
+    waiting = not job.has_pass or not job.has_merge_word
+    return {
+        "repo": job.repo,
+        # A job records no shape; its steps do. Empty until a job records one.
+        "kind": getattr(job, "shape", "") or "",
+        "status": job.status,
+        "agent": job.agent,
+        "job": job.id,
+        "waiting-on-you": "yes" if waiting else "no",
+        "blocked": getattr(job, "blocked_by", "") or "",
+        "created": job.created_at or "",
+        "updated": updated,
+        "age": str(int(job.age_seconds)),
+    }
+
+
+def _task_fields(task: Task) -> dict[str, str]:
+    """A step's filterable values, each read from a field the step records."""
+    updated = _newest(task.reported_at, task.abandoned_at, task.closed_at)
+    waiting = bool(task.owner_item) or bool(task.decision_is_open)
+    return {
+        "repo": task.repo,
+        "kind": task.shape,
+        "status": task.status,
+        "agent": task.agent,
+        "job": task.job or "",
+        "waiting-on-you": "yes" if waiting else "no",
+        "blocked": getattr(task, "blocked_by", "") or "",
+        "created": task.dispatched_at or task.created_at or "",
+        "updated": updated,
+        "age": str(int(task.age_seconds)),
+    }
+
+
+def _newest(*moments: str | None) -> str:
+    """The newest of several recorded timestamps, as one ISO-8601 string."""
+    stamped = [moment for moment in moments if moment]
+    return max(stamped) if stamped else ""
+
+
+def _filter_controls() -> str:
+    """The filter bar, generated from FILTERABLE_FIELDS.
+
+    The fields with a date control are the sort and age keys; they carry data, not a
+    control, so the owner is not asked to type a timestamp.
+    """
+    controls: list[str] = []
+    for column in FILTERABLE_FIELDS:
+        if column.control == "date":
+            continue
+        if column.control == "choice" and column.values:
+            options = ["<option value=''>any</option>"] + [
+                f"<option value='{_e(value)}'>{_e(value)}</option>" for value in column.values
+            ]
+            control = f'<select data-filter="{_e(column.name)}">{"".join(options)}</select>'
+        elif column.control == "bool":
+            options = [
+                "<option value=''>any</option>",
+                "<option value='yes'>yes</option>",
+                "<option value='no'>no</option>",
+            ]
+            control = f'<select data-filter="{_e(column.name)}">{"".join(options)}</select>'
+        elif column.control == "age":
+            options = [
+                "<option value=''>any</option>",
+                "<option value='3600'>1 hour</option>",
+                "<option value='28800'>8 hours</option>",
+                "<option value='86400'>1 day</option>",
+                "<option value='259200'>3 days</option>",
+                "<option value='604800'>7 days</option>",
+            ]
+            control = f'<select data-filter="{_e(column.name)}">{"".join(options)}</select>'
+        else:
+            control = (
+                f'<input data-filter="{_e(column.name)}" type="text" '
+                f'placeholder="{_e(column.label)}" size="10">'
+            )
+        controls.append(f"<label><span>{_e(column.label)}</span>{control}</label>")
+    controls.append(
+        "<label><span>sort</span><select data-sort>"
+        "<option value='oldest'>oldest first</option>"
+        "<option value='newest'>newest first</option>"
+        "</select></label>"
+    )
+    return "<div class='controls'>" + "".join(controls) + "</div>"
+
+
 def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     head = "".join(f"<th>{_e(name)}</th>" for name in headers)
     body = "".join(
         "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows
     )
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _filter_table(
+    table_id: str,
+    headers: Sequence[str],
+    rows: Sequence[tuple[Sequence[str], dict[str, str]]],
+) -> str:
+    """A table whose rows carry the filterable fields, plus its empty state."""
+    head = "".join(f"<th>{_e(name)}</th>" for name in headers)
+    body = "".join(
+        f"<tr{_row_attrs(fields)}>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+        for cells, fields in rows
+    )
+    empty = (
+        f"<p class='empty' data-empty data-for=\"{_e(table_id)}\" hidden>"
+        "Nothing matches those filters.</p>"
+    )
+    return (
+        f"<table><thead><tr>{head}</tr></thead>"
+        f'<tbody id="{_e(table_id)}" data-rows>{body}</tbody></table>{empty}'
+    )
 
 
 def _id(value: str | None) -> str:
@@ -353,20 +612,24 @@ def render_board(data: BoardData) -> str:
         worker_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
 
     open_rows = [
-        [
-            _id(task.id),
-            _id(task.job),
-            _e(task.agent),
-            _e(task.repo),
-            _e(task.branch or task.commit or "-"),
-            _e(human_age(task.age_seconds)),
-            _e(_clip(task.question, 120)),
-            _agent_state(data, task.agent),
-        ]
+        (
+            [
+                _id(task.id),
+                _id(task.job),
+                _e(task.agent),
+                _e(task.repo),
+                _e(task.branch or task.commit or "-"),
+                _e(human_age(task.age_seconds)),
+                _e(_clip(task.question, 120)),
+                _agent_state(data, task.agent),
+            ],
+            _task_fields(task),
+        )
         for task in open_tasks(data.tasks)
     ]
     open_html = (
-        _table(
+        _filter_table(
+            "rows-open",
             ["id", "job", "agent", "repo", "branch", "age", "question", "agent"],
             open_rows,
         )
@@ -411,22 +674,26 @@ def render_board(data: BoardData) -> str:
     )
 
     job_rows = [
-        [
-            _id(job.id),
-            f"<span class='pill {'open' if job.is_open else ''}'>{_e(job.status)}</span>",
-            _e(job.label),
-            _e(job.branch),
-            _e(job.agent),
-            _e(job.reviewer or "-"),
-            _e(job.commit or "-"),
-            _e("yes" if job.has_pass else "no"),
-            _e("yes" if job.has_merge_word else "no"),
-            _e(human_age(job.age_seconds)),
-        ]
+        (
+            [
+                _id(job.id),
+                f"<span class='pill {'open' if job.is_open else ''}'>{_e(job.status)}</span>",
+                _e(job.label),
+                _e(job.branch),
+                _e(job.agent),
+                _e(job.reviewer or "-"),
+                _e(job.commit or "-"),
+                _e("yes" if job.has_pass else "no"),
+                _e("yes" if job.has_merge_word else "no"),
+                _e(human_age(job.age_seconds)),
+            ],
+            _job_fields(job),
+        )
         for job in data.jobs
     ]
     jobs_html = (
-        _table(
+        _filter_table(
+            "rows-jobs",
             [
                 "id",
                 "state",
@@ -443,6 +710,21 @@ def render_board(data: BoardData) -> str:
         )
         if job_rows
         else _nothing("No jobs yet.")
+    )
+
+    filterable = bool(open_rows or job_rows)
+    filters_html = (
+        _section(
+            "Filters",
+            None,
+            _filter_controls()
+            + "<p class='why'>These narrow the open steps and the jobs below, on the "
+            "page, where you already are. What waits on you is above them and is not "
+            "narrowed.</p>",
+            css="filters",
+        )
+        if filterable
+        else ""
     )
 
     live = "live" if data.live_ok else "not readable"
@@ -467,6 +749,7 @@ def render_board(data: BoardData) -> str:
 when a clowder command rewrites it, and an open tab keeps what it loaded. If that time is not
 now, the page is stale.</p>
 {_section("Waiting on you", len(needs), needs_html, css="needs")}
+{filters_html}
 {_section("Waiting for a worker", len(worker), worker_html)}
 {_section("Open steps", len(open_rows), open_html)}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
@@ -474,6 +757,7 @@ now, the page is stale.</p>
 {_section("Jobs", len(job_rows), jobs_html)}
 <footer>{footer}</footer>
 </main>
+<script>{FILTER_SCRIPT}</script>
 </body>
 </html>
 """

@@ -61,6 +61,11 @@ what is waiting on you - a decision, a finished review, or work that is on no br
 steps, agents and their spaces, answers, and jobs. It needs no server, and it still works when
 the multiplexer cannot be read.
 
+The open steps and the jobs narrow from a filter bar: repo, kind, status, agent, job, whether it
+waits on you, whether it is blocked, and how old it is, plus oldest-first or newest-first. That
+runs in the page itself over the data already on it, so there is no server to ask. What waits on
+you stays at the top and is never filtered away.
+
 ## What this is not
 
 - **Not a new agent runtime.** The agents are [Pi](https://github.com/earendil-works/pi)
