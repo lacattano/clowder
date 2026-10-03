@@ -212,7 +212,7 @@ name the code it is about. The commit is read when the report is read, not remem
 dispatch, so a commit made during the step is the one reported.
 
 What happens after the commit - the walkthrough and everything that follows it - is the owner's
-gate chain, kept in the workspace rules file at `code/AGENTS.md`.
+gate chain, kept in the shipped `crew` skill.
 
 ### 18. The handoff is a save, and a reviewer gets a pinned copy
 
@@ -232,7 +232,7 @@ Two consequences worth keeping:
 - A handover needs a save. Unsaved work is refused, by name, because a reviewer checks a save
   and not a folder.
 - A review needs a save to exist at all, and a save is a commit. The gate itself is the owner's
-  chain, in the workspace rules file.
+  chain, in the shipped `crew` skill.
 
 Pushing is publishing, not handing over.
 
@@ -573,9 +573,14 @@ board (step 4), `/calm` (step 5).
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
 shape, a pointer to the reviewer's walkthrough, and the rules the front door runs by - say when
 you dispatch, ask for exactly one decision. The owner gate and the always-rules are not repeated
-here; the skill carries one pointer at each, sections 5 and 8 of the workspace rules file. It opens
-with a reading order for a fresh context - inbox, queue, open steps, jobs, agents, the Open
-section - so a refresh is cheap and the front door holds no state in its head.
+here; the skill carries one pointer at the shipped `crew` skill. It opens with a reading order for
+a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh is cheap
+and the front door holds no state in its head.
+
+`skills/crew/SKILL.md` is the other half: the generic rules that hold for any crew, shipped so a
+fresh install has them. `code/AGENTS.md` is now the instance overlay beside the workspace - the
+scope, the multiplexer check, the focus repo, the roster pointer and the dated stories - and it
+restates no rule.
 
 `skills/reviewer/SKILL.md` holds the walkthrough steps, the reviewer's thirteen-row senior check,
 and the four questions the walkthrough asks the owner. The reviewer reads it; the front door keeps

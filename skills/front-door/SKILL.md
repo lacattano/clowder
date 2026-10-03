@@ -387,8 +387,9 @@ copy; the brief then says `/skill:reviewer`, and the reviewer reads `skills/revi
 for the senior check, the four owner questions, and the file-by-file steps. It records the
 senior check as a fixed block in its step report before any walkthrough is booked.
 
-The rules for this are the owner's. They live in the workspace rules file at `code/AGENTS.md`,
-section 5, "What the owner gates". Read them there; this skill does not repeat them.
+The rules for the gate are the crew rules: the shipped `crew` skill (`/skill:crew`) carries the
+seven-step owner gate and the four walkthrough questions. Read them there; this skill does not
+repeat them.
 
 You record his answer on that line of work: passed, or what to change. A pass is recorded with
 `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is separate and
@@ -398,5 +399,5 @@ the new commits the same way.
 
 ## Rules that hold every time
 
-They live in the workspace rules file at `code/AGENTS.md`, section 8, "Hard safety rules". Read
-them there; this skill does not repeat them.
+They are in the shipped `crew` skill (`/skill:crew`), under "Hard safety rules". Read them there;
+this skill does not repeat them.
