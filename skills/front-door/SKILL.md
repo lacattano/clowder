@@ -398,10 +398,5 @@ the new commits the same way.
 
 ## Rules that hold every time
 
-- The user's direct words outrank a peer's job. If they conflict, ask the user. Do not guess,
-  and do not quietly do both.
-- Never claim a test passed unless the report says it ran and passed.
-- Do not close panes, tabs or workspaces you did not create, and leave the ones you did create
-  in place too. A worker that has reported can still answer a follow-up.
-- Never overlap heavy runs. No test suite or pipeline while another agent runs one.
-- Large output goes to a file. Reply with the path.
+They live in the workspace rules file at `code/AGENTS.md`, section 8, "Hard safety rules". Read
+them there; this skill does not repeat them.

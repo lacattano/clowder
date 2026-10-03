@@ -56,13 +56,9 @@ BLOCKERS: none | <list>
 
 ## The four owner questions
 
-He asks these, and you answer all four from the senior check you have already recorded. They are
-in his words, and they need no code:
-
-1. "In one line: what changes for me, or for the person using it?"
-2. "What is the worst thing this could break, and what would catch it?"
-3. "What was actually run, and what did it prove - and what did it not prove?"
-4. "What are you least sure about?"
+He asks four questions, in his words. They live in the workspace rules file at `code/AGENTS.md`,
+section 5, "What the owner gates". Read them there; this skill does not repeat them. Answer all
+four from the senior check you have already recorded - they need no code.
 
 ## If the senior check found an irreversible act
 
