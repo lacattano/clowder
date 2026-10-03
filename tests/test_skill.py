@@ -143,17 +143,72 @@ class SkillTest(unittest.TestCase):
         self.assertIn('"Waiting for a worker"', text)
         self.assertIn("cannot recover", text)
 
-    def test_the_skill_points_at_the_reviewer_for_the_walkthrough(self) -> None:
+    def test_the_shipped_skills_point_at_the_crew_skill(self) -> None:
+        # The generic rules ship as a skill. A shipped skill must never point at a
+        # local file: on a fresh install there is no such file, so the pointer
+        # points at nothing. This replaces the test that locked that pointer in.
+        for path in (SKILL, REPO / "skills" / "reviewer" / "SKILL.md"):
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            self.assertIn(
+                "/skill:crew", text, f"{path.parent.name} does not name the crew skill"
+            )
+            self.assertNotIn(
+                "code/AGENTS.md", text, f"{path.parent.name} points at a local file"
+            )
+
+    def test_the_skill_sends_the_walk_to_the_reviewer_skill(self) -> None:
         text = " ".join(read_skill().split())
         self.assertIn("Walking the owner through a change", text)
         self.assertIn("skills/reviewer/SKILL.md", text, "the pointer names the reviewer skill")
         self.assertIn("passed, or what to change", text)
-        # The rules get pointers at the file they live in, not a copy here.
-        self.assertIn("section 5", text, "the gate rules are pointed at")
-        self.assertIn("section 8", text, "the always-rules are pointed at")
+
+    def test_the_crew_skill_carries_the_gate_and_the_safety_rules(self) -> None:
+        # A fresh install has no local rules file, so the gate chain and the safety
+        # rules have to be in the shipped skill.
+        crew = (REPO / "skills" / "crew" / "SKILL.md").read_text(encoding="utf-8")
+        fields = frontmatter(crew)
+        self.assertEqual(fields.get("name"), "crew")
+        self.assertIn("Use when", fields.get("description", ""))
+
+        text = " ".join(crew.split())
+        for step in (
+            "The worker commits on its job's branch",
+            "walks him through the change",
+            "passed, or what to change",
+            "Only with a recorded pass",
+            "The merge is a separate word",
+            "Nothing is deleted",
+            "only with his approval",
+        ):
+            self.assertIn(step, text, f"the gate chain is missing a step: {step}")
+        self.assertIn("CI is not acceptance", text)
+        for question in (
+            "what changes for me, or for the person using it",
+            "the worst thing this could break, and what would catch it",
+            "what did it prove - and what did it not prove",
+            "least sure about",
+        ):
+            self.assertIn(question, text, f"a walkthrough question is missing: {question}")
+        for rule in (
+            "Never overlap heavy runs",
+            "A verifier must not start a heavy run",
+            "You cannot spawn agents",
+            "Do not close panes",
+            "leave the ones you did create",
+            "A verifier pass is not approval",
+        ):
+            self.assertIn(rule, text, f"a safety rule is missing: {rule}")
+        self.assertIn("Never claim a test passed", text, "a reporting rule is missing")
+        for rule in (
+            "Names, not handles",
+            "A question must stand on its own",
+            "Say where it happens",
+        ):
+            self.assertIn(rule, text, f"a write-for-the-owner rule is missing: {rule}")
+        self.assertIn("is one line of work", text, "the glossary is missing")
 
     def test_the_skill_does_not_restate_the_always_rules(self) -> None:
-        # They live in code/AGENTS.md section 8. Held in both places, they drift.
+        # They live in the shipped crew skill. Held in both places, they drift.
         text = " ".join(read_skill().split())
         for rule in (
             "The user's direct words outrank a peer's job",
@@ -162,7 +217,7 @@ class SkillTest(unittest.TestCase):
             "Large output goes to a file",
         ):
             self.assertNotIn(rule, text, f"the always-rule is restated here: {rule}")
-        self.assertIn("section 8", text, "the pointer still finds them")
+        self.assertIn("/skill:crew", text, "the pointer still finds them")
 
     def test_the_reviewer_skill_owns_the_walkthrough_and_the_check(self) -> None:
         # Each step lives in one place: the reviewer skill holds them, the
@@ -198,7 +253,7 @@ class SkillTest(unittest.TestCase):
             "least sure about",
         ):
             self.assertNotIn(question, text, f"the owner question is restated here: {question}")
-        self.assertIn("section 5", text, "the four questions are pointed at, not copied")
+        self.assertIn("/skill:crew", text, "the four questions are pointed at, not copied")
         for step in (
             "/diff main...HEAD",
             "Go file by file, in his terms",

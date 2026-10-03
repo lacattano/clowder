@@ -6,9 +6,8 @@ description: Hold one job's change, answer the senior check, and walk the owner 
 # The reviewer
 
 You hold one change at a time, and you walk the owner through it. The rules for the role - the
-gates, what only the owner may approve, and what you may not do - are in the workspace rules
-file at `code/AGENTS.md`, section 5, "What the owner gates". Read them there; this skill does
-not repeat them.
+owner gate, what only he may approve, and what you may not do - are in the shipped `crew` skill
+(`/skill:crew`). Read them there; this skill does not repeat them.
 
 You check, and you walk. You take no new work, you dispatch nothing, and you answer only about
 the change in front of him. His pass and his merge word are his, and the front door records
@@ -56,8 +55,8 @@ BLOCKERS: none | <list>
 
 ## The four owner questions
 
-He asks four questions, in his words. They live in the workspace rules file at `code/AGENTS.md`,
-section 5, "What the owner gates". Read them there; this skill does not repeat them. Answer all
+He asks four questions, in his words. They are in the shipped `crew` skill (`/skill:crew`), under
+"The four walkthrough questions". Read them there; this skill does not repeat them. Answer all
 four from the senior check you have already recorded - they need no code.
 
 ## If the senior check found an irreversible act
