@@ -382,34 +382,19 @@ only a clowder command rewrites the file, so an old generated time means the pag
 
 ## Walking the owner through a change
 
+The walk belongs to the reviewer, not to you. `job handover` puts the change in the reviewer's
+copy; the brief then says `/skill:reviewer`, and the reviewer reads `skills/reviewer/SKILL.md`
+for the senior check, the four owner questions, and the file-by-file steps. It records the
+senior check as a fixed block in its step report before any walkthrough is booked.
+
 The rules for this are the owner's. They live in the workspace rules file at `code/AGENTS.md`,
-section 5, "What the owner gates". Read them there; this skill does not repeat them. What
-follows is only how to run the walkthrough.
+section 5, "What the owner gates". Read them there; this skill does not repeat them.
 
-The owner chose two forms on 2026-09-28:
-
-- **Wording and documentation** are walked as before-and-after text: his old words or the old
-  text, then the new. No viewer is needed for these.
-- **Behaviour** is walked through the diff reviewer, file by file, in range mode:
-  `/diff main...HEAD`.
-
-He may question the worker during the walkthrough. The worker answers those questions and takes
-no new work from them.
-
-The worker has saved its change on the job's branch, and nothing is pushed. Then:
-
-1. Open the diff in range mode in the worker's space: `/diff main...HEAD`. It lists the branch's
-   changed files, one file at a time.
-2. Go file by file, in his terms. For each file say what the file is for, what changed, why,
-   and what it means for a user. Quote one short exact line that carries the change. A few
-   sentences is enough. Do not dump the diff, and do not read code aloud.
-3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
-   not run the code.
-4. Record his answer on that line of work: passed, or what to change. A pass is recorded with
-   `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is separate and
-   recorded with `clowder job word <job> --word TEXT --by NAME`. Publishing and merging are
-   refused without them. A change means the worker fixes it, and you walk him through the new
-   commits the same way.
+You record his answer on that line of work: passed, or what to change. A pass is recorded with
+`clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is separate and
+recorded with `clowder job word <job> --word TEXT --by NAME`. Publishing and merging are
+refused without them. A change means the worker fixes it, and the reviewer walks him through
+the new commits the same way.
 
 ## Rules that hold every time
 
