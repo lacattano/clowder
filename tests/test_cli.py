@@ -578,6 +578,54 @@ class CliTest(unittest.TestCase):
         self.assertIn("the answer (0)", out)
         self.assertIn("1 step(s) have reported", out)
 
+    def test_report_reads_the_live_session_when_the_recorded_one_is_empty(self) -> None:
+        # The mirror of the restart case: the pane restarted before the worker
+        # answered, so the recorded session says nothing about this step and the
+        # answer is in the live one. It must be found, and the pointer must move.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        live = self.live_session("live")
+        self.session_turns(path=live)
+        code, out, _ = self.cli(
+            "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(live))
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertEqual(self.only_task()["agent_session"], str(live))
+
+    def test_inbox_reads_the_live_session_when_the_recorded_one_is_empty(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        live = self.live_session("live")
+        self.session_turns(path=live)
+        code, out, _ = self.cli("inbox", env=self.fake_env(CLOWDER_FAKE_SESSION=str(live)))
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertIn("1 step(s) have reported", out)
+
+    def test_the_recorded_session_wins_over_a_live_session_with_its_own_answer(self) -> None:
+        # Precedence, stated: when both sessions hold an answer for this step, the
+        # one the step was dispatched into wins, and the pointer does not move.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        live = self.live_session("live")
+        write_session(
+            live,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": int(time.time() * 1000) + 1000,
+                    "text": "the live answer",
+                    "usage": default_usage(),
+                }
+            ],
+        )
+        code, out, _ = self.cli(
+            "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(live))
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertNotIn("the live answer", out)
+        self.assertEqual(self.only_task()["agent_session"], str(self.session_file))
+
     # -- ensure ------------------------------------------------------------
 
     def seed_mux(self, agents: list[dict[str, object]]) -> str:

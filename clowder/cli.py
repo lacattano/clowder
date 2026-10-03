@@ -769,18 +769,32 @@ def _agents_by_name(mux: Mux) -> dict[str, AgentInfo]:
         return {}
 
 
-def _session_to_read(recorded: str | None, live: str | None) -> str | None:
-    """The session a step's answer should be read from.
+def _session_and_answer(
+    recorded: str | None, live: str | None, since: float | None
+) -> tuple[str | None, str | None]:
+    """The session a step's answer should be read from, and the answer in it.
 
-    The recorded session wins while its file exists. That is the session the step
-    was dispatched into, so the answer to it is there. A restart gives the pane a
-    new session that holds no answer, so the live one is read only when the
-    recorded file is gone. Preferring the live session is what moved the pointer
-    forward and lost the answer.
+    The recorded session wins while it holds an answer for this step: that is the
+    session the step was dispatched into, so the answer to it is there. A pane that
+    restarted before the worker answered has a recorded session that says nothing
+    about this step and the answer in the live one, so the live session is used
+    then. When neither holds an answer the recorded pointer is kept, so reading a
+    step never moves the pointer to a session that has nothing to say.
+
+    The answer comes back with the path so no caller reads the same file twice;
+    `inbox` runs this for every open step.
     """
     if recorded and Path(recorded).exists():
-        return recorded
-    return live or recorded
+        answer = read_answer(recorded, since)
+        if answer:
+            return recorded, answer
+    # The same file twice is the common case while a step has no answer yet, and
+    # `inbox` walks every open step, so it is not read twice.
+    if live and live != recorded:
+        answer = read_answer(live, since)
+        if answer:
+            return live, answer
+    return recorded or live, None
 
 
 def _reported_since_look(
@@ -797,9 +811,10 @@ def _reported_since_look(
         status = agent.status if agent is not None else None
         if status not in (None, "idle", "done"):
             continue
-        session = _session_to_read(task.agent_session, agent.session_path if agent else None)
         since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
-        answer = read_answer(session, since) if session else None
+        _, answer = _session_and_answer(
+            task.agent_session, agent.session_path if agent else None, since
+        )
         if answer:
             found.append((task, answer))
     return found
@@ -855,11 +870,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     task = store.get(args.id)
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
 
-    session_path, agent_status = _resolve_session(mux, task)
     since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
+    session_path, session_answer, agent_status = _resolve_session(mux, task, since)
 
     usage = read_usage(session_path, since) if session_path else None
-    answer = task.answer or (read_answer(session_path, since) if session_path else None)
+    answer = task.answer or session_answer
     # An abandoned step keeps no answer: it died before one came, and reading the
     # session now would capture a half sentence as its result.
     if task.is_abandoned:
@@ -1028,22 +1043,25 @@ def cmd_step_abandon(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_session(mux: Mux, task: Task) -> tuple[str | None, str | None]:
-    """The recorded session first; the live one only as a fallback.
+def _resolve_session(
+    mux: Mux, task: Task, since: float | None
+) -> tuple[str | None, str | None, str | None]:
+    """The session to read, the answer already in it, and the agent's status.
 
     A pane keeps one long-lived session, and a restart gives it a new one. The
-    answer to a step lives in the session recorded when the step was dispatched,
-    so the live session is read only when the recorded file is gone. Reading the
-    live one otherwise is what overwrote the pointer to the session that held the
-    answer.
+    answer to a step is in the session the step was dispatched into while that
+    session holds it; a pane that restarted before the worker answered has it in
+    the live session instead. Reading the live one first is what overwrote the
+    pointer to the session that held the answer.
     """
+    agent = None
     try:
         agent = mux.find_agent(task.agent)
     except MuxError:
-        return task.agent_session, None
-    if agent is None:
-        return task.agent_session, None
-    return _session_to_read(task.agent_session, agent.session_path), agent.status
+        agent = None
+    live = agent.session_path if agent is not None else None
+    session, answer = _session_and_answer(task.agent_session, live, since)
+    return session, answer, agent.status if agent is not None else None
 
 
 def cmd_ensure(args: argparse.Namespace) -> int:
