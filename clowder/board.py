@@ -226,12 +226,19 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         "state",
         "state",
         "choice",
+        # Every word a row can carry, job or step, so the control can reach each
+        # one. A value a row produces but the control cannot name is a filter
+        # that silently matches nothing - the defect this list exists to stop.
         (
             "in progress",
             "waiting on a walkthrough",
             "passed",
             "waiting on your merge word",
             "merged",
+            "closed",
+            "answered",
+            "abandoned, no answer came",
+            "closed, no answer came",
         ),
         "derived from the pass and merge word the owner gave, never stored",
     ),

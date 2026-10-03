@@ -196,10 +196,17 @@ class Job:
 
         Derived, never stored, so it cannot drift from the pass and merge word
         the owner actually gave:
-          merged -> published -> passed -> waiting on the walkthrough -> in progress
+          merged -> closed -> waiting on the merge word -> passed
+          -> waiting on the walkthrough -> in progress
+
+        A closed job says so. Closing is a step in a change's history, and the
+        owner reads this to learn the history; hiding a closed change, or
+        calling it "in progress" after it stopped, tells him the wrong thing.
         """
         if self.merged_at:
             return "merged"
+        if self.closed_at:
+            return "closed"
         if self.published_at and not self.has_merge_word:
             return "waiting on your merge word"
         if self.has_pass:
