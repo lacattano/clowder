@@ -923,6 +923,12 @@ def cmd_report(args: argparse.Namespace) -> int:
         if usage is not None:
             task.usage = usage.to_dict()
             changed = True
+            # The model that ran this step, read from its own session. Measurement,
+            # not a guard: if the session names no model, nothing is recorded.
+            if usage.model and task.model != usage.model:
+                task.model = usage.model
+                task.provider = usage.provider
+                changed = True
         # The directory means different code at different times, so the commit is
         # what a report is really about.
         if task.worktree and gitcmd.is_repo(task.worktree):

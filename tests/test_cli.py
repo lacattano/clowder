@@ -523,6 +523,24 @@ class CliTest(unittest.TestCase):
         self.assertIn("test-provider", out)
         self.assertIn(str(self.session_file), out)
 
+    def test_report_shows_the_model_and_the_line_keeps_it(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        # The usage line surfaces which model ran the step, so a free or preview
+        # model can be compared against the paid ones.
+        self.assertIn("test-model", out)
+
+    def test_a_reported_step_records_the_model_it_ran_on(self) -> None:
+        # Recorded from the step's own session, so it is measurement not invention.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        self.assertEqual(self.cli("report", "t-0001", env=self.fake_env())[0], 0)
+        task = self.only_task()
+        self.assertEqual(task["model"], "test-model")
+        self.assertEqual(task["provider"], "test-provider")
+
     def test_report_survives_a_missing_session_file(self) -> None:
         self.dispatch("maker", "myrepo", "ship: add the refund page")
         self.session_file.unlink()

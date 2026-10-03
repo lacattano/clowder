@@ -82,6 +82,11 @@ class Task:
     owner_item: str | None = None
     owner_item_at: str | None = None
     usage: dict[str, object] | None = None
+    # The model that ran this step, read from its own session when it reported.
+    # Measurement, not a guard: a session that names no model records none, and
+    # nothing here can refuse a dispatch or block a pass.
+    model: str | None = None
+    provider: str | None = None
     # Fields a newer copy wrote that this code does not know. Kept, never dropped,
     # so a newer copy can still read them.
     extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)

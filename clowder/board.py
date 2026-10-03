@@ -299,6 +299,43 @@ def recent_answers(tasks: Sequence[Task], limit: int = 12) -> list[Task]:
     return list(reversed(answered))[:limit]
 
 
+def model_rollup(data: BoardData) -> list[tuple[str, int, int]]:
+    """Per model: changes passed first time, and changes the verifier sent back.
+
+    A change is counted under the model recorded on the writer's last reported step -
+    the one that finished it. "Sent back" is the recorded trace of it: the job's
+    reviewer ran more than one review step on it, which is what the walkthrough chain
+    does when he asks for a change and the walkthrough happens again. A change still
+    waiting for his pass is counted in neither column: it has no verdict yet.
+
+    This is a figure to read, never a gate.
+    """
+    steps_by_job: dict[str, list[Task]] = {}
+    for task in data.tasks:
+        if task.job:
+            steps_by_job.setdefault(task.job, []).append(task)
+
+    counts: dict[str, list[int]] = {}
+    for job in data.jobs:
+        steps = steps_by_job.get(job.id, [])
+        review_steps = sum(1 for task in steps if job.reviewer and task.agent == job.reviewer)
+        sent_back = review_steps > 1
+        if not sent_back and not job.has_pass:
+            continue
+        writer_steps = [task for task in steps if task.agent == job.agent and task.model]
+        if writer_steps:
+            finished = max(
+                writer_steps,
+                key=lambda task: task.reported_at or task.dispatched_at or "",
+            )
+            model = finished.model or "not recorded"
+        else:
+            model = "not recorded"
+        row = counts.setdefault(model, [0, 0])
+        row[1 if sent_back else 0] += 1
+    return sorted((model, values[0], values[1]) for model, values in counts.items())
+
+
 def front_door_label(data: BoardData) -> str:
     """The front door's own name, or a plain phrase when none is configured."""
     return data.front_door_name or "the front door"
@@ -663,14 +700,29 @@ def render_board(data: BoardData) -> str:
             _e(human_duration(task.age_seconds)),
             _e(_tokens(task)),
             _e(_cost(task)),
+            _e(task.model or "-"),
             _e(_clip(task.answer or "", 200)),
         ]
         for task in recent_answers(data.tasks)
     ]
     answers_html = (
-        _table(["id", "agent", "took", "tokens", "cost", "answer"], answer_rows)
+        _table(["id", "agent", "took", "tokens", "cost", "model", "answer"], answer_rows)
         if answer_rows
         else _nothing("Nothing has been answered yet.")
+    )
+
+    rollup = model_rollup(data)
+    models_html = (
+        _table(
+            ["model", "passed first time", "sent back"],
+            [[_e(model), _e(str(passed)), _e(str(back))] for model, passed, back in rollup],
+        )
+        + "<p class='why'>A change is counted under the model recorded on the step that "
+        "finished it. &quot;Sent back&quot; is the verifier running the review twice on one "
+        "change. A change still waiting for your pass is in neither column, and nothing here "
+        "gates anything.</p>"
+        if rollup
+        else _nothing("No step has recorded the model it ran on yet.")
     )
 
     job_rows = [
@@ -754,6 +806,7 @@ now, the page is stale.</p>
 {_section("Open steps", len(open_rows), open_html)}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
 {_section("Answers", len(answer_rows), answers_html)}
+{_section("By model", len(rollup), models_html) if rollup else ""}
 {_section("Jobs", len(job_rows), jobs_html)}
 <footer>{footer}</footer>
 </main>

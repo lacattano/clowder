@@ -65,6 +65,12 @@ def usage_line(task: Task, usage: Usage | None) -> str:
         parts.append(format_cost(usage.cost_total))
     else:
         parts.append("no usage yet")
+    # Which model ran the step, so a free or preview model can be compared. Recorded
+    # on the step when it reported; taken from the live session otherwise. Nothing
+    # here gates anything - it is a figure, not a guard.
+    model = task.model or (usage.model if usage is not None else None)
+    if model:
+        parts.append(model)
     return " | ".join(parts)
 
 

@@ -9,6 +9,7 @@ from clowder.board import (
     FILTERABLE_FIELDS,
     BoardAgent,
     BoardData,
+    model_rollup,
     open_tasks,
     recent_answers,
     render_board,
@@ -453,6 +454,88 @@ class FilterTest(unittest.TestCase):
         self.assertNotIn("<link", html)
         self.assertNotIn("fetch(", html)
         self.assertNotIn("XMLHttpRequest", html)
+
+
+class ModelRollupTest(unittest.TestCase):
+    """Per model: changes passed first time, and changes the verifier sent back."""
+
+    def test_two_models_are_counted_correctly(self) -> None:
+        # Two writers under different models. One of them had the change sent back,
+        # which the record shows as the verifier running the review twice.
+        passed = job(
+            "j-0001", agent="maker", reviewer="verifier", pass_at="2026-09-27T10:00:00Z"
+        )
+        sent_back = job(
+            "j-0002",
+            agent="maker2",
+            reviewer="verifier",
+            pass_at="2026-09-27T11:00:00Z",
+        )
+        steps = [
+            task(
+                "t-0001",
+                agent="maker",
+                job="j-0001",
+                model="big-model",
+                status=REPORTED,
+                reported_at="2026-09-27T10:00:00Z",
+            ),
+            task("t-0002", agent="verifier", job="j-0001", status=REPORTED),
+            task(
+                "t-0003",
+                agent="maker2",
+                job="j-0002",
+                model="free-model",
+                status=REPORTED,
+                reported_at="2026-09-27T11:00:00Z",
+            ),
+            task("t-0004", agent="verifier", job="j-0002", status=REPORTED),
+            # The same verifier, a second review on the same change: it went back.
+            task("t-0005", agent="verifier", job="j-0002", status=REPORTED),
+        ]
+        rollup = model_rollup(data(tasks=steps, jobs=[passed, sent_back]))
+        self.assertEqual(
+            rollup,
+            [("big-model", 1, 0), ("free-model", 0, 1)],
+            "each model is counted in the column that happened to it",
+        )
+
+    def test_a_change_still_waiting_is_in_neither_column(self) -> None:
+        waiting = job("j-0001", agent="maker", reviewer="verifier")
+        steps = [
+            task("t-0001", agent="maker", job="j-0001", model="big-model", status=REPORTED),
+            task("t-0002", agent="verifier", job="j-0001", status=REPORTED),
+        ]
+        self.assertEqual(model_rollup(data(tasks=steps, jobs=[waiting])), [])
+
+    def test_a_change_with_no_recorded_model_is_named_as_such(self) -> None:
+        # Measurement, not invention: an unreadable model says so rather than
+        # guessing one.
+        merged = job("j-0001", agent="maker", pass_at="2026-09-27T10:00:00Z")
+        steps = [task("t-0001", agent="maker", job="j-0001", status=REPORTED)]
+        self.assertEqual(
+            model_rollup(data(tasks=steps, jobs=[merged])),
+            [("not recorded", 1, 0)],
+        )
+
+    def test_the_board_shows_the_rollup_and_the_model_on_an_answer(self) -> None:
+        merged = job("j-0001", agent="maker", pass_at="2026-09-27T10:00:00Z")
+        steps = [
+            task(
+                "t-0001",
+                agent="maker",
+                job="j-0001",
+                model="free-model",
+                status=REPORTED,
+                answer="the change is ready",
+                reported_at="2026-09-27T10:00:00Z",
+            )
+        ]
+        html = render_board(data(tasks=steps, jobs=[merged]))
+        self.assertIn("By model", html)
+        self.assertIn("free-model", html)
+        self.assertIn("passed first time", html)
+        self.assertIn("nothing here gates anything", html, "the figure is not a gate")
 
 
 class SafetyTest(unittest.TestCase):
