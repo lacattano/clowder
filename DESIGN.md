@@ -571,11 +571,15 @@ board (step 4), `/calm` (step 5).
 
 `skills/front-door/SKILL.md`, shipped as a Pi package by `package.json`. The skill holds the
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
-shape, the walkthrough procedure, and the rules that must hold every time - say when you
-dispatch, ask for exactly one decision, never overlap heavy runs. The gate chain is not repeated
-here; the skill carries one pointer at the workspace rules file. It opens with a reading order for
-a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh is cheap
-and the front door holds no state in its head.
+shape, a pointer to the reviewer's walkthrough, and the rules that must hold every time - say when
+you dispatch, ask for exactly one decision, never overlap heavy runs. The gate chain is not
+repeated here; the skill carries one pointer at the workspace rules file. It opens with a reading
+order for a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh
+is cheap and the front door holds no state in its head.
+
+`skills/reviewer/SKILL.md` holds the walkthrough steps, the reviewer's thirteen-row senior check,
+and the four questions the walkthrough asks the owner. The reviewer reads it; the front door keeps
+only the pointer at it.
 
 Two tests keep the prose honest. One fails when a CLI command is added and the skill is not
 updated. Another fails when the marker in the skill stops matching the marker in the code.

@@ -143,13 +143,67 @@ class SkillTest(unittest.TestCase):
         self.assertIn('"Waiting for a worker"', text)
         self.assertIn("cannot recover", text)
 
-    def test_the_skill_carries_the_walkthrough_and_one_pointer(self) -> None:
+    def test_the_skill_points_at_the_reviewer_for_the_walkthrough(self) -> None:
         text = " ".join(read_skill().split())
         self.assertIn("Walking the owner through a change", text)
-        self.assertIn("/diff main...HEAD", text)
+        self.assertIn("skills/reviewer/SKILL.md", text, "the pointer names the reviewer skill")
         self.assertIn("passed, or what to change", text)
         # The rules get one pointer at the file they live in, not a copy here.
         self.assertEqual(text.count("code/AGENTS.md"), 1, "one pointer, not a restatement")
+
+    def test_the_reviewer_skill_owns_the_walkthrough_and_the_check(self) -> None:
+        # Each step lives in one place: the reviewer skill holds them, the
+        # front-door skill points at them. Held in both, they drift.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        fields = frontmatter(reviewer)
+        self.assertEqual(fields.get("name"), "reviewer")
+        self.assertIn("Use when", fields.get("description", ""))
+
+        text = " ".join(reviewer.split())
+        for row in (
+            "Problem fit",
+            "Approach",
+            "Simplest form",
+            "Coupling",
+            "Edge cases",
+            "Error paths",
+            "Tests check behaviour",
+            "Tests fail on the bug",
+            "Blast radius",
+            "Rollback",
+            "Irreversible acts",
+            "Consistency",
+            "Verified vs inferred",
+        ):
+            self.assertIn(row, text, f"senior-check row missing: {row}")
+        for piece in ("SENIOR CHECK", "OWNER ANSWERS", "BLOCKERS"):
+            self.assertIn(piece, text, f"the fixed block is missing: {piece}")
+        for question in (
+            "what changes for me, or for the person using it",
+            "the worst thing this could break, and what would catch it",
+            "what did it prove - and what did it not prove",
+            "least sure about",
+        ):
+            self.assertIn(question, text, f"owner question missing: {question}")
+        for step in (
+            "/diff main...HEAD",
+            "Go file by file, in his terms",
+            "Quote one short exact line",
+        ):
+            self.assertIn(
+                step, text, f"walkthrough step missing from the reviewer skill: {step}"
+            )
+        self.assertIn("STOPS there", text, "an irreversible act stops the walkthrough")
+
+        front = " ".join(read_skill().split())
+        for step in (
+            "/diff main...HEAD",
+            "Go file by file, in his terms",
+            "Quote one short exact line",
+        ):
+            self.assertNotIn(
+                step, front, f"the walkthrough step is still in the front-door skill: {step}"
+            )
 
     def test_the_skill_does_not_restate_the_gate_chain(self) -> None:
         text = " ".join(read_skill().split())
