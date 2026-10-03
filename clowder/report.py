@@ -7,6 +7,7 @@ Then at most one open decision.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .sessions import Usage
@@ -34,11 +35,23 @@ def format_cost(amount: float) -> str:
     return f"${amount:.2f}"
 
 
+def _same_dir(one: str | Path, other: str | Path) -> bool:
+    """The same directory, whatever case or shape the two paths are written in."""
+    return os.path.normcase(os.path.abspath(str(one))) == os.path.normcase(
+        os.path.abspath(str(other))
+    )
+
+
 def worktree_label(task: Task) -> str:
     """Where the work happened: `branch @ commit`, else a checkout, else the main one."""
     if task.branch:
         return f"{task.branch} @ {task.commit}" if task.commit else task.branch
     if not task.worktree:
+        return "main checkout"
+    # The recorded folder is the main checkout when it is the repo itself, and a
+    # named space otherwise. A space that holds an open job must not read as the
+    # user's own checkout.
+    if task.repo_path and _same_dir(task.worktree, task.repo_path):
         return "main checkout"
     name = Path(str(task.worktree)).name or str(task.worktree)
     return f"worktree {name}"

@@ -2190,6 +2190,26 @@ class CliTest(unittest.TestCase):
             env=env or self.fake_env(),
         )
 
+    def queue_scout(self, *extra: str, env: dict[str, object] | None = None):
+        """A queued item that changes nothing, so it needs no job to be sent.
+
+        A write item carries no worktree, so the queue refuses to send one with no
+        job; the tests below are about the send path, not about that refusal, so they
+        queue a scout.
+        """
+        return self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "scout: read the refund page",
+            "--why",
+            "the space holds an open job",
+            "--shape",
+            "scout",
+            *extra,
+            env=env or self.fake_env(),
+        )
+
     def test_queue_add_records_a_decided_item(self) -> None:
         code, out, err = self.queue_add("--agent", "maker")
         self.assertEqual(code, 0, err)
@@ -2260,7 +2280,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("the space holds an open job", worker)
 
     def test_queue_send_dispatches_and_removes_the_item(self) -> None:
-        self.queue_add("--agent", "maker")
+        self.queue_scout("--agent", "maker")
         code, out, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("t-0001 sent to maker", out)
@@ -2271,13 +2291,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("t-0001", payload["tasks"])
 
     def test_queue_send_resolves_a_role_to_a_live_agent(self) -> None:
-        self.queue_add("--role", "maker")
+        self.queue_scout("--role", "maker")
         code, out, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("sent to maker", out)
 
     def test_queue_send_keeps_the_item_when_the_dispatch_fails(self) -> None:
-        self.queue_add("--agent", "maker")
+        self.queue_scout("--agent", "maker")
         code, _, _ = self.cli(
             "queue", "send", "q-0001", env=self.fake_env(CLOWDER_FAKE_PROMPT_FAIL="1")
         )
@@ -2286,7 +2306,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("q-0001", payload["queued"], "a failed send stays in the queue")
 
     def test_queue_send_by_role_with_no_such_agent_refuses(self) -> None:
-        self.queue_add("--role", "verifier")
+        self.queue_scout("--role", "verifier")
         code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
         self.assertEqual(code, 2)
         self.assertIn("no agent in myrepo plays 'verifier'", err)
@@ -2296,7 +2316,7 @@ class CliTest(unittest.TestCase):
     def test_queue_send_respects_the_cross_repo_guard(self) -> None:
         other = self.workspace / "other"
         other.mkdir()
-        self.queue_add("--agent", "maker")
+        self.queue_scout("--agent", "maker")
         code, _, err = self.cli(
             "queue", "send", "q-0001", env=self.fake_env(CLOWDER_FAKE_CWD=str(other))
         )
@@ -2306,12 +2326,68 @@ class CliTest(unittest.TestCase):
         self.assertIn("q-0001", payload["queued"])
 
     def test_queue_send_dry_run_sends_nothing_and_keeps_the_item(self) -> None:
-        self.queue_add("--agent", "maker")
+        self.queue_scout("--agent", "maker")
         code, out, err = self.cli("queue", "send", "q-0001", "--dry-run", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("would run:", out)
         payload = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn("q-0001", payload["queued"])
+
+    def test_queue_send_gives_a_write_item_its_job_at_send_time(self) -> None:
+        # The block that stopped the first attempt has cleared, so the item can be
+        # given the job it belongs to - and its save lands on that job's branch.
+        job_id, worktree = self.open_a_job()
+        self.assertEqual(
+            self.cli(
+                "queue",
+                "add",
+                "myrepo",
+                "ship: add the refund page",
+                "--why",
+                "the space holds an open job",
+                "--agent",
+                "myrepo-maker",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        code, out, err = self.cli(
+            "queue", "send", "q-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("q-0001 sent and removed from the queue", out)
+
+        task = self.only_task()
+        self.assertEqual(task["job"], job_id)
+        self.assertEqual(task["branch"], "task/refund")
+        self.assertEqual(task["worktree"], str(worktree))
+        self.assertTrue(task["commit"])
+
+    def test_queue_send_refuses_a_write_item_with_no_place(self) -> None:
+        # A queued item carries no worktree, so its job is the only place its save
+        # can go. Sending it with neither would put it on no branch.
+        self.queue_add("--agent", "maker")
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("no job", err)
+        self.assertIn("--job", err)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"], "a refused item stays in the queue")
+        self.assertEqual(payload["tasks"], {})
+
+    def test_a_no_job_step_records_the_agents_own_space(self) -> None:
+        # The sibling defect: a step sent to an agent whose space holds an open job
+        # was recorded with no folder, and a report then called it the main checkout.
+        job_id, worktree = self.open_a_job()
+        self.assertEqual(self.step("ship: add the refund page")[0], 0)
+        task = self.only_task()
+        self.assertIsNone(task["job"], "the step is not part of a job")
+        self.assertEqual(task["worktree"], str(worktree), "the folder it ran in is recorded")
+
+        code, out, err = self.cli("report", "t-0001", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("worktree myrepo-maker", out)
+        self.assertNotIn("main checkout", out)
 
     def test_state_can_be_given_after_the_subcommand(self) -> None:
         other = self.root / "elsewhere.json"
