@@ -26,13 +26,15 @@ DISPATCHED = "dispatched"
 REPORTED = "reported"
 FAILED = "failed"
 ABANDONED = "abandoned"
+# A step that can never report, closed with its answer kept. The value is shared
+# with a closed job: both mean "not in flight any more".
+CLOSED = "closed"
 
-STATUSES = (DISPATCHED, REPORTED, FAILED, ABANDONED)
+STATUSES = (DISPATCHED, REPORTED, FAILED, ABANDONED, CLOSED)
 
 SHAPES = ("ship", "scout")
 
 OPEN = "open"
-CLOSED = "closed"
 
 JOB_STATUSES = (OPEN, CLOSED)
 
@@ -68,6 +70,10 @@ class Task:
     # come. The reason is kept; the answer stays empty.
     abandoned_at: str | None = None
     abandon_reason: str | None = None
+    # A dead step closed with its answer kept, instead of abandoned. The status is
+    # terminal, and the answer is not suppressed when the step is read.
+    closed_at: str | None = None
+    close_reason: str | None = None
     open_decision: str | None = None
     decision_answer: str | None = None
     decision_answered_at: str | None = None
@@ -91,6 +97,10 @@ class Task:
     @property
     def is_abandoned(self) -> bool:
         return self.status == ABANDONED
+
+    @property
+    def is_closed(self) -> bool:
+        return self.status == CLOSED
 
     @property
     def age_seconds(self) -> float:

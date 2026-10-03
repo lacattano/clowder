@@ -2747,6 +2747,172 @@ class CliTest(unittest.TestCase):
         self.assertEqual(task["status"], "abandoned")
         self.assertIsNone(task["answer"])
 
+    # -- closing a dead step, keeping its answer ---------------------------
+
+    def close_the_job(self, job_id: str) -> None:
+        """Close a job while a step on it is still open.
+
+        This is the stale state the close path exists for: 79 open steps sit on
+        jobs that are closed or that never existed. `--force` is how the record
+        got that way.
+        """
+        code, _, err = self.cli("job", "close", job_id, "--force", env=self.state_env())
+        self.assertEqual(code, 0, err)
+
+    def keep_an_answer(self, text: str = "the refund page is missing") -> None:
+        """Put an answer on the open step's record.
+
+        Written through the store on purpose: `report` marks a step reported, and a
+        reported step is not open, so it could not be closed.
+        """
+        store = StateStore(self.state)
+        task = store.get("t-0001")
+        task.answer = text
+        store.save()
+
+    def test_step_close_refuses_without_a_why(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.close_the_job(job_id)
+        code, _, err = self.cli("step", "close", "t-0001", env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--why", err)
+        self.assertEqual(self.only_task()["status"], "dispatched")
+
+    def test_step_close_keeps_the_answer_text_and_the_record(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.keep_an_answer()
+        self.close_the_job(job_id)
+
+        code, out, err = self.cli(
+            "step",
+            "close",
+            "t-0001",
+            "--why",
+            "the job is long done",
+            "--by",
+            "topcat",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0001 closed: the job is long done", out)
+
+        task = self.only_task()
+        self.assertEqual(task["status"], "closed")
+        self.assertEqual(task["answer"], "the refund page is missing", "the answer stays")
+        self.assertEqual(task["close_reason"], "the job is long done")
+        self.assertTrue(task["closed_at"])
+        self.assertEqual(len(self.load_state()["tasks"]), 1, "the task record is kept")
+
+    def test_report_shows_a_closed_steps_answer(self) -> None:
+        # An abandoned step reads as if no answer will come. A closed step keeps
+        # the answer it has, which is the whole point of the second exit.
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.keep_an_answer()
+        self.close_the_job(job_id)
+        self.cli(
+            "step", "close", "t-0001", "--why", "the job is long done", env=self.state_env()
+        )
+
+        code, out, err = self.cli("report", "t-0001", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("the refund page is missing", out)
+
+    def test_step_close_refuses_a_step_on_an_open_job(self) -> None:
+        # The safety rule: never close a step whose job is still in flight.
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        code, _, err = self.cli(
+            "step", "close", "t-0001", "--why", "tidy up", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn(job_id, err)
+        self.assertIn("still open", err)
+        self.assertEqual(self.only_task()["status"], "dispatched")
+
+    def test_step_close_frees_the_agent_for_a_reset_and_a_rename(self) -> None:
+        job_id, _ = self.open_a_job()
+        # A step with no job of its own: the other half of the stale record, and
+        # the case where the step alone is what blocks the agent.
+        self.assertEqual(self.step("ship: add the refund page")[0], 0)
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+
+        # While the step reads as open, both are refused for that agent.
+        code, _, err = self.cli(
+            "agent", "reset", "myrepo-maker", "--timeout", "2", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("unreported step", err)
+        code, _, err = self.cli(
+            "agent", "rename", "myrepo-maker", "--to", "myrepo-maker-1", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("open step", err)
+
+        code, _, err = self.cli(
+            "step", "close", "t-0001", "--why", "the pane died", env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+
+        # The reset goes through now, and the rename is no longer refused for it.
+        code, out, err = self.cli(
+            "agent", "reset", "myrepo-maker", "--timeout", "2", env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("reset: new session", out)
+        _, _, err = self.cli(
+            "agent", "rename", "myrepo-maker", "--to", "myrepo-maker-1", env=self.state_env()
+        )
+        self.assertNotIn("open step", err)
+        self.assertNotIn("open job", err)
+
+    def test_step_close_writes_an_audit_line(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.close_the_job(job_id)
+        self.cli(
+            "step",
+            "close",
+            "t-0001",
+            "--why",
+            "the job is long done",
+            "--by",
+            "topcat",
+            env=self.state_env(),
+        )
+        audit_file = self.root / "state.json.audit"
+        self.assertTrue(audit_file.is_file())
+        line = json.loads(audit_file.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(line["action"], "step-close")
+        self.assertEqual(line["step"], "t-0001")
+        self.assertEqual(line["job"], job_id)
+        self.assertEqual(line["reason"], "the job is long done")
+        self.assertEqual(line["by"], "topcat")
+        self.assertFalse(line["answer_kept"], "no answer was on the record")
+
+    def test_a_closed_step_cannot_be_closed_again(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.close_the_job(job_id)
+        self.cli("step", "close", "t-0001", "--why", "done", env=self.state_env())
+        code, _, err = self.cli(
+            "step", "close", "t-0001", "--why", "again", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already closed", err)
+
+    def test_tasks_counts_a_closed_step(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.step("--job", job_id, "ship: add the refund page")
+        self.close_the_job(job_id)
+        self.cli("step", "close", "t-0001", "--why", "done", env=self.state_env())
+        code, out, err = self.cli("tasks", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 closed", out)
+        self.assertIn("0 still open", out)
+
 
 if __name__ == "__main__":
     unittest.main()
