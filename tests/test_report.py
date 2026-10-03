@@ -71,7 +71,7 @@ class UsageLineTest(unittest.TestCase):
         line = usage_line(task(), usage())
         self.assertEqual(
             line,
-            "verifier | myrepo | main checkout | 14s | 8.2k | $0.0010",
+            "verifier | myrepo | main checkout | 14s | 8.2k | $0.0010 | test-model",
         )
 
     def test_line_without_a_session_says_so(self) -> None:
@@ -87,7 +87,8 @@ class UsageLineTest(unittest.TestCase):
     def test_full_line_with_a_job(self) -> None:
         line = usage_line(task(branch="task/refund", commit="1a2b3c4"), usage())
         self.assertEqual(
-            line, "verifier | myrepo | task/refund @ 1a2b3c4 | 14s | 8.2k | $0.0010"
+            line,
+            "verifier | myrepo | task/refund @ 1a2b3c4 | 14s | 8.2k | $0.0010 | test-model",
         )
 
     def test_breakdown_lists_the_parts(self) -> None:
