@@ -203,6 +203,19 @@ def build_parser() -> argparse.ArgumentParser:
     s_abandon.add_argument("--json", action="store_true")
     s_abandon.set_defaults(handler=cmd_step_abandon, refreshes_board=True)
 
+    s_close = step_sub.add_parser(
+        "close",
+        help="close a dead step that can never report, keeping its answer",
+        parents=[common],
+    )
+    s_close.add_argument("id", help="task id, e.g. t-0001")
+    s_close.add_argument("--why", metavar="TEXT", help="why it is closed (required)")
+    s_close.add_argument(
+        "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
+    )
+    s_close.add_argument("--json", action="store_true")
+    s_close.set_defaults(handler=cmd_step_close, refreshes_board=True)
+
     make = sub.add_parser(
         "ensure",
         help="make sure an agent serves a repo, creating one when there is none",
@@ -753,10 +766,11 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     print(_column(rows))
     open_count = sum(1 for t in tasks if t.is_open)
     abandoned = sum(1 for t in tasks if t.is_abandoned)
+    closed = sum(1 for t in tasks if t.is_closed)
     unanswered = sum(1 for t in tasks if not t.answer)
     print(
         f"\n{len(tasks)} task(s), {open_count} still open, {abandoned} abandoned, "
-        f"{unanswered} with no answer"
+        f"{closed} closed, {unanswered} with no answer"
     )
     return 0
 
@@ -1037,6 +1051,69 @@ def cmd_step_abandon(args: argparse.Namespace) -> int:
         _emit_json({"task": task.to_dict(), "audit": str(audit_file)})
         return 0
     print(f"{task.id} abandoned: {why}")
+    if task.job:
+        print(f"{INDENT}{task.job} is free for the next step")
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
+
+
+def cmd_step_close(args: argparse.Namespace) -> int:
+    """Close a step that can never report, and keep the answer it has.
+
+    `step abandon` is for a step that never answered: its answer reads as empty.
+    This is the other exit - a step whose job is long closed, or which never had
+    one, and which will never report either way. Closing stops it counting as in
+    flight, so the agent can be reset or renamed, and it discards nothing: the
+    answer stays, the task stays, only the status changes.
+
+    The one thing it will not do is close a step of a job that is still open.
+    That would hide work still in flight, which is the rule abandon exists for.
+    """
+    config, store = _context(args)
+    why = (args.why or "").strip()
+    if not why:
+        raise UsageError("--why is required: say why the step is being closed")
+    task = store.get(args.id)
+    if task.status == CLOSED:
+        raise StateError(f"{task.id} is already closed.")
+    if not task.is_open:
+        raise StateError(
+            f"{task.id} is {task.status}, not open. Only an open step can be closed; "
+            "a step that reported is read with `clowder report`."
+        )
+    if task.job:
+        job = next((job for job in store.all_jobs() if job.id == task.job), None)
+        if job is not None and job.is_open:
+            raise StateError(
+                f"{task.id} is a step of {job.id}, which is still open. Let it report, "
+                f"or close the job first. Closing a step of an open job would hide "
+                "work that is still in flight."
+            )
+
+    task.status = CLOSED
+    task.closed_at = now_iso()
+    task.close_reason = why
+    store.save()
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": task.closed_at,
+            "by": who,
+            "action": "step-close",
+            "step": task.id,
+            "job": task.job,
+            "agent": task.agent,
+            "reason": why,
+            "answer_kept": bool(task.answer),
+        },
+    )
+
+    if args.json:
+        _emit_json({"task": task.to_dict(), "audit": str(audit_file)})
+        return 0
+    print(f"{task.id} closed: {why}")
     if task.job:
         print(f"{INDENT}{task.job} is free for the next step")
     print(f"{INDENT}audit: {audit_file}")
