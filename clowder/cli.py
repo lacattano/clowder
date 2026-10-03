@@ -430,6 +430,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     q_send = queue_parser("send", "send one queued item, once its block has cleared")
     q_send.add_argument("id")
+    q_send.add_argument(
+        "--job",
+        metavar="ID",
+        help="give or correct the job it belongs to, if any",
+    )
     q_send.add_argument("--force", action="store_true")
     q_send.add_argument("--dry-run", action="store_true")
     q_send.add_argument("--json", action="store_true")
@@ -587,6 +592,12 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
             task.commit = gitcmd.commit_of(where, job.review_commit, short=True)
         else:
             task.commit = gitcmd.head_commit(task.worktree or job.worktree)
+    elif not args.worktree and agent_info is not None and agent_info.cwd:
+        # With no job and no stated worktree the step still ran in the agent's own
+        # directory. Leaving it empty recorded the step against the main checkout,
+        # which is not where it ran - so a space holding an open job read as though
+        # the step had landed on the user's own.
+        task.worktree = agent_info.cwd
 
     # The marker is composed here, not by the front door, so it cannot be forgotten.
     sender = (args.sender or config.front_door_name or DEFAULT_SENDER).strip()
@@ -1878,9 +1889,21 @@ def cmd_queue_send(args: argparse.Namespace) -> int:
     config, store = _context(args)
     item = store.get_queued(args.id)
     agent = _queue_target_agent(config, item)
+    job = (args.job or item.job or "").strip() or None
+    if item.shape.lower() == "ship" and not job:
+        # A queued item carries no worktree, so its job is the only place its save
+        # can go. Sending a write item with neither would put it on no branch, and
+        # nothing would be there to read.
+        raise UsageError(
+            f"{item.id} is a ship item with no job, and a queued item has no worktree "
+            "of its own, so its save would land on no branch. Send it with the job it "
+            f"belongs to - `{PROGRAM} queue send {item.id} --job <job-id>` - or send it "
+            "with `dispatch` directly if you mean that on purpose."
+        )
     dispatch_args = _queued_dispatch_args(
         item,
         agent,
+        job=job,
         force=args.force,
         dry_run=args.dry_run,
         json=args.json,
@@ -1925,17 +1948,23 @@ def _queued_dispatch_args(
     item: Queued,
     agent: str,
     *,
+    job: str | None,
     force: bool,
     dry_run: bool,
     json: bool,
 ) -> argparse.Namespace:
-    """The shape `dispatch` parses, so a queued send takes the same path."""
+    """The shape `dispatch` parses, so a queued send takes the same path.
+
+    The job is whatever the send says, falling back to the one the item was
+    recorded with. That is the whole point of the option: an item recorded while a
+    block was in place can still be given its job once the block clears.
+    """
     return argparse.Namespace(
         config=None,
         state=None,
         repo=item.repo,
         worktree=None,
-        job=item.job,
+        job=job,
         agent=agent,
         brief=[item.brief],
         brief_file=None,

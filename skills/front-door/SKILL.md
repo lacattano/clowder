@@ -67,7 +67,7 @@ clowder owner <id> --item TEXT | --clear
 clowder step abandon <id> --why TEXT
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
-clowder queue send <q-id>
+clowder queue send <q-id> [--job ID]
 clowder agents
 clowder agent reset <agent>
 clowder checkouts [repo...] [--fetch]
@@ -350,7 +350,7 @@ it from your words and not from the tool.
 ```
 clowder queue add myrepo "ship: add the refund page" --role maker --why "space holds an open job"
 clowder queue list
-clowder queue send q-0001
+clowder queue send q-0001 --job j-0006
 ```
 
 - `queue add` records the brief, the repo, the agent or role it is for, and why it waits. Give
@@ -360,6 +360,11 @@ clowder queue send q-0001
 - `queue send` goes through the normal dispatch path, so the cross-repo guard and the marker
   still apply. A role is resolved to a live agent; it never makes one. On success the item
   leaves the queue; on any failure it stays, so nothing is lost.
+- **`queue send --job <id>` gives or corrects the job** an item belongs to, so an item recorded
+  while a space was busy can join its job once the block clears. A queued item carries no
+  worktree, so its job is the only place its save can go: sending a **ship** item with no job is
+  refused with the reason. A scout changes nothing and needs no job. The queue never guesses a
+  job from whatever the agent happens to hold.
 
 ## The board
 

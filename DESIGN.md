@@ -703,10 +703,12 @@ scraped.
 Eight defects found while using the tool on 2026-09-28. Recorded here so they outlive the
 conversation; none is fixed by the queue work.
 
-- **A task with no place.** A task sent without `--job` or `--worktree` records no working
-  directory, so a report names the wrong place and skips the "commit on no branch" check.
-  Seen: t-0007 says "main checkout" while its worker was in `.worktrees/clowder-maker`. Fix:
-  record the agent's live directory at dispatch, or require a place.
+- **A task with no place.** (Fixed.) A step with no job now records the agent's live
+  directory at dispatch, so a report names the folder the work actually ran in rather than the
+  main checkout, and the "commit on no branch" check is no longer skipped. `queue send` also
+  refuses a ship item with neither a job nor a worktree - a queued item carries no worktree, so
+  its job is the only place its save can go - and `queue send --job <id>` gives or corrects that
+  job at send time. The queue never guesses a job from what the agent holds.
 - **One answer per agent, not per task.** `report` reads the last thing an agent said, so a
   later task by the same agent overwrites an earlier task's answer. Seen: t-0006 showed a
   publish task's text as its own. Fix: scope the answer to the task's dispatch window.
