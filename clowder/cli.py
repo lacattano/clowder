@@ -769,6 +769,20 @@ def _agents_by_name(mux: Mux) -> dict[str, AgentInfo]:
         return {}
 
 
+def _session_to_read(recorded: str | None, live: str | None) -> str | None:
+    """The session a step's answer should be read from.
+
+    The recorded session wins while its file exists. That is the session the step
+    was dispatched into, so the answer to it is there. A restart gives the pane a
+    new session that holds no answer, so the live one is read only when the
+    recorded file is gone. Preferring the live session is what moved the pointer
+    forward and lost the answer.
+    """
+    if recorded and Path(recorded).exists():
+        return recorded
+    return live or recorded
+
+
 def _reported_since_look(
     store: StateStore, agents: dict[str, AgentInfo]
 ) -> list[tuple[Task, str]]:
@@ -783,7 +797,7 @@ def _reported_since_look(
         status = agent.status if agent is not None else None
         if status not in (None, "idle", "done"):
             continue
-        session = (agent.session_path if agent else None) or task.agent_session
+        session = _session_to_read(task.agent_session, agent.session_path if agent else None)
         since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
         answer = read_answer(session, since) if session else None
         if answer:
@@ -1015,14 +1029,21 @@ def cmd_step_abandon(args: argparse.Namespace) -> int:
 
 
 def _resolve_session(mux: Mux, task: Task) -> tuple[str | None, str | None]:
-    """Prefer the live answer, because a pane can be reset to a new session."""
+    """The recorded session first; the live one only as a fallback.
+
+    A pane keeps one long-lived session, and a restart gives it a new one. The
+    answer to a step lives in the session recorded when the step was dispatched,
+    so the live session is read only when the recorded file is gone. Reading the
+    live one otherwise is what overwrote the pointer to the session that held the
+    answer.
+    """
     try:
         agent = mux.find_agent(task.agent)
     except MuxError:
         return task.agent_session, None
     if agent is None:
         return task.agent_session, None
-    return agent.session_path or task.agent_session, agent.status
+    return _session_to_read(task.agent_session, agent.session_path), agent.status
 
 
 def cmd_ensure(args: argparse.Namespace) -> int:

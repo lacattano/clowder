@@ -398,7 +398,9 @@ class CliTest(unittest.TestCase):
 
     # -- report ------------------------------------------------------------
 
-    def session_turns(self, count: int = 1, after_dispatch: bool = True) -> None:
+    def session_turns(
+        self, count: int = 1, after_dispatch: bool = True, path: Path | None = None
+    ) -> None:
         now_ms = int(time.time() * 1000)
         turns = []
         if after_dispatch:
@@ -417,7 +419,15 @@ class CliTest(unittest.TestCase):
                     "usage": default_usage(1000, 200, cost_total=0.002),
                 }
             )
-        write_session(self.session_file, cwd=str(self.workspace / "myrepo"), turns=turns)
+        write_session(
+            path or self.session_file, cwd=str(self.workspace / "myrepo"), turns=turns
+        )
+
+    def live_session(self, name: str) -> Path:
+        """A second session file: the one the pane is running after a restart."""
+        path = self.root / "sessions" / "--x--" / f"{name}.jsonl"
+        write_session(path, cwd=str(self.workspace / "myrepo"), turns=[])
+        return path
 
     def test_report_reads_the_session_file(self) -> None:
         self.dispatch("maker", "myrepo", "ship: add the refund page")
@@ -519,6 +529,54 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0)
         self.assertIn("no answer yet", out)
+
+    def test_report_keeps_the_recorded_session_after_a_restart(self) -> None:
+        # A restart gives the pane a fresh session. The answer to the step lives
+        # in the session it was dispatched into, so that is the one to read.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        restarted = self.live_session("restart")
+        code, out, _ = self.cli(
+            "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(restarted))
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertEqual(self.only_task()["agent_session"], str(self.session_file))
+
+    def test_report_uses_the_live_session_when_the_recorded_one_is_gone(self) -> None:
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_file.unlink()
+        live = self.live_session("live")
+        self.session_turns(path=live)
+        code, out, _ = self.cli(
+            "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(live))
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertEqual(self.only_task()["agent_session"], str(live))
+
+    def test_report_does_not_move_the_pointer_to_a_fresh_session(self) -> None:
+        # The restart case: the recorded pointer must survive a session that
+        # holds nothing, or the answer is unreachable for good.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        restarted = self.live_session("restart")
+        code, out, _ = self.cli(
+            "report", "t-0001", env=self.fake_env(CLOWDER_FAKE_SESSION=str(restarted))
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("no answer yet", out)
+        self.assertEqual(self.only_task()["agent_session"], str(self.session_file))
+
+    def test_inbox_reads_the_recorded_session(self) -> None:
+        # inbox and report share the rule, so they agree about which session a
+        # step used.
+        self.dispatch("maker", "myrepo", "ship: add the refund page")
+        self.session_turns()
+        restarted = self.live_session("restart")
+        code, out, _ = self.cli("inbox", env=self.fake_env(CLOWDER_FAKE_SESSION=str(restarted)))
+        self.assertEqual(code, 0)
+        self.assertIn("the answer (0)", out)
+        self.assertIn("1 step(s) have reported", out)
 
     # -- ensure ------------------------------------------------------------
 
