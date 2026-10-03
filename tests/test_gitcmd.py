@@ -8,6 +8,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from clowder import gitcmd
 from clowder.errors import GitError
@@ -487,6 +488,145 @@ class GitTest(unittest.TestCase):
         found = gitcmd.foreign_commits(self.repo.root, "main..task/x", identity)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].committer_email, "someone@example.com")
+
+
+class RiskMemoTest(unittest.TestCase):
+    """The memo of at-risk answers: it must save work and never lie."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = ScratchRepo(Path(self.tmp.name))
+
+    def a_lost_commit(self) -> str:
+        """A commit that is on no branch: alive only in this folder's history."""
+        gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+        lost = self.repo.commit("lost.txt")
+        gitcmd.run_git(self.repo.root, "reset", "--hard", "HEAD~1")
+        gitcmd.switch_branch(self.repo.root, "main")
+        return lost
+
+    def test_a_refs_move_invalidates_the_memo(self) -> None:
+        # One write remembers the answer. The next write must not trust it once a
+        # branch holds the commit - the fingerprint is what makes it recompute.
+        with tempfile.TemporaryDirectory() as tmp:
+            memo_path = Path(tmp) / "risk-memo.json"
+            lost = self.a_lost_commit()
+            cold = gitcmd.RiskMemo(memo_path)
+            self.assertEqual(cold.risk(self.repo.root, lost), gitcmd.LOST)
+            cold.save()
+
+            gitcmd.run_git(self.repo.root, "branch", "hold", lost)
+
+            warm = gitcmd.RiskMemo(memo_path)
+            warm.load()
+            calls: list[str] = []
+            real = gitcmd.commit_risk
+
+            def counting(path: str, commit: str) -> str:
+                calls.append(commit)
+                return real(path, commit)
+
+            with mock.patch.object(gitcmd, "commit_risk", counting):
+                answer = warm.risk(self.repo.root, lost)
+
+            self.assertEqual(answer, gitcmd.ON_BRANCH)
+            self.assertEqual(len(calls), 1, "the stale answer was not reused")
+
+    def test_a_commit_that_stops_being_reachable_is_reported_lost(self) -> None:
+        # The other direction, and the one that matters most: a memo must never
+        # hide a genuinely lost commit.
+        with tempfile.TemporaryDirectory() as tmp:
+            memo_path = Path(tmp) / "risk-memo.json"
+            gitcmd.switch_new_branch(self.repo.root, "task/x", "main")
+            commit = self.repo.commit("work.txt")
+            cold = gitcmd.RiskMemo(memo_path)
+            self.assertEqual(cold.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+            cold.save()
+
+            gitcmd.switch_branch(self.repo.root, "main")
+            gitcmd.run_git(self.repo.root, "branch", "-D", "task/x")
+
+            warm = gitcmd.RiskMemo(memo_path)
+            warm.load()
+            self.assertEqual(warm.risk(self.repo.root, commit), gitcmd.LOST)
+
+    def test_a_refs_move_within_one_write_is_not_seen(self) -> None:
+        # Stated, not implied: a memo covers one write, and refs cannot move
+        # inside one. The guard is the file, so the next write recomputes.
+        memo = gitcmd.RiskMemo()
+        lost = self.a_lost_commit()
+        self.assertEqual(memo.risk(self.repo.root, lost), gitcmd.LOST)
+        gitcmd.run_git(self.repo.root, "branch", "hold", lost)
+        self.assertEqual(memo.risk(self.repo.root, lost), gitcmd.LOST)
+
+    def test_two_tasks_sharing_a_commit_cost_one_look(self) -> None:
+        memo = gitcmd.RiskMemo()
+        commit = self.repo.commit("shared.txt")
+        calls: list[tuple[str, ...]] = []
+        real = gitcmd.try_git
+
+        def counting(cwd: object, *args: str, **kwargs: object) -> str | None:
+            calls.append(args)
+            return real(cwd, *args, **kwargs)  # type: ignore[arg-type]
+
+        with mock.patch.object(gitcmd, "try_git", counting):
+            first = memo.risk(self.repo.root, commit)
+            after_first = len(calls)
+            second = memo.risk(self.repo.root, commit)
+
+        self.assertEqual(first, gitcmd.ON_BRANCH)
+        self.assertEqual(second, first)
+        self.assertGreater(after_first, 0, "the first look reads git")
+        self.assertEqual(len(calls), after_first, "the second task spawns no git at all")
+
+    def test_the_memo_survives_a_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memo_path = Path(tmp) / "risk-memo.json"
+            memo = gitcmd.RiskMemo(memo_path)
+            commit = self.repo.commit("kept.txt")
+            self.assertEqual(memo.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+            memo.save()
+            self.assertTrue(memo_path.is_file())
+
+            warm = gitcmd.RiskMemo(memo_path)
+            warm.load()
+            with mock.patch.object(
+                gitcmd, "commit_risk", side_effect=AssertionError("recomputed")
+            ):
+                self.assertEqual(warm.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+
+    def test_the_fingerprint_covers_every_ref_not_just_branches(self) -> None:
+        # `commit_risk` runs `git log --all` when a commit is not reachable, so a
+        # tag can change its answer. The fingerprint has to see that too.
+        before = gitcmd.refs_fingerprint(self.repo.root)
+        gitcmd.run_git(self.repo.root, "tag", "v1")
+        self.assertNotEqual(before, gitcmd.refs_fingerprint(self.repo.root))
+
+    def test_a_corrupt_memo_file_is_a_cold_memo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memo_path = Path(tmp) / "risk-memo.json"
+            memo_path.write_text("{not json at all", encoding="utf-8")
+            memo = gitcmd.RiskMemo(memo_path)
+            memo.load()
+            commit = self.repo.commit("corrupt.txt")
+            self.assertEqual(memo.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+
+    def test_a_missing_memo_file_is_a_cold_memo(self) -> None:
+        memo = gitcmd.RiskMemo(Path(self.tmp.name) / "nowhere" / "risk-memo.json")
+        memo.load()
+        commit = self.repo.commit("cold.txt")
+        self.assertEqual(memo.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+
+    def test_an_unwritable_memo_never_raises(self) -> None:
+        # A memo that cannot be written costs one slow write later. It must never
+        # fail the command it follows.
+        blocked = Path(self.tmp.name) / "blocked"
+        blocked.write_text("not a folder", encoding="utf-8")
+        memo = gitcmd.RiskMemo(blocked / "risk-memo.json")
+        commit = self.repo.commit("unwritable.txt")
+        self.assertEqual(memo.risk(self.repo.root, commit), gitcmd.ON_BRANCH)
+        memo.save()
 
 
 if __name__ == "__main__":

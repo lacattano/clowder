@@ -8,6 +8,8 @@ approval, and the diff is read by a person before it goes anywhere.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -549,6 +551,131 @@ def commit_risk(path: str | Path, commit: str) -> str:
         if patch_id(path, other) == ident:
             return ON_BRANCH
     return LOST
+
+
+# The refs a commit's reachability depends on. The fingerprint reads every ref,
+# because `commit_risk` does: `is_reachable` reads branches and refs/clowder, and
+# its content check runs `git log --all`, which reads the rest. A narrower
+# fingerprint would let a ref only the content check reads move without the memo
+# noticing, and a stale answer there could hide a genuinely lost commit.
+#
+# HEAD is deliberately left out. `git log --all` includes it, but in every state
+# the tool creates a worktree's HEAD is also on a branch or in refs/clowder, and
+# folding HEAD in would drop the memo on every checkout.
+RISK_FINGERPRINT_FORMAT = "%(refname) %(objectname)"
+
+# One memo beside the state file, so it travels with the record it describes.
+RISK_MEMO_FILENAME = "risk-memo.json"
+
+# A cap, so the memo cannot grow with the record forever. The oldest answers are
+# dropped first; a dropped answer costs one recompute and nothing else.
+MAX_MEMO_ANSWERS_PER_FOLDER = 1000
+
+
+def refs_fingerprint(path: str | Path) -> str | None:
+    """A cheap hash of the refs that decide whether a commit is reachable.
+
+    One git call. None when it cannot be read, which turns the memo off for that
+    folder rather than letting a remembered answer stand unguarded.
+    """
+    listing = try_git(path, "for-each-ref", f"--format={RISK_FINGERPRINT_FORMAT}")
+    if listing is None:
+        return None
+    return hashlib.sha256(listing.encode("utf-8")).hexdigest()
+
+
+class RiskMemo:
+    """Remember `commit_risk` answers for as long as the refs have not moved.
+
+    The answer is a pure function of the commit and the refs that hold it, so a
+    board write asking about 215 tasks that carry 103 commits can do about half
+    the work. It is a memo, not a record: the state file stays the truth, and
+    losing the memo costs one slow write and nothing else.
+
+    One memo covers one write. Refs cannot move inside a single write, so the
+    fingerprint is read once per folder and reused for every task in it; the
+    saved fingerprint is what carries the guard from one write to the next. It
+    also dedupes inside the write, so two steps sharing a commit are asked of git
+    once.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else None
+        self._answers: dict[str, dict[str, str]] = {}
+        self._fingerprints: dict[str, str | None] = {}
+        self._stored: dict[str, str | None] = {}
+        self._dirty = False
+
+    def load(self) -> None:
+        """Read the memo. A missing or unreadable file is a cold memo, not an error."""
+        if self.path is None or not self.path.is_file():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except OSError:
+            return
+        except ValueError:
+            return
+        repos = payload.get("repos") if isinstance(payload, dict) else None
+        if not isinstance(repos, dict):
+            return
+        for where, entry in repos.items():
+            if not isinstance(where, str) or not isinstance(entry, dict):
+                continue
+            answers = entry.get("answers")
+            if not isinstance(answers, dict):
+                continue
+            self._answers[where] = {
+                commit: risk
+                for commit, risk in answers.items()
+                if isinstance(commit, str) and isinstance(risk, str)
+            }
+            stored = entry.get("fingerprint")
+            self._stored[where] = stored if isinstance(stored, str) else None
+
+    def risk(self, path: str | Path, commit: str) -> str:
+        """`commit_risk`, from the memo while the refs say the answer still holds."""
+        where = str(path)
+        if where not in self._fingerprints:
+            self._fingerprints[where] = refs_fingerprint(path)
+            if self._stored.get(where) != self._fingerprints[where]:
+                # The refs moved, so every answer for this folder is stale.
+                if self._answers.get(where):
+                    self._dirty = True
+                self._answers[where] = {}
+                self._stored[where] = self._fingerprints[where]
+        remembered = self._answers.setdefault(where, {}).get(commit)
+        if remembered is not None:
+            return remembered
+        answer = commit_risk(path, commit)
+        if self._fingerprints[where] is not None:
+            # Only remember what a fingerprint can guard.
+            self._answers[where][commit] = answer
+            self._dirty = True
+        return answer
+
+    def save(self) -> None:
+        """Write the memo beside the state file, atomically and best effort.
+
+        A memo that cannot be written costs one slow write later, so this never
+        raises: the command it follows matters more than the cache.
+        """
+        if self.path is None or not self._dirty:
+            return
+        repos: dict[str, dict[str, object]] = {}
+        for where, answers in self._answers.items():
+            if not answers:
+                continue
+            kept = dict(list(answers.items())[-MAX_MEMO_ANSWERS_PER_FOLDER:])
+            repos[where] = {"fingerprint": self._stored.get(where), "answers": kept}
+        payload = {"version": 1, "repos": repos}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.path.with_name(self.path.name + ".tmp")
+            temp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(temp, self.path)
+        except OSError:
+            return
 
 
 def add_worktree(repo: str | Path, target: str | Path, branch: str, base: str) -> None:

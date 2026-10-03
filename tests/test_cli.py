@@ -1963,6 +1963,49 @@ class CliTest(unittest.TestCase):
         self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
         self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
 
+    def test_two_tasks_sharing_a_commit_cost_one_look(self) -> None:
+        # A board write asks about every task that holds a commit, and each look
+        # costs a git process. Two steps on one commit must ask git once.
+        commit = gitcmd.head_commit(self.repo_path, short=False) or ""
+        self.write_pinned_task("t-0001", commit)
+        self.write_pinned_task("t-0002", commit)
+        asked: list[str] = []
+        real = gitcmd.commit_risk
+
+        def counting(path: str, asked_commit: str) -> str:
+            asked.append(asked_commit)
+            return real(path, asked_commit)
+
+        with mock.patch.object(gitcmd, "commit_risk", counting):
+            code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(asked.count(commit), 1, "one commit, one look")
+
+    def test_a_warm_memo_still_reports_a_commit_that_lost_its_branch(self) -> None:
+        # The memo must never hide a genuinely lost commit, including when the
+        # answer was remembered while the commit was still safe.
+        repo = self.repo_path
+        gitcmd.switch_new_branch(repo, "task/lost", "main")
+        (repo / "gone.txt").write_text("gone\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "gone.txt")
+        gitcmd.run_git(repo, "commit", "-m", "work to lose")
+        commit = gitcmd.head_commit(repo, short=False) or ""
+        self.write_pinned_task("t-0001", commit)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertNotIn("t-0001", owner, "on its branch, so not at risk yet")
+
+        gitcmd.switch_branch(repo, "main")
+        gitcmd.run_git(repo, "branch", "-D", "task/lost")
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertIn("t-0001", owner, "the warm memo did not hide the lost commit")
+
     def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
         old_wt = self.repo_path / ".worktrees" / "old"
