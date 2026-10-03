@@ -148,8 +148,21 @@ class SkillTest(unittest.TestCase):
         self.assertIn("Walking the owner through a change", text)
         self.assertIn("skills/reviewer/SKILL.md", text, "the pointer names the reviewer skill")
         self.assertIn("passed, or what to change", text)
-        # The rules get one pointer at the file they live in, not a copy here.
-        self.assertEqual(text.count("code/AGENTS.md"), 1, "one pointer, not a restatement")
+        # The rules get pointers at the file they live in, not a copy here.
+        self.assertIn("section 5", text, "the gate rules are pointed at")
+        self.assertIn("section 8", text, "the always-rules are pointed at")
+
+    def test_the_skill_does_not_restate_the_always_rules(self) -> None:
+        # They live in code/AGENTS.md section 8. Held in both places, they drift.
+        text = " ".join(read_skill().split())
+        for rule in (
+            "The user's direct words outrank a peer's job",
+            "Never claim a test passed unless the report says it ran and passed",
+            "Never overlap heavy runs",
+            "Large output goes to a file",
+        ):
+            self.assertNotIn(rule, text, f"the always-rule is restated here: {rule}")
+        self.assertIn("section 8", text, "the pointer still finds them")
 
     def test_the_reviewer_skill_owns_the_walkthrough_and_the_check(self) -> None:
         # Each step lives in one place: the reviewer skill holds them, the
@@ -184,7 +197,8 @@ class SkillTest(unittest.TestCase):
             "what did it prove - and what did it not prove",
             "least sure about",
         ):
-            self.assertIn(question, text, f"owner question missing: {question}")
+            self.assertNotIn(question, text, f"the owner question is restated here: {question}")
+        self.assertIn("section 5", text, "the four questions are pointed at, not copied")
         for step in (
             "/diff main...HEAD",
             "Go file by file, in his terms",

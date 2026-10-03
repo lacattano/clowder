@@ -130,8 +130,8 @@ pushes or merges anything on your behalf - delivery is `local-only`, and the mer
 ### The front-door skill
 
 [`skills/front-door/SKILL.md`](skills/front-door/SKILL.md) tells one agent how to act as the
-front door: when to dispatch, how to write a brief, how to report an answer back, and the
-rules that must hold every time. Install it as a Pi package, pointing at the **repo root**:
+front door: when to dispatch, how to write a brief, and how to report an answer back. Install it
+as a Pi package, pointing at the **repo root**:
 
 ```
 cd C:\path\to\clowder
