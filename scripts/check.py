@@ -84,7 +84,11 @@ def gates(workdir: Path) -> list[Gate]:
                     "dispatch",
                     "nobody",
                     ".",
-                    "ship: smoke test",
+                    # A scout: it changes nothing, so it needs no place. A ship
+                    # would be refused here, which is the rule, not a smoke failure.
+                    "scout: smoke test",
+                    "--shape",
+                    "scout",
                     "--dry-run",
                     "--state",
                     str(state),

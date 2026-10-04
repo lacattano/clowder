@@ -543,6 +543,19 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
     brief = _read_brief(args)
     question = (args.question or "").strip() or _first_line(brief)
 
+    if args.shape.lower() == "ship" and not args.job and not args.worktree:
+        # A ship's deliverable is a save on a job's branch, so it needs a place.
+        # This sits ahead of every read and every delivery: nothing is sent before
+        # it is refused. `--force` does not bypass it - a deliberate place is
+        # `--worktree`, which is a name rather than an override. A scout changes
+        # nothing, so it needs no place.
+        raise UsageError(
+            f"a ship step needs a place and this one has neither: {args.agent} would save "
+            "a change that belongs on a job's branch or in a folder. Pass `--job <job-id>` "
+            "to attach it to a job, or `--worktree <path>` when the folder is deliberate. "
+            "A scout changes nothing, so it needs no place."
+        )
+
     repo_path = config.resolve_repo(args.repo)
     worktree = str(Path(args.worktree).expanduser().absolute()) if args.worktree else None
     if worktree and not Path(worktree).is_dir():
@@ -1917,8 +1930,8 @@ def cmd_queue_send(args: argparse.Namespace) -> int:
         raise UsageError(
             f"{item.id} is a ship item with no job, and a queued item has no worktree "
             "of its own, so its save would land on no branch. Send it with the job it "
-            f"belongs to - `{PROGRAM} queue send {item.id} --job <job-id>` - or send it "
-            "with `dispatch` directly if you mean that on purpose."
+            f"belongs to - `{PROGRAM} queue send {item.id} --job <job-id>`. A ship needs "
+            "a place either way: a job's branch, or a deliberate folder."
         )
     dispatch_args = _queued_dispatch_args(
         item,
