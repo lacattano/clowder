@@ -312,6 +312,16 @@ def build_parser() -> argparse.ArgumentParser:
     j_open = job_parser("open", "start a branch for a line of work")
     j_open.add_argument("repo")
     j_open.add_argument("--label", required=True, help="what the work is, in a word or three")
+    j_open.add_argument(
+        "--title",
+        metavar="TEXT",
+        help="the change named for the owner, in his words (default: the label)",
+    )
+    j_open.add_argument(
+        "--effect",
+        metavar="TEXT",
+        help="one line on what it changes for him or a user (default: the branch)",
+    )
     j_open.add_argument("--role", default=DEFAULT_ROLE, choices=ROLES)
     j_open.add_argument("--name", help="use or make an agent with this name")
     j_open.add_argument("--branch", help="branch name (default: job prefix plus label)")
@@ -979,7 +989,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         )
         return 0
 
-    print(build_report(task, usage, answer))
+    print(build_report(task, usage, answer, store.get_job(task.job) if task.job else None))
     if agent_status == "working":
         print(INDENT + "(the agent is working; this may not be its final word)")
     if stranded:
@@ -1357,6 +1367,10 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         base_commit=gitcmd.merge_base(worktree, base_ref, branch),
         agent=agent.name,
         commit=gitcmd.head_commit(worktree),
+        # The change in the owner's words. Title falls back to the label, which is
+        # already words rather than a handle.
+        title=(args.title or "").strip() or label,
+        effect=(args.effect or "").strip() or None,
     )
     store.add_job(job)
     store.save()
@@ -1810,19 +1824,19 @@ def cmd_job_list(args: argparse.Namespace) -> int:
         print("no jobs" if args.all else "no open jobs")
         return 0
 
-    rows = [["ID", "STATUS", "REPO", "BRANCH", "AGENT", "AGE", "PASS", "WORD", "LABEL"]]
+    rows = [["CHANGE", "STATE", "REPO", "BRANCH", "AGENT", "AGE", "PASS", "WORD", "ID"]]
     for job in jobs:
         rows.append(
             [
-                job.id,
-                job.status,
+                _clip(job.name_in_words, 30),
+                job.state_in_words,
                 _clip(job.repo, 20),
                 _clip(job.branch, 28),
                 job.agent,
                 human_age(job.age_seconds),
                 "yes" if job.has_pass else "no",
                 "yes" if job.has_merge_word else "no",
-                _clip(job.label, 30),
+                job.id,
             ]
         )
     print(_column(rows))

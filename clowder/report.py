@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from .sessions import Usage
-from .state import Task
+from .state import Job, Task
 from .timeutil import human_duration
 
 INDENT = "    "
@@ -74,9 +74,21 @@ def usage_line(task: Task, usage: Usage | None) -> str:
     return " | ".join(parts)
 
 
-def build_report(task: Task, usage: Usage | None, answer: str | None) -> str:
-    """One report block, in the fixed order."""
+def build_report(
+    task: Task,
+    usage: Usage | None,
+    answer: str | None,
+    job: Job | None = None,
+) -> str:
+    """One report block, in the fixed order.
+
+    When the step is a step of a job, the change is named first, in words, so a
+    report reads as "the page-context fix", not as a handle.
+    """
     lines = [f"Re: {task.question}", INDENT + usage_line(task, usage)]
+
+    if job is not None and job.title:
+        lines.append(INDENT + f"change: {job.title} - {job.state_in_words}")
 
     if answer:
         for line in answer.splitlines():

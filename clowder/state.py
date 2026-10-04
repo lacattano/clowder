@@ -144,6 +144,12 @@ class Job:
     branch: str
     base: str
     agent: str
+    # The change named in the owner's words, so he can follow it without a handle.
+    # `label` stays the short machine-ish name used for the branch; `title` is
+    # what he reads ("the page-context fix"). `effect` is one line on what it
+    # changes for him. Both fall back to the label when not given.
+    title: str | None = None
+    effect: str | None = None
     # The commit the branch forked from, recorded at `job open`. A history rewrite
     # replaces it; the publish gate tests that it is still in `origin/<base>`.
     base_commit: str | None = None
@@ -173,6 +179,41 @@ class Job:
     @property
     def is_open(self) -> bool:
         return self.status == OPEN
+
+    @property
+    def name_in_words(self) -> str:
+        """The change named the way the owner would name it, title or label."""
+        return (self.title or "").strip() or self.label
+
+    @property
+    def effect_in_words(self) -> str:
+        """One line on what the change does, or the branch when none was given."""
+        return (self.effect or "").strip() or self.branch
+
+    @property
+    def state_in_words(self) -> str:
+        """Where the change is, in words, derived from what the record holds.
+
+        Derived, never stored, so it cannot drift from the pass and merge word
+        the owner actually gave:
+          merged -> closed -> waiting on the merge word -> passed
+          -> waiting on the walkthrough -> in progress
+
+        A closed job says so. Closing is a step in a change's history, and the
+        owner reads this to learn the history; hiding a closed change, or
+        calling it "in progress" after it stopped, tells him the wrong thing.
+        """
+        if self.merged_at:
+            return "merged"
+        if self.closed_at:
+            return "closed"
+        if self.published_at and not self.has_merge_word:
+            return "waiting on your merge word"
+        if self.has_pass:
+            return "passed"
+        if self.reviewer and (self.review_commit or self.handed_over_at):
+            return "waiting on a walkthrough"
+        return "in progress"
 
     @property
     def has_pass(self) -> bool:

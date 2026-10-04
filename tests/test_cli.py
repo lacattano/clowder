@@ -1084,7 +1084,9 @@ class CliTest(unittest.TestCase):
 
     # -- a step in a job ---------------------------------------------------
 
-    def open_a_job(self, label: str = "refund") -> tuple[str, Path]:
+    def open_a_job(
+        self, label: str = "refund", extra: tuple[str, ...] = ()
+    ) -> tuple[str, Path]:
         self.seed_mux([])
         code, out, err = self.cli(
             "job",
@@ -1094,6 +1096,7 @@ class CliTest(unittest.TestCase):
             label,
             "--role",
             "maker",
+            *extra,
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
@@ -2925,6 +2928,39 @@ class CliTest(unittest.TestCase):
         self.assertIn(job_id, err)
         self.assertIn("still open", err)
         self.assertEqual(self.only_task()["status"], "dispatched")
+
+    def test_job_open_records_a_title_and_an_effect(self) -> None:
+        # Named in the owner's words at open time, with the label as the fallback.
+        job_id, _ = self.open_a_job(
+            label="page-context",
+            extra=("--title", "the page-context fix", "--effect", "a page opens in context"),
+        )
+        store = StateStore(self.state)
+        job = store.get_job(job_id)
+        self.assertEqual(job.title, "the page-context fix")
+        self.assertEqual(job.effect, "a page opens in context")
+
+    def test_job_open_falls_back_to_the_label_when_no_title(self) -> None:
+        job_id, _ = self.open_a_job(label="page-context")
+        job = StateStore(self.state).get_job(job_id)
+        self.assertEqual(job.title, "page-context")
+        self.assertEqual(job.name_in_words, "page-context")
+        self.assertIsNone(job.effect)
+        self.assertEqual(job.effect_in_words, job.branch)
+
+    def test_a_report_names_the_change_in_words(self) -> None:
+        job_id, _ = self.open_a_job(
+            label="page-context",
+            extra=(
+                "--title",
+                "the page-context fix",
+            ),
+        )
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.session_turns()
+        code, out, err = self.cli("report", "t-0001", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("the page-context fix", out, "the change is named first, in words")
 
     def test_step_close_frees_the_agent_for_a_reset_and_a_rename(self) -> None:
         job_id, _ = self.open_a_job()

@@ -9,6 +9,7 @@ from clowder.board import (
     FILTERABLE_FIELDS,
     BoardAgent,
     BoardData,
+    _task_fields,
     model_rollup,
     open_tasks,
     recent_answers,
@@ -536,6 +537,141 @@ class ModelRollupTest(unittest.TestCase):
         self.assertIn("free-model", html)
         self.assertIn("passed first time", html)
         self.assertIn("nothing here gates anything", html, "the figure is not a gate")
+
+
+class PlainNameTest(unittest.TestCase):
+    """Work named in the owner's words, so he needs no handle to follow it."""
+
+    def test_a_closed_job_does_not_read_in_progress(self) -> None:
+        # The blocker: the derived state ignored status and closed_at, so a change
+        # that had stopped read "in progress" on the board and in `job list --all`.
+        closed = job(
+            status=CLOSED,
+            closed_at="2026-09-27T10:00:00Z",
+            released_at="2026-09-27T10:00:00Z",
+        )
+        self.assertEqual(closed.state_in_words, "closed")
+        self.assertNotEqual(closed.state_in_words, "in progress")
+        # It does not hide either: the words are what the owner reads for history.
+        html = render_board(data(jobs=[closed]))
+        self.assertIn(">closed<", html.replace("'", '"'))
+        self.assertIn(str(closed.id), html)
+
+    def test_a_merged_job_still_reads_merged_not_closed(self) -> None:
+        # Merging closes the job too, so "merged" must win over "closed".
+        done = job(
+            status=CLOSED,
+            pass_at="2026-09-27T09:00:00Z",
+            published_at="2026-09-27T09:30:00Z",
+            merged_at="2026-09-27T10:00:00Z",
+            closed_at="2026-09-27T10:00:00Z",
+        )
+        self.assertEqual(done.state_in_words, "merged")
+
+    def test_every_state_a_row_can_carry_is_a_declared_choice(self) -> None:
+        # A value a row produces that the control cannot name is a filter that
+        # silently matches nothing. The declared list must cover all of them.
+        declared = set(next(f for f in FILTERABLE_FIELDS if f.name == "state").values)
+        produced = set()
+        for one in (
+            job(),
+            job(status=CLOSED, closed_at="2026-09-27T10:00:00Z"),
+            job(pass_at="2026-09-27T09:00:00Z"),
+            job(reviewer="verifier", review_commit="a" * 40),
+            job(pass_at="2026-09-27T09:00:00Z", published_at="2026-09-27T09:05:00:00Z"),
+            job(merged_at="2026-09-27T10:00:00Z"),
+        ):
+            produced.add(one.state_in_words)
+        for step in (
+            task(),
+            task(task_id="t-0002", status=REPORTED),
+            task(task_id="t-0003", status="abandoned"),
+            task(task_id="t-0004", status="closed"),
+        ):
+            produced.add(_task_fields(step)["state"])
+        self.assertEqual(
+            produced - declared,
+            set(),
+            "a row can carry a state the control cannot name",
+        )
+
+    def test_the_jobs_table_still_filters_on_status(self) -> None:
+        # The visible cell now carries the words; the raw status is still on the
+        # row, so the status filter still works.
+        html = render_board(data(jobs=[job()]))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-status="open"', row)
+        self.assertIn('data-filter="status"', html)
+
+    def test_state_in_words_is_derived_correctly(self) -> None:
+        # Derived from the pass and merge word he actually gave, never stored.
+        self.assertEqual(job().state_in_words, "in progress")
+        self.assertEqual(
+            job(reviewer="verifier", review_commit="a" * 40).state_in_words,
+            "waiting on a walkthrough",
+        )
+        self.assertEqual(job(pass_at="2026-09-27T10:00:00Z").state_in_words, "passed")
+        self.assertEqual(
+            job(
+                pass_at="2026-09-27T10:00:00Z", published_at="2026-09-27T10:05:00Z"
+            ).state_in_words,
+            "waiting on your merge word",
+        )
+        self.assertEqual(
+            job(
+                pass_at="2026-09-27T10:00:00Z",
+                published_at="2026-09-27T10:05:00Z",
+                merged_at="2026-09-27T10:30:00Z",
+            ).state_in_words,
+            "merged",
+        )
+
+    def test_a_job_with_no_title_falls_back_to_readable_words(self) -> None:
+        # Never a bare id: the label is already words, and the effect falls back
+        # to the branch rather than nothing.
+        plain = job()
+        self.assertEqual(plain.name_in_words, plain.label)
+        self.assertNotEqual(plain.name_in_words, plain.id)
+        self.assertEqual(plain.effect_in_words, plain.branch)
+
+    def test_a_title_and_effect_are_used_when_given(self) -> None:
+        named = job(title="the page-context fix", effect="a second page opens in context")
+        self.assertEqual(named.name_in_words, "the page-context fix")
+        self.assertEqual(named.effect_in_words, "a second page opens in context")
+
+    def test_the_board_shows_the_title_before_the_identifier(self) -> None:
+        named = job(
+            title="the page-context fix",
+            effect="a second page opens in context",
+            pass_at="2026-09-27T10:00:00Z",
+        )
+        html = render_board(data(jobs=[named]))
+        self.assertIn("the page-context fix", html)
+        self.assertIn("a second page opens in context", html)
+        self.assertIn("passed", html)
+        # The title opens the row; the id sits in brackets after it.
+        row = html[html.index("rows-jobs") :]
+        self.assertLess(
+            row.index("the page-context fix"),
+            row.index(f"[{named.id}]"),
+            "the title comes before the id",
+        )
+
+    def test_the_title_is_a_declared_filter_column(self) -> None:
+        # q-0142's field list, reused: title and state are declared once, and
+        # both the controls and the row data come from it.
+        names = [field.name for field in FILTERABLE_FIELDS]
+        self.assertIn("title", names)
+        self.assertIn("state", names)
+        named = job(title="the busy-board fix")
+        html = render_board(data(jobs=[named]))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-title="the busy-board fix"', row)
+        self.assertIn('data-state="in progress"', row)
+        for name in ("title", "state"):
+            self.assertIn(f'data-filter="{name}"', html, f"the {name} control is missing")
 
 
 class SafetyTest(unittest.TestCase):
