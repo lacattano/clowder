@@ -235,6 +235,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     make.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
     make.add_argument(
+        "--split",
+        action="store_true",
+        help="leave the new pane beside this one instead of opening it as a new tab",
+    )
+    make.add_argument(
         "--no-create", action="store_true", help="report what is missing, make nothing"
     )
     make.add_argument("--json", action="store_true")
@@ -329,6 +334,11 @@ def build_parser() -> argparse.ArgumentParser:
     j_open.add_argument("--kind", default=DEFAULT_KIND)
     j_open.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
     j_open.add_argument(
+        "--split",
+        action="store_true",
+        help="leave the new pane beside this one instead of opening it as a new tab",
+    )
+    j_open.add_argument(
         "--force",
         action="store_true",
         help="switch anyway, on a dirty tree or in the main checkout",
@@ -363,6 +373,11 @@ def build_parser() -> argparse.ArgumentParser:
     j_hand.add_argument("--name", help="use or make a reviewer with this name")
     j_hand.add_argument("--kind", default=DEFAULT_KIND)
     j_hand.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    j_hand.add_argument(
+        "--split",
+        action="store_true",
+        help="leave the new pane beside this one instead of opening it as a new tab",
+    )
     j_hand.add_argument("--force", action="store_true")
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
@@ -381,6 +396,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     j_pin.add_argument("--kind", default=DEFAULT_KIND)
     j_pin.add_argument("--direction", choices=("right", "down"), default=DEFAULT_DIRECTION)
+    j_pin.add_argument(
+        "--split",
+        action="store_true",
+        help="leave the new pane beside this one instead of opening it as a new tab",
+    )
     j_pin.add_argument("--force", action="store_true")
     j_pin.add_argument("--json", action="store_true")
     j_pin.set_defaults(handler=cmd_job_pin, refreshes_board=True)
@@ -1196,6 +1216,7 @@ def cmd_ensure(args: argparse.Namespace) -> int:
         direction=args.direction,
         name=args.name,
         create=not args.no_create,
+        split=args.split,
     )
 
     if args.json:
@@ -1241,6 +1262,7 @@ def _ensure(
     direction: str,
     name: str | None = None,
     create: bool = True,
+    split: bool = False,
 ):
     """One place where an agent for a repo is found or made."""
     return ensure_agent(
@@ -1252,6 +1274,7 @@ def _ensure(
         direction=direction,
         create=create,
         name=name,
+        split=split,
         worktree_dir=config.worktree_dir,
         base=config.worktree_base,
         setup=config.worktree_setup,
@@ -1286,6 +1309,7 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         direction=args.direction,
         name=args.name,
         create=True,
+        split=args.split,
     )
     if not ensured.ok:
         print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)
@@ -1514,6 +1538,7 @@ def cmd_job_handover(args: argparse.Namespace) -> int:
         direction=args.direction,
         name=args.name,
         create=True,
+        split=args.split,
     )
     if not ensured.ok:
         print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)
@@ -1624,6 +1649,7 @@ def cmd_job_pin(args: argparse.Namespace) -> int:
         direction=args.direction,
         name=args.name,
         create=True,
+        split=args.split,
     )
     if not ensured.ok:
         print(f"{PROGRAM}: {ensured.reason}", file=sys.stderr)

@@ -231,6 +231,7 @@ def ensure_agent(
     base: str | None = None,
     setup: str | None = None,
     identity: gitcmd.Identity | None = None,
+    split: bool = False,
 ) -> EnsureResult:
     """Return an agent that serves this repo, making one if allowed to.
 
@@ -238,6 +239,9 @@ def ensure_agent(
     on the current base. That is the resting state - free, clean, and holding its
     install, so the next piece of work does not rebuild one. A piece of work puts a
     branch on the space; finishing it takes the branch off again.
+
+    By default the new pane opens as a new tab, so the caller's own pane is never
+    halved; `split=True` asks for the old split-beside-the-caller placement.
 
     `identity`, when given, is set in the new pane's environment, so every commit
     the agent makes in it carries the crew's identity rather than the checkout's.
@@ -317,8 +321,9 @@ def ensure_agent(
     write_remote_pi_config(workdir, wanted)
 
     # A repo's agents are tabs in one workspace. When a peer is already there, the
-    # new pane joins it as a new tab instead of landing beside whoever asked. A
-    # peer with no workspace reported (or no peer at all) keeps the old split.
+    # new pane joins that workspace. With no peer reporting one, the pane opens a
+    # new tab in its own workspace - the caller's - so the caller's tab is left
+    # whole. `split=True` skips the move and leaves the pane beside the caller.
     workspace_id = workspace_for_repo(agents, repo_path)
 
     pane_id = mux.split_pane(
@@ -326,15 +331,31 @@ def ensure_agent(
         direction=direction,
         env=identity.env() if identity else None,
     )
-    if workspace_id:
+    if not split:
         moved = mux.move_pane(pane_id, workspace_id)
         if not moved.ok:
+            where = (
+                f"workspace {workspace_id}"
+                if workspace_id
+                else "a new tab in the caller's workspace"
+            )
+            # The pane is still a split in the caller's tab, so close it to undo
+            # the split. Without this the caller's tab stays halved while the
+            # report says nothing half-made is left.
+            closed = mux.close_pane(pane_id)
+            if closed.ok:
+                undone = f" The split pane {pane_id} was closed."
+            else:
+                undone = (
+                    f" The split pane {pane_id} could not be closed "
+                    f"({closed.error_text()}), so the caller's tab is still halved."
+                )
             return EnsureResult(
                 agent=None,
                 created=False,
                 reason=(
                     f"made pane {pane_id} for {wanted}, but could not move it into "
-                    f"workspace {workspace_id}: {moved.error_text()}"
+                    f"{where}: {moved.error_text()}.{undone}"
                 ),
                 candidates=candidates,
             )
@@ -346,9 +367,10 @@ def ensure_agent(
                 agent=None,
                 created=False,
                 reason=(
-                    f"moved pane {pane_id} for {wanted} into workspace "
-                    f"{workspace_id}, but the move did not report the pane's new "
-                    "id, so the agent cannot be started in it"
+                    f"moved pane {pane_id} for {wanted} into "
+                    f"{workspace_id or 'a new tab'}, but the move did not report the "
+                    "pane's new id, so the agent cannot be started in it and the "
+                    "pane cannot be closed"
                 ),
                 candidates=candidates,
             )

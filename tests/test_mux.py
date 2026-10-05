@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from clowder.errors import MuxError
-from clowder.mux import Mux, parse_agent_list, reply_pane_id
+from clowder.mux import Mux, MuxResult, parse_agent_list, reply_pane_id
 from tests.support import clean_env, make_mux_launcher, write_fake_state
 
 # Captured from `herdr agent list`, trimmed to two agents.
@@ -263,6 +263,41 @@ class RealProcessTest(unittest.TestCase):
             ["pane", "move", "w9:p2", "--workspace", "w1", "--new-tab", "--no-focus"],
         )
 
+    def test_move_pane_without_a_workspace_opens_a_tab_where_the_pane_sits(self) -> None:
+        # No workspace named: the new tab opens in the pane's own workspace, which
+        # is the caller's, so the caller's pane is left whole. The command must not
+        # invent a --workspace argument.
+        log = Path(self.tmp.name) / "moves.jsonl"
+        with clean_env(**self.mux_env(CLOWDER_FAKE_LOG=str(log))):
+            self.make_mux().move_pane("w9:p2")
+        argv = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(argv, ["pane", "move", "w9:p2", "--new-tab", "--no-focus"])
+        self.assertNotIn("--workspace", argv)
+
+    def test_reply_pane_id_reads_the_raw_pane_move_result(self) -> None:
+        # The raw API nests the pane under `move_result`; the fake and older
+        # replies put it at `result.pane`. Both shapes must resolve, or a created
+        # agent cannot be started in the pane the move made.
+        result = MuxResult(
+            argv=("herdr", "pane", "move"),
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "id": "cli:pane:move",
+                    "result": {
+                        "type": "pane_move",
+                        "move_result": {
+                            "pane": {"pane_id": "w1:p7"},
+                            "previous_pane_id": "wB:p8",
+                        },
+                    },
+                }
+            ),
+            stderr="",
+            duration_ms=5,
+        )
+        self.assertEqual(reply_pane_id(result), "w1:p7")
+
     def test_an_agent_started_after_a_move_reports_that_workspace(self) -> None:
         with clean_env(**self.mux_env()):
             mux = self.make_mux()
@@ -282,6 +317,30 @@ class RealProcessTest(unittest.TestCase):
     def test_moving_with_no_way_to_record_it_fails(self) -> None:
         with clean_env():
             result = self.make_mux().move_pane("w9:p2", "w1")
+        self.assertFalse(result.ok)
+        self.assertIn("no_state", result.error_text())
+
+    # -- closing a pane after a failed move ---------------------------------
+
+    def test_close_pane_closes_it(self) -> None:
+        env = self.mux_env()
+        with clean_env(**env):
+            mux = self.make_mux()
+            pane_id = mux.split_pane(cwd="C:/code/myrepo")
+            result = mux.close_pane(pane_id)
+        self.assertTrue(result.ok, result.error_text())
+        state = json.loads(Path(str(env["CLOWDER_FAKE_STATE"])).read_text(encoding="utf-8"))
+        self.assertEqual(state["closed"], [pane_id])
+
+    def test_closing_an_unknown_pane_fails_loudly(self) -> None:
+        with clean_env(**self.mux_env()):
+            result = self.make_mux().close_pane("w9:p999")
+        self.assertFalse(result.ok)
+        self.assertIn("no_such_pane", result.error_text())
+
+    def test_closing_with_no_way_to_record_it_fails(self) -> None:
+        with clean_env():
+            result = self.make_mux().close_pane("w9:p2")
         self.assertFalse(result.ok)
         self.assertIn("no_state", result.error_text())
 

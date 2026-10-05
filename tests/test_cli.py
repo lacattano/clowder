@@ -850,6 +850,26 @@ class CliTest(unittest.TestCase):
         self.assertTrue(made["pane_id"].startswith("w1:p"), made["pane_id"])
         self.assertEqual(made["workspace_id"], "w1")
 
+    def test_ensure_defaults_to_a_new_tab(self) -> None:
+        # No peer in the repo: the new pane still moves to a new tab, and the
+        # command names no workspace, so it lands in the caller's own workspace.
+        self.seed_mux([])
+        code, _, err = self.cli("ensure", "myrepo", "--role", "maker", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        state = json.loads((self.root / "mux-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(state["moves"]), 1, state["moves"])
+        self.assertTrue(state["moves"][0]["new_tab"])
+        self.assertEqual(state["moves"][0]["workspace_id"], "")
+
+    def test_ensure_split_keeps_the_pane_beside_the_caller(self) -> None:
+        self.seed_mux([])
+        code, _, err = self.cli(
+            "ensure", "myrepo", "--role", "maker", "--split", env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        state = json.loads((self.root / "mux-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state.get("moves", []), [], "no move was asked for")
+
     def test_ensure_reports_what_is_missing_without_creating(self) -> None:
         self.seed_mux([])
         code, _, err = self.cli(
@@ -977,6 +997,25 @@ class CliTest(unittest.TestCase):
         self.assertEqual(listing["count"], 1)
         self.assertEqual(listing["jobs"][0]["status"], "open")
         self.assertEqual(listing["jobs"][0]["commit"], gitcmd.head_commit(worktree))
+
+    def test_job_open_split_keeps_the_pane_beside_the_caller(self) -> None:
+        # The other creation path, end to end: --split must skip the new-tab move.
+        self.seed_mux([])
+        code, _, err = self.cli(
+            "job",
+            "open",
+            "myrepo",
+            "--label",
+            "refund",
+            "--role",
+            "maker",
+            "--split",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        state = json.loads((self.root / "mux-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state.get("moves", []), [], "an explicit split was asked for")
+        self.assertEqual(state.get("closed", []), [], "an explicit split is kept")
 
     def test_job_open_refuses_a_dirty_worktree(self) -> None:
         # The case that matters: work was left behind with no job open, so the tool
@@ -1700,6 +1739,29 @@ class CliTest(unittest.TestCase):
         self.assertEqual(job["review_commit"], commit)
         self.assertTrue(job["released_at"])
         self.assertEqual(job["held_ref"], f"refs/clowder/held/{job['id']}")
+
+    def test_handover_split_keeps_the_reviewers_pane_beside_the_caller(self) -> None:
+        # Reviewers are created through the same path. With --split the new pane
+        # stays beside the caller instead of moving to a new tab.
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)
+        state_path = self.root / "mux-state.json"
+        before = len(json.loads(state_path.read_text(encoding="utf-8")).get("moves", []))
+
+        code, _, err = self.cli(
+            "job",
+            "handover",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            "--split",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        after = json.loads(state_path.read_text(encoding="utf-8")).get("moves", [])
+        self.assertEqual(len(after), before, "the reviewer's pane was not moved")
 
     def test_handover_releases_the_writers_space_and_keeps_the_job_open(self) -> None:
         job_id, maker_folder = self.open_a_job()
