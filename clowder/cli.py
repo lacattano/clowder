@@ -1871,7 +1871,7 @@ def cmd_job_list(args: argparse.Namespace) -> int:
         rows.append(
             [
                 _clip(job.name_in_words, 30),
-                job.state_in_words,
+                _job_state_word(job),
                 _clip(job.repo, 20),
                 _clip(job.branch, 28),
                 job.agent,
@@ -2468,6 +2468,32 @@ def _risk_memo_path(store: StateStore) -> Path:
     return store.path.parent / gitcmd.RISK_MEMO_FILENAME
 
 
+def _job_tip(job: Job) -> str | None:
+    """The commit the job's work is at now, or None when it cannot be told.
+
+    The branch tip is the job's current work; when the branch is gone, the held
+    ref is what remains.
+    """
+    if job.branch:
+        tip = gitcmd.commit_of(job.repo_path, job.branch)
+        if tip:
+            return tip
+    if job.held_ref:
+        return gitcmd.commit_of(job.repo_path, job.held_ref)
+    return None
+
+
+def _job_state_word(job: Job) -> str:
+    """The job's state word, with "needs re-review" when the work moved past review.
+
+    Only a held candidate is looked up in git: every other job keeps its derived
+    state with no process spent on a question that cannot change it.
+    """
+    if job.is_open and job.reviewer and job.review_commit and not job.has_pass:
+        return job.state_in_words_at(_job_tip(job))
+    return job.state_in_words
+
+
 def _job_moved_past(task: Task, job: Job | None) -> bool:
     """Has the task's job branch or held ref moved past the step's commit?
 
@@ -2497,6 +2523,16 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     tasks = store.all()
     jobs = store.all_jobs()
     jobs_by_id = {job.id: job for job in jobs}
+    # A held change whose branch or held ref has moved past the reviewed commit is
+    # not ready for the owner's walk: the reviewer checked an older commit. Record
+    # the current tip so the board asks for a re-review, with both commits named.
+    rereview: dict[str, str] = {}
+    for job in jobs:
+        if not (job.is_open and job.reviewer and job.review_commit and not job.has_pass):
+            continue
+        tip = _job_tip(job)
+        if tip and job.needs_rereview(tip):
+            rereview[job.id] = tip
     # A commit on no branch is only at risk when its change is on no branch either.
     # A rebase rewrites the hash but keeps the patch-id, so the old commit is
     # superseded, not lost. When the change cannot be compared, say so instead of
@@ -2534,6 +2570,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         front_door_name=config.front_door_name,
         stranded=stranded,
         risk_notes=risk_notes,
+        rereview=rereview,
     )
 
 

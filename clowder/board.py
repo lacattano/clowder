@@ -236,6 +236,7 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         (
             "in progress",
             "waiting on a walkthrough",
+            "needs re-review",
             "passed",
             "waiting on your merge word",
             "merged",
@@ -303,6 +304,10 @@ class BoardData:
     # Task ids whose commit is on no branch and whose content could not be judged,
     # keyed to why: `merge`, `empty`, or `unknown` (a real read failure).
     risk_notes: dict[str, str] = field(default_factory=dict)
+    # Job id -> the commit its branch or held ref points at now, for a held change
+    # whose tip moved after the reviewer checked it. The owner needs a re-review,
+    # not an invitation to walk the stale commit.
+    rereview: dict[str, str] = field(default_factory=dict)
 
 
 def _e(value: object) -> str:
@@ -461,6 +466,16 @@ def waiting_on_you(data: BoardData) -> list[str]:
     for job in sorted(held, key=lambda item: item.handed_over_at or item.created_at):
         if any(task.job == job.id and task.is_open for task in data.tasks):
             continue  # the review step is still running; not the owner's turn yet
+        tip = data.rereview.get(job.id)
+        if tip:
+            checked = (job.review_commit or "")[:7]
+            lines.append(
+                f"<b>needs re-review</b> {_e(job.name_in_words)} was checked at "
+                f"{_e(checked)} but its branch has moved to {_e(tip[:7])}. "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; the "
+                "reviewer must check the new commit before you walk it.</span>"
+            )
+            continue
         seconds = elapsed_seconds(job.handed_over_at, None)
         quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
         lines.append(
@@ -827,7 +842,7 @@ def render_board(data: BoardData) -> str:
                 f"<b>{_e(job.name_in_words)}</b> <span class='id'>[{_e(job.id)}]</span>",
                 _e(job.effect_in_words),
                 f"<span class='pill {'open' if job.is_open else ''}'>"
-                f"{_e(job.state_in_words)}</span>",
+                f"{_e(job.state_in_words_at(data.rereview.get(job.id)))}</span>",
                 _e(job.branch),
                 _e(job.agent),
                 _e(job.reviewer or "-"),

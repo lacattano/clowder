@@ -331,6 +331,23 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("held for your review", waiting[0])
         self.assertIn("gone quiet", waiting[0])
 
+    def test_a_held_change_that_moved_after_review_needs_a_rereview(self) -> None:
+        # The reviewer checked an old commit; the branch has moved. The owner must
+        # not be invited to walk the stale one.
+        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        waiting = waiting_on_you(data(jobs=[held], rereview={held.id: "b" * 40}))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("needs re-review", waiting[0])
+        self.assertNotIn("held for your review", waiting[0])
+        self.assertIn("aaaaaaa", waiting[0], "the checked commit is named")
+        self.assertIn("bbbbbbb", waiting[0], "the current tip is named")
+
+    def test_the_jobs_table_shows_needs_rereview_when_the_tip_moved(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40)
+        html = render_board(data(jobs=[held], rereview={held.id: "b" * 40}))
+        jobs = html[html.index('id="rows-jobs"') :]
+        self.assertIn("needs re-review", jobs)
+
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
             reviewer="verifier",
@@ -625,6 +642,9 @@ class PlainNameTest(unittest.TestCase):
             job(merged_at="2026-09-27T10:00:00Z"),
         ):
             produced.add(one.state_in_words)
+        produced.add(
+            job(reviewer="verifier", review_commit="a" * 40).state_in_words_at("b" * 40)
+        )
         for step in (
             task(),
             task(task_id="t-0002", status=REPORTED),
