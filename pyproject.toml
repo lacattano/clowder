@@ -27,6 +27,10 @@ packages = ["clowder"]
 [tool.ruff]
 # The code is written for readable lines rather than the 88-character default.
 line-length = 96
+# The owner's decision, 2026-10-05: keep the 3.14 target and leave ruff unpinned.
+# Under this target ruff rewrites `except (A, B):` into `except A, B:` (PEP 758).
+# That rewrite is behaviour-preserving on 3.14, and modern 3.14 code - including
+# t-strings - matters more than holding the formatter back to protect against it.
 target-version = "py314"
 
 [tool.ruff.lint]
