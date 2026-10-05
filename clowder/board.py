@@ -402,13 +402,23 @@ def waiting_on_you(data: BoardData) -> list[str]:
     for number, (_, line) in enumerate(ordered, start=1):
         lines.append(f"<b>{number}.</b> {line}")
 
+    jobs_by_id = {job.id: job for job in data.jobs}
     for task in data.tasks:
         if task.id in data.stranded:
+            job = jobs_by_id.get(task.job or "")
+            belongs = (
+                f"the change {_e(job.name_in_words)} [{_e(job.id)}]"
+                if job is not None
+                else f"step {_e(task.id)}"
+            )
+            keep = f'git -C "{_e(task.worktree)}" branch keep-{_e(task.id)} {_e(task.commit)}'
             lines.append(
                 f"<b>work at risk</b> <span class='id'>{_e(task.id)}</span> "
-                f"commit {_e(task.commit)} is on no branch "
-                f"<span class='why'>it lives only in {_e(task.worktree)}; reusing "
-                "that space would lose it</span>"
+                f"{belongs}: commit {_e(task.commit)} is genuinely stranded. "
+                f"<span class='why'>it is on no branch, and no later commit "
+                f"supersedes it. It lives only in {_e(task.worktree)}, so reusing "
+                f"that space would lose it. To keep it, run "
+                f"<code>{keep}</code></span>"
             )
 
     # The held changes waiting for him, oldest first. A queue with an age, so a

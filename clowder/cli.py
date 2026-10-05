@@ -985,6 +985,9 @@ def cmd_report(args: argparse.Namespace) -> int:
         # a rebase superseded is not lost.
         if task.commit and task.worktree:
             stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
+            if stranded:
+                job = store.get_job(task.job) if task.job else None
+                stranded = not _job_moved_past(task, job)
         if answer and (task.answer != answer or task.status != REPORTED) and settled:
             task.answer = answer
             task.answer_source = source or "session"
@@ -2465,15 +2468,40 @@ def _risk_memo_path(store: StateStore) -> Path:
     return store.path.parent / gitcmd.RISK_MEMO_FILENAME
 
 
+def _job_moved_past(task: Task, job: Job | None) -> bool:
+    """Has the task's job branch or held ref moved past the step's commit?
+
+    A job's branch or held ref holds the job's current work. A step commit that is
+    no longer reachable from it is an earlier, rewritten version: the job moved
+    past it, so it is superseded and not work at risk. A ref that is behind the
+    commit (a reset) has not moved past it, so that stays at risk.
+    """
+    if job is None or not task.commit:
+        return False
+    for ref in (job.branch, job.held_ref):
+        if not ref:
+            continue
+        tip = gitcmd.commit_of(job.repo_path, ref)
+        if not tip:
+            continue
+        if gitcmd.is_ancestor(job.repo_path, tip, task.commit):
+            continue  # the ref is behind the commit, so it has not moved past it
+        return True
+    return False
+
+
 def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
     """Everything the page is drawn from."""
     agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
 
     tasks = store.all()
+    jobs = store.all_jobs()
+    jobs_by_id = {job.id: job for job in jobs}
     # A commit on no branch is only at risk when its change is on no branch either.
     # A rebase rewrites the hash but keeps the patch-id, so the old commit is
     # superseded, not lost. When the change cannot be compared, say so instead of
-    # raising a false alarm.
+    # raising a false alarm. So does a job that moved past the commit: its branch
+    # or held ref holds the later work, and the old hash is a superseded version.
     #
     # The answer is a pure function of the commit and the refs that hold it, and
     # asking git costs a process each time, so it is memoised: one look per commit
@@ -2487,6 +2515,8 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
             continue
         risk = memo.risk(task.worktree, task.commit)
         if risk == gitcmd.LOST:
+            if _job_moved_past(task, jobs_by_id.get(task.job or "")):
+                continue
             stranded.add(task.id)
         elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
             risk_notes[task.id] = risk
@@ -2494,7 +2524,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
 
     return BoardData(
         tasks=tasks,
-        jobs=store.all_jobs(),
+        jobs=jobs,
         queued=store.all_queued(),
         agents=agents,
         state_path=str(store.path),
