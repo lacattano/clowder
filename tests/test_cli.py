@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd
-from clowder.state import StateStore, Task
+from clowder.state import Job, StateStore, Task
 from tests.support import (
     clean_env,
     default_usage,
@@ -2304,7 +2304,9 @@ class CliTest(unittest.TestCase):
         gitcmd.switch_branch(repo, "main")
         return old, lost
 
-    def write_pinned_task(self, task_id: str, commit: str, worktree: str | None = None) -> None:
+    def write_pinned_task(
+        self, task_id: str, commit: str, worktree: str | None = None, job: str | None = None
+    ) -> None:
         store = StateStore(self.state)
         store.add(
             Task(
@@ -2316,7 +2318,28 @@ class CliTest(unittest.TestCase):
                 repo="myrepo",
                 repo_path=str(self.repo_path),
                 worktree=str(worktree or self.repo_path),
+                job=job,
                 commit=commit,
+            )
+        )
+        store.save()
+
+    def write_job(
+        self, job_id: str, branch: str, commit: str | None = None, held_ref: str | None = None
+    ) -> None:
+        store = StateStore(self.state)
+        store.add_job(
+            Job(
+                id=job_id,
+                label="refund",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                worktree=str(self.repo_path),
+                branch=branch,
+                base="main",
+                agent="maker",
+                commit=commit,
+                held_ref=held_ref,
             )
         )
         store.save()
@@ -2331,6 +2354,31 @@ class CliTest(unittest.TestCase):
         owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
         self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
         self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
+
+    def test_a_superseded_step_commit_is_not_flagged(self) -> None:
+        # The job's branch moved past the step's commit (an amend or a reversed
+        # change), so the later commit carries the job's work; the old hash is not
+        # at risk and gets no line.
+        _, lost = self.make_rebased_commits()
+        self.write_job("j-0001", branch="task/x")
+        self.write_pinned_task("t-0001", lost, job="j-0001")
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertNotIn("t-0001", owner, "the job's branch moved past the commit")
+
+    def test_a_genuinely_stranded_commit_names_the_fix(self) -> None:
+        _, lost = self.make_rebased_commits()
+        self.write_pinned_task("t-0001", lost, worktree=str(self.repo_path))
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertIn("t-0001", owner)
+        self.assertIn("genuinely stranded", owner)
+        self.assertIn("To keep it", owner)
+        self.assertIn(f"branch keep-t-0001 {lost}", owner)
 
     def test_two_tasks_sharing_a_commit_cost_one_look(self) -> None:
         # A board write asks about every task that holds a commit, and each look
@@ -2391,6 +2439,16 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("report", "t-0002", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("on no branch", out, "the lost commit is still flagged")
+
+    def test_report_does_not_flag_a_superseded_step_commit(self) -> None:
+        # The same rule as the board: a job whose branch moved past the step's
+        # commit means the old hash is superseded, not lost.
+        _, lost = self.make_rebased_commits()
+        self.write_job("j-0001", branch="task/x")
+        self.write_pinned_task("t-0001", lost, job="j-0001")
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("on no branch", out, "the job's branch moved past the commit")
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.

@@ -328,10 +328,31 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(waiting, [], "the step is still open, so nobody is waiting")
 
     def test_work_on_no_branch_is_flagged_as_at_risk(self) -> None:
-        waiting = waiting_on_you(data(tasks=[task()], stranded={"t-0001"}))
+        waiting = waiting_on_you(
+            data(
+                tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
+                stranded={"t-0001"},
+            )
+        )
         self.assertEqual(len(waiting), 1)
         self.assertIn("work at risk", waiting[0])
+        self.assertIn("genuinely stranded", waiting[0])
         self.assertIn("on no branch", waiting[0])
+        self.assertIn("To keep it", waiting[0])
+        self.assertIn("branch keep-t-0001 1a2b3c4", waiting[0])
+
+    def test_a_stranded_commit_names_the_change_it_belongs_to(self) -> None:
+        waiting = waiting_on_you(
+            data(
+                tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
+                jobs=[job()],
+                stranded={"t-0001"},
+            )
+        )
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("the change refund", waiting[0])
+        self.assertIn("[j-0001]", waiting[0])
+        self.assertIn("To keep it", waiting[0])
 
     def test_a_quiet_agent_is_called_out(self) -> None:
         waiting = waiting_for_worker(
