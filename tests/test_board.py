@@ -224,6 +224,28 @@ class WaitingTest(unittest.TestCase):
             "the name comes before the handle",
         )
 
+    def test_a_long_owner_item_is_shown_in_full(self) -> None:
+        item = "read every word of this: " + "x" * 600
+        waiting = waiting_on_you(data(tasks=[task(owner_item=item, owner_item_at=now_iso())]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("x" * 600, waiting[0], "the owner item is not clipped")
+
+    def test_a_long_open_decision_is_shown_in_full(self) -> None:
+        decision = "choose one: " + "y" * 600
+        waiting = waiting_on_you(data(tasks=[task(open_decision=decision)]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("y" * 600, waiting[0], "the decision is not clipped")
+
+    def test_a_long_question_beside_a_decision_is_shown_in_full(self) -> None:
+        question = "what should we do about " + "z" * 600
+        waiting = waiting_on_you(
+            data(tasks=[task(open_decision="choose one", question=question)])
+        )
+        self.assertEqual(len(waiting), 1)
+        self.assertIn(
+            "z" * 600, waiting[0], "the question the decision is about is not clipped"
+        )
+
     def test_owner_items_are_numbered_in_order(self) -> None:
         first = task("t-0001", owner_item="choose A or B", owner_item_at="2026-10-01T10:00:00Z")
         second = task(
@@ -712,10 +734,19 @@ class SafetyTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;", html)
         self.assertIn("&lt;img", html)
 
-    def test_a_long_answer_is_clipped(self) -> None:
-        html = render_board(data(tasks=[task(status=REPORTED, answer="y" * 500)]))
-        self.assertNotIn("y" * 300, html)
+    def test_a_long_answer_is_expandable_not_lost(self) -> None:
+        answer = "y" * 500
+        html = render_board(data(tasks=[task(status=REPORTED, answer=answer)]))
+        # The preview stays short, but the whole answer is on the page, behind a click.
         self.assertIn("...", html)
+        self.assertIn("<details", html)
+        self.assertIn(answer, html)
+
+    def test_a_long_queued_reason_is_expandable_not_lost(self) -> None:
+        why = "w" * 400
+        html = render_board(data(queued=[queued(why=why)]))
+        self.assertIn("<details", html)
+        self.assertIn(why, html)
 
     def test_a_missing_agent_list_is_stated_not_hidden(self) -> None:
         html = render_board(

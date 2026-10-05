@@ -95,6 +95,10 @@ footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
   background: var(--bg); color: var(--ink);
 }
 .empty { color: var(--muted); margin: .6rem 0 0; }
+details.more { margin: 0; }
+details.more summary { cursor: pointer; color: var(--muted); }
+details.more[open] summary { color: var(--ink); }
+details.more .full { margin-top: .25rem; }
 """
 
 # Client-side filtering over the data already on the page: no server, no store, no query
@@ -311,9 +315,35 @@ def now_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def _flat(text: str) -> str:
+    """One line: the whitespace runs in recorded text collapsed."""
+    return " ".join(text.split())
+
+
 def _clip(text: str, limit: int = 160) -> str:
-    flat = " ".join(text.split())
+    flat = _flat(text)
     return flat if len(flat) <= limit else flat[: limit - 1] + "..."
+
+
+def _full(text: str) -> str:
+    """The whole text, escaped and flattened. Use where every word matters."""
+    return _e(_flat(text))
+
+
+def _more(text: str, limit: int = 160) -> str:
+    """The whole text, escaped, folded behind a click when it is long.
+
+    A cell keeps a short preview and opens the rest on click. `<details>` is plain
+    HTML, so the page stays one self-contained file with no extra script. Nothing
+    written by an agent or the owner is dropped, only folded.
+    """
+    flat = _flat(text)
+    if len(flat) <= limit:
+        return _e(flat)
+    return (
+        f"<details class='more'><summary>{_e(_clip(flat, limit))}</summary>"
+        f"<div class='full'>{_e(flat)}</div></details>"
+    )
 
 
 def open_tasks(tasks: Sequence[Task]) -> list[Task]:
@@ -384,7 +414,7 @@ def waiting_on_you(data: BoardData) -> list[str]:
             questions.append(
                 (
                     task.owner_item_at or task.created_at,
-                    f"{_e(_clip(task.owner_item or '', 240))} "
+                    f"{_full(task.owner_item or '')} "
                     f"<span class='why'>your move, [{_e(task.id)}]</span>",
                 )
             )
@@ -393,9 +423,9 @@ def waiting_on_you(data: BoardData) -> list[str]:
             questions.append(
                 (
                     task.created_at,
-                    f"{_e(_clip(task.open_decision, 200))} "
+                    f"{_full(task.open_decision)} "
                     f"<span class='why'>decision, [{_e(task.id)}] asked by "
-                    f"{_e(task.agent)} about {_e(_clip(task.question, 120))}</span>",
+                    f"{_e(task.agent)} about {_full(task.question)}</span>",
                 )
             )
     ordered = sorted(questions, key=lambda item: item[0])
@@ -467,8 +497,8 @@ def waiting_for_worker(data: BoardData) -> list[str]:
         lines.append(
             f"<b>queued</b> <span class='id'>{_e(item.id)}</span> "
             f"for {_e(item.target)} in {_e(item.repo)} "
-            f"<span class='why'>{_e(_clip(item.why, 160))} - "
-            f"{_e(_clip(item.question or item.brief, 120))}</span>"
+            f"<span class='why'>{_more(item.why, 160)} - "
+            f"{_more(item.question or item.brief, 120)}</span>"
         )
 
     for task in open_tasks(data.tasks):
@@ -482,7 +512,7 @@ def waiting_for_worker(data: BoardData) -> list[str]:
                 lines.append(
                     f"<b>gone quiet</b> <span class='id'>{_e(task.id)}</span> "
                     f"{_e(task.agent)} is not in the live agent list at all "
-                    f"<span class='why'>{_e(_clip(task.question, 120))}</span>"
+                    f"<span class='why'>{_more(task.question, 120)}</span>"
                 )
             continue
         if (agent.status or "idle") != "working":
@@ -490,7 +520,7 @@ def waiting_for_worker(data: BoardData) -> list[str]:
                 f"<b>no answer</b> <span class='id'>{_e(task.id)}</span> "
                 f"{_e(task.agent)} is {_e(agent.status or 'idle')} and has said nothing "
                 f"for {_e(human_age(task.age_seconds))} "
-                f"<span class='why'>{_e(_clip(task.question, 120))}</span>"
+                f"<span class='why'>{_more(task.question, 120)}</span>"
             )
 
     for task in data.tasks:
@@ -721,7 +751,7 @@ def render_board(data: BoardData) -> str:
                 _e(task.repo),
                 _e(task.branch or task.commit or "-"),
                 _e(human_age(task.age_seconds)),
-                _e(_clip(task.question, 120)),
+                _more(task.question, 120),
                 _agent_state(data, task.agent),
             ],
             _task_fields(task, _job_by_id(data)),
@@ -765,7 +795,7 @@ def render_board(data: BoardData) -> str:
             _e(_tokens(task)),
             _e(_cost(task)),
             _e(task.model or "-"),
-            _e(_clip(task.answer or "", 200)),
+            _more(task.answer or "", 200),
         ]
         for task in recent_answers(data.tasks)
     ]
