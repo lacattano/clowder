@@ -39,13 +39,17 @@ class StubMux:
         agents: list[AgentInfo] | None = None,
         start_ok: bool = True,
         move_ok: bool = True,
+        close_ok: bool = True,
+        move_reports_id: bool = True,
     ):
         self.existing = list(agents or [])
         self.start_ok = start_ok
         self.move_ok = move_ok
+        self.close_ok = close_ok
+        self.move_reports_id = move_reports_id
         self.made: list[AgentInfo] = []
         self.actions: list[str] = []
-        self.moves: list[tuple[str, str]] = []
+        self.moves: list[tuple[str, str | None]] = []
         self.last_cwd = ""
         self.last_env: dict[str, str] | None = None
         self.pane = 100
@@ -60,8 +64,11 @@ class StubMux:
         self.pane += 1
         return f"w9:p{self.pane}"
 
-    def move_pane(self, pane_id, workspace_id, focus=False, timeout_s=20.0) -> MuxResult:
-        self.actions.append(f"move {pane_id} --workspace {workspace_id} --new-tab")
+    def move_pane(self, pane_id, workspace_id=None, focus=False, timeout_s=20.0) -> MuxResult:
+        if workspace_id:
+            self.actions.append(f"move {pane_id} --workspace {workspace_id} --new-tab")
+        else:
+            self.actions.append(f"move {pane_id} --new-tab")
         if not self.move_ok:
             return MuxResult(
                 argv=("herdr", "pane", "move"),
@@ -74,11 +81,38 @@ class StubMux:
         # A move gives the pane a new id in the target workspace, exactly as the
         # real multiplexer does. Holding the split's id afterwards would be stale.
         self.pane += 1
-        moved = f"{workspace_id}:p{self.pane}"
+        moved = f"{workspace_id or 'w1'}:p{self.pane}"
+        if not self.move_reports_id:
+            # A move that succeeds but does not name the pane's new id.
+            return MuxResult(
+                argv=("herdr", "pane", "move"),
+                returncode=0,
+                stdout=json.dumps({"result": {}}),
+                stderr="",
+                duration_ms=5,
+            )
         return MuxResult(
             argv=("herdr", "pane", "move"),
             returncode=0,
             stdout=json.dumps({"result": {"pane": {"pane_id": moved}}}),
+            stderr="",
+            duration_ms=5,
+        )
+
+    def close_pane(self, pane_id, timeout_s=20.0) -> MuxResult:
+        self.actions.append(f"close {pane_id}")
+        if not self.close_ok:
+            return MuxResult(
+                argv=("herdr", "pane", "close"),
+                returncode=4,
+                stdout='{"error": {"code": "no_such_pane", "message": "already gone"}}',
+                stderr="",
+                duration_ms=5,
+            )
+        return MuxResult(
+            argv=("herdr", "pane", "close"),
+            returncode=0,
+            stdout='{"result": {}}',
             stderr="",
             duration_ms=5,
         )
@@ -225,9 +259,15 @@ class EnsureAgentTest(unittest.TestCase):
         assert result.agent is not None
         self.assertEqual(result.agent.name, "myrepo-maker")
         self.assertEqual(Path(result.agent.cwd or ""), Path("C:/code/myrepo"))
+        # Default placement: a new tab in the caller's workspace, so the caller's
+        # pane is not left split. There is no peer workspace to join.
         self.assertEqual(
             mux.actions,
-            [f"split {Path('C:/code/myrepo')}", "start myrepo-maker pi w9:p101"],
+            [
+                f"split {Path('C:/code/myrepo')}",
+                "move w9:p101 --new-tab",
+                "start myrepo-maker pi w1:p102",
+            ],
         )
 
     def test_a_new_pane_gets_a_remote_pi_config_that_turns_the_relay_on(self) -> None:
@@ -286,7 +326,7 @@ class EnsureAgentTest(unittest.TestCase):
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         self.assertTrue(result.ok)
         self.assertIn("not a git repository", result.note or "")
-        self.assertEqual(len(mux.actions), 2)
+        self.assertEqual(len(mux.actions), 3)
 
     def test_an_explicit_name_is_made_even_when_the_role_is_already_taken(self) -> None:
         # The bug a real run found: "make me tancat-maker" handed back the maker.
@@ -416,7 +456,7 @@ class WriteRemotePiConfigTest(unittest.TestCase):
 
 
 class PanePlacementTest(unittest.TestCase):
-    """Where a new pane lands: with the repo's peers, or beside the caller."""
+    """Where a new pane lands: a new tab by default, or beside the caller on request."""
 
     def test_a_new_agent_joins_a_peer_workspace_as_a_new_tab(self) -> None:
         mux = StubMux([agent("verifier", "C:/code/myrepo", workspace="w1")])
@@ -437,25 +477,48 @@ class PanePlacementTest(unittest.TestCase):
         assert result.agent is not None
         self.assertEqual(result.agent.pane_id, "w1:p102")
 
-    def test_no_peer_in_the_repo_keeps_the_caller_split(self) -> None:
+    def test_creation_defaults_to_a_new_tab(self) -> None:
+        # No peer workspace to join: the pane still opens as a new tab, in the
+        # caller's own workspace, so the caller's pane is never left split.
         mux = StubMux([])
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         self.assertTrue(result.ok)
+        self.assertEqual(mux.moves, [("w9:p101", None)])
+        self.assertEqual(
+            mux.actions,
+            [
+                f"split {Path('C:/code/myrepo')}",
+                "move w9:p101 --new-tab",
+                "start myrepo-maker pi w1:p102",
+            ],
+        )
+
+    def test_an_explicit_split_keeps_the_pane_beside_the_caller(self) -> None:
+        mux = StubMux([])
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker", split=True)
+        self.assertTrue(result.ok)
         self.assertEqual(mux.moves, [])
         self.assertNotIn("move", " ".join(mux.actions))
+        self.assertNotIn("close", " ".join(mux.actions), "a split on purpose is kept")
+        self.assertEqual(
+            mux.actions,
+            [f"split {Path('C:/code/myrepo')}", "start myrepo-maker pi w9:p101"],
+        )
 
     def test_a_peer_in_another_repo_does_not_draw_the_pane_over(self) -> None:
         mux = StubMux([agent("other-maker", "C:/code/other", workspace="w7")])
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         self.assertTrue(result.ok)
-        self.assertEqual(mux.moves, [])
+        # It does not join w7; it opens a new tab in the caller's own workspace.
+        self.assertEqual(mux.moves, [("w9:p101", None)])
 
-    def test_a_peer_with_no_workspace_reported_keeps_the_caller_split(self) -> None:
-        # An older multiplexer may report no workspace. Split rather than guess.
+    def test_a_peer_with_no_workspace_reported_still_opens_a_new_tab(self) -> None:
+        # An older multiplexer may report no workspace. A new tab in the caller's
+        # workspace does not depend on knowing one, so do not fall back to a split.
         mux = StubMux([agent("verifier", "C:/code/myrepo")])
         result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
         self.assertTrue(result.ok)
-        self.assertEqual(mux.moves, [])
+        self.assertEqual(mux.moves, [("w9:p101", None)])
 
     def test_a_failed_move_is_reported_and_the_agent_is_not_started(self) -> None:
         mux = StubMux([agent("verifier", "C:/code/myrepo", workspace="w1")], move_ok=False)
@@ -464,6 +527,38 @@ class PanePlacementTest(unittest.TestCase):
         self.assertIn("could not move", result.reason or "")
         self.assertIn("no_such_workspace", result.reason or "")
         self.assertNotIn("start", " ".join(mux.actions))
+
+    def test_a_failed_move_closes_the_split_pane(self) -> None:
+        # The split is still in the caller's tab, so close it. Otherwise the
+        # caller's tab stays halved and the report is false.
+        mux = StubMux([agent("verifier", "C:/code/myrepo", workspace="w1")], move_ok=False)
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertFalse(result.ok)
+        self.assertIn("close w9:p101", mux.actions)
+        self.assertIn("was closed", result.reason or "")
+
+    def test_a_failed_move_that_cannot_be_closed_says_the_tab_is_halved(self) -> None:
+        mux = StubMux(
+            [agent("verifier", "C:/code/myrepo", workspace="w1")],
+            move_ok=False,
+            close_ok=False,
+        )
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertFalse(result.ok)
+        self.assertIn("could not be closed", result.reason or "")
+        self.assertIn("still halved", result.reason or "")
+        self.assertIn("no_such_pane", result.reason or "")
+        self.assertNotIn("start", " ".join(mux.actions))
+
+    def test_a_move_that_reports_no_new_id_is_reported(self) -> None:
+        # The move succeeded but did not name the pane's new id, so the agent
+        # cannot be started in it and the pane cannot be closed.
+        mux = StubMux([], move_reports_id=False)
+        result = ensure_agent(mux, "myrepo", "C:/code/myrepo", role="maker")
+        self.assertFalse(result.ok)
+        self.assertIn("did not report the pane's new id", result.reason or "")
+        self.assertNotIn("start", " ".join(mux.actions))
+        self.assertNotIn("close", " ".join(mux.actions))
 
     def test_the_workspace_choice_is_stable_when_two_peers_report_one(self) -> None:
         agents = [

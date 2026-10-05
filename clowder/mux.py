@@ -219,26 +219,34 @@ class Mux:
     def move_pane(
         self,
         pane_id: str,
-        workspace_id: str,
+        workspace_id: str | None = None,
         focus: bool = False,
         timeout_s: float = 20.0,
     ) -> MuxResult:
-        """Move a pane into a workspace as a new tab.
+        """Move a pane into a new tab.
 
         The pane keeps its working directory. `--no-focus` is the default and is
         passed explicitly, so making a pane never pulls the human's view to it.
+
+        When `workspace_id` is given the tab opens in that workspace, which is how
+        a new agent joins the repo's peers. When it is None the tab opens in the
+        pane's own workspace, which is the caller's, so the caller's tab is left
+        whole instead of split.
         """
-        argv = [
-            self.binary,
-            "pane",
-            "move",
-            pane_id,
-            "--workspace",
-            workspace_id,
-            "--new-tab",
-            "--focus" if focus else "--no-focus",
-        ]
+        argv = [self.binary, "pane", "move", pane_id]
+        if workspace_id:
+            argv.extend(["--workspace", workspace_id])
+        argv.extend(["--new-tab", "--focus" if focus else "--no-focus"])
         return self._run(argv, timeout_s)
+
+    def close_pane(self, pane_id: str, timeout_s: float = 20.0) -> MuxResult:
+        """Close a pane.
+
+        Used to undo a split whose move failed. That pane never reached a tab of
+        its own, so leaving it would keep the caller's tab halved. Closing by the
+        id the split returned is right: a failed move does not renumber the pane.
+        """
+        return self._run([self.binary, "pane", "close", pane_id], timeout_s)
 
     def build_send_keys_argv(self, target: str, keys: Sequence[str]) -> list[str]:
         """Type key presses into a pane. A slash command must arrive as keys.
@@ -311,10 +319,20 @@ def reply_pane_id(result: MuxResult) -> str | None:
 
     A move gives the pane a new id in the target workspace, so the reply is the
     only place the new id can be read. None means the reply did not carry one.
+
+    The paths differ by command and by harness version: a raw `pane move` reply
+    nests the pane under `move_result`, while the fake and older replies put it at
+    `result.pane`. Both are tried.
     """
     payload = _first_json(result.stdout)
-    pane_id = _dig(payload, "result", "pane", "pane_id")
-    return pane_id if isinstance(pane_id, str) and pane_id else None
+    for path in (
+        ("result", "move_result", "pane", "pane_id"),
+        ("result", "pane", "pane_id"),
+    ):
+        pane_id = _dig(payload, *path)
+        if isinstance(pane_id, str) and pane_id:
+            return pane_id
+    return None
 
 
 def _as_text(value: object) -> str:

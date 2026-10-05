@@ -6,8 +6,9 @@ Mimics only what clowder reads, and only the commands it runs:
     agent prompt <target> <text>
     agent send-keys <target> <key>...
     pane split --current --cwd <path> ...
+    pane move <pane_id> [--workspace <id>] --new-tab
+    pane close <pane_id>
     agent start <name> --kind <kind> --pane <id>
-    pane move <pane_id> --workspace <id> --new-tab
 
 Without CLOWDER_FAKE_STATE the fake is stateless: `agent list` reports one agent
 built from the environment, and the creating commands fail. With a state file it
@@ -168,6 +169,25 @@ def main(argv: list[str]) -> int:
                 "result": {"pane": {"pane_id": new_pane_id, "workspace_id": workspace_id}},
             }
         )
+
+    if argv[:2] == ["pane", "close"]:
+        if _state_path() is None:
+            return _fail("no_state", "the fake has no state file to record a close in", 6)
+        pane_id = argv[2] if len(argv) > 2 else ""
+        state = _load()
+        panes = state.get("panes") or {}
+        assert isinstance(panes, dict)
+        if pane_id not in panes:
+            return _fail("no_such_pane", f"pane {pane_id} is not available", 5)
+        panes.pop(pane_id)
+        workspaces = state.get("pane_workspaces") or {}
+        assert isinstance(workspaces, dict)
+        workspaces.pop(pane_id, None)
+        closed = state.setdefault("closed", [])
+        assert isinstance(closed, list)
+        closed.append(pane_id)
+        _save(state)
+        return _emit({"id": "cli:pane:close", "result": {"pane": {"pane_id": pane_id}}})
 
     if argv[:2] == ["agent", "send-keys"]:
         if _state_path() is None:

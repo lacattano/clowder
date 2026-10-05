@@ -146,6 +146,12 @@ Decided. When a job arrives for a repo with no agent, the front door makes one:
 when it is made and cannot be moved later, so making the pane is the only way to get a correct
 working directory. It is also why the worktree and the pane are made together.
 
+The new pane opens as a **new tab**, not beside the caller. A repo's agents are tabs in one
+workspace, so the pane joins the workspace a peer reports; with no peer it opens a new tab in
+the caller's own workspace. Either way the caller's tab is left whole - a split halves it every
+time an agent is made, which is the owner's "split window thing". A caller that wants the old
+placement on purpose passes `--split`, and `--direction` still chooses the side.
+
 This reverses the note that agents only talk to panes the human started. That note described
 what was impossible before `agent start` existed, not what was undesirable. The fear behind it -
 a roster living in someone's head, a brief sent to a pane that is not there - is answered by
