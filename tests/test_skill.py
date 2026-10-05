@@ -274,6 +274,37 @@ class SkillTest(unittest.TestCase):
                 step, front, f"the walkthrough step is still in the front-door skill: {step}"
             )
 
+    def test_the_reviewer_skill_requires_the_interview_card(self) -> None:
+        # A walkthrough report without the card leaves the owner with nothing he
+        # can say in an interview, so the skill must require it and name its lines.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        self.assertIn(
+            "Every walkthrough report carries an interview card",
+            text,
+            "the card is not required in every walkthrough report",
+        )
+        self.assertIn("INTERVIEW CARD", text, "the report block has no card")
+        for line in (
+            "The problem",
+            "The option rejected, and why",
+            "Why this one",
+            "The trade-off or risk",
+            "What it changes for a user",
+        ):
+            self.assertIn(line, text, f"the interview card is missing a line: {line}")
+        self.assertIn("His sentence", text)
+        self.assertIn("in his words", text)
+        # His sentence is his, not the reviewer's: the reviewer drafts the scaffolding.
+        self.assertIn("His sentence is his", text)
+        self.assertIn("he gives the sentence", text)
+        # It starts as three lines, so it can begin in the first walkthrough report.
+        self.assertIn("Start with three lines", text)
+        self.assertIn("the problem, the option rejected, and his sentence", text)
+        # It stays in this report until the learning journal has a home.
+        self.assertIn("q-0056", text, "say where the card moves when the journal lands")
+        self.assertIn("moves there", text)
+
     def test_the_reviewer_skill_states_the_recall_check_and_its_order(self) -> None:
         # The recall check sits between the file walk and the pass: his four questions
         # with the reviewer's answers hidden, his attempt in his own words, then the

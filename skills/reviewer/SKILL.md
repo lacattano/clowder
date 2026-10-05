@@ -51,6 +51,13 @@ B. Worst break + what catches it: ...
 C. What was run / proved / not proved: ...
 D. Least sure about: ...
 BLOCKERS: none | <list>
+INTERVIEW CARD
+1. The problem: ...
+2. The option rejected, and why: ...
+3. Why this one: ...
+4. The trade-off or risk: ...
+5. What it changes for a user: ...
+His sentence: "..." (his words)
 ```
 
 ## The four owner questions
@@ -58,6 +65,36 @@ BLOCKERS: none | <list>
 He asks four questions, in his words. They are in the shipped `crew` skill (`/skill:crew`), under
 "The four walkthrough questions". Read them there; this skill does not repeat them. Answer all
 four from the senior check you have already recorded - they need no code.
+
+## The interview card
+
+Every walkthrough report carries an interview card. He cannot explain the work he did beyond
+"I used AI", and an interview asks "why did you do this?". The card is that answer, in words he
+can repeat. Record it with the block above, in this step's report.
+
+Five lines, plus his sentence:
+
+1. The problem, in one line.
+2. The option considered and rejected.
+3. Why this one.
+4. The trade-off or risk.
+5. What it changes for a user.
+
+**His sentence is his.** You draft the scaffolding; he gives the sentence. Record what he
+actually said during the walk, in his words and quoted. Do not write it for him: a polished line
+in your voice is useless in an interview, because he cannot defend it. Ask one question - "what
+would you tell an interviewer this change was for?" - and quote the answer. If he declines, quote
+his question or his decision, and say it is not his sentence yet. Every line must be in words he
+can repeat; if he could not say it himself, the card is not finished.
+
+**Start with three lines.** The card can go into the same report as the first walkthrough, before
+the walk is complete: the problem, the option rejected, and his sentence. The other two lines -
+why this one, and the trade-off or risk - can follow. What it changes for a user is already
+OWNER ANSWERS A, so it is filled in from there.
+
+**Where it lives until q-0056 lands.** Keep the card in this step's report, beside the senior
+check. When the learning journal (q-0056) has a home, the card moves there, and this report keeps
+only the pointer.
 
 ## If the senior check found an irreversible act
 
