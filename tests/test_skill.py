@@ -305,28 +305,34 @@ class SkillTest(unittest.TestCase):
         self.assertIn("q-0056", text, "say where the card moves when the journal lands")
         self.assertIn("moves there", text)
 
-    def test_the_reviewer_skill_requires_the_code_reading_session(self) -> None:
-        # The owner cannot read code, so one small piece is read with him in every
-        # walkthrough. The step must not silently disappear.
+    def test_the_reviewer_skill_points_at_the_code_reading_owner(self) -> None:
+        # The code-reading step is owned by teach-what-we-built. The reviewer skill
+        # must point at it and not restate the method: one owner, no second voice.
         reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn("The code-reading session", text)
-        self.assertIn("read ONE small piece of the change with him, line by line", text)
-        self.assertIn("what each line does and why", text)
-        self.assertIn("one piece per change", text)
-        self.assertIn("never every line of every file", text)
-        # The reviewer skill owns it, so there is no second walkthrough voice.
-        self.assertIn("This lives here, not in `teach-what-we-built`", text)
-        self.assertIn("second walkthrough voice", text)
-        # Short, and the owner may skip it.
-        self.assertIn("A few minutes, and he may skip it", text)
-        # Cumulative, with a record that the next session reads first.
-        self.assertIn("It builds up", text)
-        self.assertIn("CODE READING", text)
-        self.assertIn("So far:", text)
-        # It stays in this report until q-0056's learning log has a home.
-        self.assertIn("the learning log q-0056 defines", text)
-        self.assertIn("keep the CODE READING block in this step's report", text)
+        self.assertIn("/skill:teach-what-we-built", text)
+        self.assertIn("one small piece per change", text)
+        self.assertIn("recorded in the learning log", text)
+        self.assertIn("does not restate the method", text)
+        # The detail lives with the owner, not here.
+        self.assertNotIn("read ONE small piece of the change with him, line by line", text)
+        self.assertNotIn("CODE READING", text)
+
+    def test_the_teach_skill_owns_the_per_review_reading(self) -> None:
+        # The step is owned by teach-what-we-built. When that skill is installed on
+        # this machine, check it carries the step; skip elsewhere, so CI (which has
+        # no external skills) still passes.
+        teach = Path.home() / ".agents" / "skills" / "teach-what-we-built" / "SKILL.md"
+        if not teach.is_file():
+            self.skipTest("teach-what-we-built is not installed here")
+        text = " ".join(teach.read_text(encoding="utf-8").split())
+        self.assertIn("The per-review code-reading step", text)
+        self.assertIn("Read ONE small piece of the change with the owner", text)
+        self.assertIn("One piece per change", text)
+        self.assertIn("It is cumulative", text)
+        self.assertIn("written to the learning log", text)
+        self.assertIn("may skip it", text)
 
     def test_the_reviewer_skill_states_the_recall_check_and_its_order(self) -> None:
         # The recall check sits between the file walk and the pass: his four questions
