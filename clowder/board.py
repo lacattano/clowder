@@ -236,6 +236,8 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         (
             "in progress",
             "waiting on a walkthrough",
+            "needs re-review",
+            "review unconfirmed",
             "passed",
             "waiting on your merge word",
             "merged",
@@ -303,6 +305,13 @@ class BoardData:
     # Task ids whose commit is on no branch and whose content could not be judged,
     # keyed to why: `merge`, `empty`, or `unknown` (a real read failure).
     risk_notes: dict[str, str] = field(default_factory=dict)
+    # Job id -> the commit its branch or held ref points at now, for a held change
+    # whose tip moved after the reviewer checked it. The owner needs a re-review,
+    # not an invitation to walk the stale commit.
+    rereview: dict[str, str] = field(default_factory=dict)
+    # Job ids whose reviewed commit cannot be confirmed: no ref could be read. They
+    # must not be shown as held, which is the stale-walk claim this exists to stop.
+    review_unconfirmed: set[str] = field(default_factory=set)
 
 
 def _e(value: object) -> str:
@@ -461,6 +470,25 @@ def waiting_on_you(data: BoardData) -> list[str]:
     for job in sorted(held, key=lambda item: item.handed_over_at or item.created_at):
         if any(task.job == job.id and task.is_open for task in data.tasks):
             continue  # the review step is still running; not the owner's turn yet
+        tip = data.rereview.get(job.id)
+        if tip:
+            checked = (job.review_commit or "")[:7]
+            lines.append(
+                f"<b>needs re-review</b> {_e(job.name_in_words)} was checked at "
+                f"{_e(checked)} but has moved to {_e(tip[:7])}. "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; the "
+                "reviewer must check the new commit before you walk it.</span>"
+            )
+            continue
+        if job.id in data.review_unconfirmed:
+            checked = (job.review_commit or "")[:7]
+            lines.append(
+                f"<b>review unconfirmed</b> {_e(job.name_in_words)} was checked at "
+                f"{_e(checked)}, but its current commit could not be read. "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; confirm "
+                "the branch by hand before you walk it.</span>"
+            )
+            continue
         seconds = elapsed_seconds(job.handed_over_at, None)
         quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
         lines.append(
@@ -563,14 +591,26 @@ def _row_attrs(values: dict[str, str]) -> str:
     return "".join(f' data-{name}="{_e(values.get(name, ""))}"' for name in _field_names())
 
 
-def _job_fields(job: Job) -> dict[str, str]:
+def _state_of(data: BoardData, job: Job) -> str:
+    """The job's state word, with the re-review states from the tip check.
+
+    One source for both the pill the owner reads and the row's data-state, so the
+    state filter can never name a value the row does not carry.
+    """
+    return job.state_in_words_at(
+        data.rereview.get(job.id),
+        unreadable=job.id in data.review_unconfirmed,
+    )
+
+
+def _job_fields(job: Job, state: str) -> dict[str, str]:
     """A job's filterable values, each read from a field the job records."""
     updated = _newest(job.merged_at, job.closed_at, job.published_at, job.released_at)
     waiting = not job.has_pass or not job.has_merge_word
     return {
         "repo": job.repo,
         "title": job.name_in_words,
-        "state": job.state_in_words,
+        "state": state,
         # A job records no shape; its steps do. Empty until a job records one.
         "kind": getattr(job, "shape", "") or "",
         "status": job.status,
@@ -827,7 +867,7 @@ def render_board(data: BoardData) -> str:
                 f"<b>{_e(job.name_in_words)}</b> <span class='id'>[{_e(job.id)}]</span>",
                 _e(job.effect_in_words),
                 f"<span class='pill {'open' if job.is_open else ''}'>"
-                f"{_e(job.state_in_words)}</span>",
+                f"{_e(_state_of(data, job))}</span>",
                 _e(job.branch),
                 _e(job.agent),
                 _e(job.reviewer or "-"),
@@ -836,7 +876,7 @@ def render_board(data: BoardData) -> str:
                 _e("yes" if job.has_merge_word else "no"),
                 _e(human_age(job.age_seconds)),
             ],
-            _job_fields(job),
+            _job_fields(job, _state_of(data, job)),
         )
         for job in data.jobs
     ]

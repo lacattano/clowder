@@ -2325,7 +2325,14 @@ class CliTest(unittest.TestCase):
         store.save()
 
     def write_job(
-        self, job_id: str, branch: str, commit: str | None = None, held_ref: str | None = None
+        self,
+        job_id: str,
+        branch: str,
+        commit: str | None = None,
+        held_ref: str | None = None,
+        reviewer: str | None = None,
+        review_commit: str | None = None,
+        handed_over_at: str | None = None,
     ) -> None:
         store = StateStore(self.state)
         store.add_job(
@@ -2340,9 +2347,93 @@ class CliTest(unittest.TestCase):
                 agent="maker",
                 commit=commit,
                 held_ref=held_ref,
+                reviewer=reviewer,
+                review_commit=review_commit,
+                handed_over_at=handed_over_at,
             )
         )
         store.save()
+
+    def write_held_job(self, job_id: str, branch: str, moved: bool) -> tuple[str, str]:
+        """A branch holding a reviewed commit, optionally moved past it."""
+        repo = self.repo_path
+        gitcmd.switch_new_branch(repo, branch, "main")
+        (repo / f"{job_id}.txt").write_text("reviewed\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", f"{job_id}.txt")
+        gitcmd.run_git(repo, "commit", "-m", f"reviewed {job_id}")
+        checked = gitcmd.head_commit(repo, short=False) or ""
+        tip = checked
+        if moved:
+            (repo / f"{job_id}-more.txt").write_text("more\n", encoding="utf-8")
+            gitcmd.run_git(repo, "add", f"{job_id}-more.txt")
+            gitcmd.run_git(repo, "commit", "-m", f"moved {job_id}")
+            tip = gitcmd.head_commit(repo, short=False) or ""
+        self.write_job(
+            job_id,
+            branch=branch,
+            reviewer="verifier",
+            review_commit=checked,
+            handed_over_at="2026-10-01T00:00:00Z",
+        )
+        return checked, tip
+
+    def test_the_board_calls_a_moved_after_review_tip_needs_rereview(self) -> None:
+        checked, tip = self.write_held_job("j-0001", "task/stale", moved=True)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("needs re-review", owner)
+        self.assertNotIn("held for your review", owner)
+        self.assertIn(checked[:7], owner, "the checked commit is named")
+        self.assertIn(tip[:7], owner, "the current tip is named")
+
+    def test_the_board_keeps_held_for_review_when_the_tip_was_checked(self) -> None:
+        checked, tip = self.write_held_job("j-0001", "task/held", moved=False)
+        self.assertEqual(checked, tip)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("held for your review", owner)
+        self.assertNotIn("needs re-review", owner)
+
+    def test_job_list_calls_a_moved_after_review_tip_needs_rereview(self) -> None:
+        self.write_held_job("j-0001", "task/stale", moved=True)
+        code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("needs re-review", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+    def test_job_list_keeps_waiting_on_a_walkthrough_when_the_tip_was_checked(self) -> None:
+        self.write_held_job("j-0001", "task/held", moved=False)
+        code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on a walkthrough", out)
+        self.assertNotIn("needs re-review", out)
+
+    def test_job_list_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        # A read failure must not fall back to "waiting on a walkthrough": that is
+        # the stale-walk claim this state exists to prevent.
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("review unconfirmed", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+    def test_the_board_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("review unconfirmed", owner)
+        self.assertNotIn("held for your review", owner)
 
     def test_the_board_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
