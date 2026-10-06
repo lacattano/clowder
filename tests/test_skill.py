@@ -301,6 +301,14 @@ class SkillTest(unittest.TestCase):
         # It starts as three lines, so it can begin in the first walkthrough report.
         self.assertIn("Start with three lines", text)
         self.assertIn("the problem, the option rejected, and his sentence", text)
+        # A short feedback line sits under his sentence, on the sentence only.
+        self.assertIn('His sentence: "..." (his words) FEEDBACK:', text)
+        self.assertIn("FEEDBACK line under it", text)
+        self.assertIn("one or two kind, specific lines", text)
+        self.assertIn("his sentence only, not on the change", text)
+        self.assertIn("No flattery and no vague praise", text)
+        self.assertIn("never asks him to redo it", text)
+        self.assertIn("sits beside it", text)
         # It stays in this report until the learning journal has a home.
         self.assertIn("q-0056", text, "say where the card moves when the journal lands")
         self.assertIn("moves there", text)

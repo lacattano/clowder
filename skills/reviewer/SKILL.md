@@ -58,6 +58,7 @@ INTERVIEW CARD
 4. The trade-off or risk: ...
 5. What it changes for a user: ...
 His sentence: "..." (his words)
+FEEDBACK: ...
 ```
 
 ## The four owner questions
@@ -86,6 +87,12 @@ in your voice is useless in an interview, because he cannot defend it. Ask one q
 would you tell an interviewer this change was for?" - and quote the answer. If he declines, quote
 his question or his decision, and say it is not his sentence yet. Every line must be in words he
 can repeat; if he could not say it himself, the card is not finished.
+
+**A short feedback line on his sentence.** After he gives it, add a FEEDBACK line under it: one
+or two kind, specific lines on the sentence itself - name the strong part, and the one thing that
+would make it land better in an interview. No flattery and no vague praise. The feedback is on
+his sentence only, not on the change, and it never asks him to redo it there and then: he gives
+it, you record it as his, and the feedback sits beside it. He may act on it or not.
 
 **Start with three lines.** The card can go into the same report as the first walkthrough, before
 the walk is complete: the problem, the option rejected, and his sentence. The other two lines -
