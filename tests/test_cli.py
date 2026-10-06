@@ -2414,6 +2414,27 @@ class CliTest(unittest.TestCase):
         self.assertIn("waiting on a walkthrough", out)
         self.assertNotIn("needs re-review", out)
 
+    def test_job_list_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        # A read failure must not fall back to "waiting on a walkthrough": that is
+        # the stale-walk claim this state exists to prevent.
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("review unconfirmed", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+    def test_the_board_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("review unconfirmed", owner)
+        self.assertNotIn("held for your review", owner)
+
     def test_the_board_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
         self.write_pinned_task("t-0001", old)

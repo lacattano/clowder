@@ -2468,29 +2468,38 @@ def _risk_memo_path(store: StateStore) -> Path:
     return store.path.parent / gitcmd.RISK_MEMO_FILENAME
 
 
-def _job_tip(job: Job) -> str | None:
-    """The commit the job's work is at now, or None when it cannot be told.
+def _job_review_state(job: Job) -> tuple[str, str | None]:
+    """Where a held candidate's work is: held, moved, or unknown.
 
-    The branch tip is the job's current work; when the branch is gone, the held
-    ref is what remains.
+    The branch tip is the job's current work; the held ref is what remains when the
+    branch is gone. "held" means a readable ref still points at the reviewed
+    commit, "moved" means a readable ref points elsewhere, and "unknown" means no
+    ref could be read - which must never be reported as held.
     """
-    if job.branch:
-        tip = gitcmd.commit_of(job.repo_path, job.branch)
-        if tip:
-            return tip
-    if job.held_ref:
-        return gitcmd.commit_of(job.repo_path, job.held_ref)
-    return None
+    resolved = False
+    for ref in (job.branch, job.held_ref):
+        if not ref:
+            continue
+        tip = gitcmd.commit_of(job.repo_path, ref)
+        if tip is None:
+            continue
+        resolved = True
+        if tip != job.review_commit:
+            return "moved", tip
+    if resolved:
+        return "held", job.review_commit
+    return "unknown", None
 
 
 def _job_state_word(job: Job) -> str:
-    """The job's state word, with "needs re-review" when the work moved past review.
+    """The job's state word, with a re-review state when the work moved past review.
 
     Only a held candidate is looked up in git: every other job keeps its derived
     state with no process spent on a question that cannot change it.
     """
     if job.is_open and job.reviewer and job.review_commit and not job.has_pass:
-        return job.state_in_words_at(_job_tip(job))
+        state, tip = _job_review_state(job)
+        return job.state_in_words_at(tip, unreadable=(state == "unknown"))
     return job.state_in_words
 
 
@@ -2526,13 +2535,17 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     # A held change whose branch or held ref has moved past the reviewed commit is
     # not ready for the owner's walk: the reviewer checked an older commit. Record
     # the current tip so the board asks for a re-review, with both commits named.
+    # A ref that cannot be read is not called held; it is called unconfirmed.
     rereview: dict[str, str] = {}
+    review_unconfirmed: set[str] = set()
     for job in jobs:
         if not (job.is_open and job.reviewer and job.review_commit and not job.has_pass):
             continue
-        tip = _job_tip(job)
-        if tip and job.needs_rereview(tip):
+        state, tip = _job_review_state(job)
+        if state == "moved" and tip:
             rereview[job.id] = tip
+        elif state == "unknown":
+            review_unconfirmed.add(job.id)
     # A commit on no branch is only at risk when its change is on no branch either.
     # A rebase rewrites the hash but keeps the patch-id, so the old commit is
     # superseded, not lost. When the change cannot be compared, say so instead of
@@ -2571,6 +2584,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         stranded=stranded,
         risk_notes=risk_notes,
         rereview=rereview,
+        review_unconfirmed=review_unconfirmed,
     )
 
 

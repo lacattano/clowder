@@ -348,6 +348,32 @@ class WaitingTest(unittest.TestCase):
         jobs = html[html.index('id="rows-jobs"') :]
         self.assertIn("needs re-review", jobs)
 
+    def test_the_row_data_state_matches_the_displayed_state_for_a_rereview(self) -> None:
+        # The state filter reads data-state; the pill shows the words. They must be
+        # the same, or selecting "needs re-review" matches no row.
+        held = job(reviewer="verifier", review_commit="a" * 40)
+        html = render_board(data(jobs=[held], rereview={held.id: "b" * 40}))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-state="needs re-review"', row)
+        self.assertIn(">needs re-review<", jobs)
+
+    def test_the_row_data_state_matches_the_displayed_state_for_the_equal_tip(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40)
+        html = render_board(data(jobs=[held]))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-state="waiting on a walkthrough"', row)
+        self.assertIn(">waiting on a walkthrough<", jobs)
+
+    def test_the_row_data_state_matches_review_unconfirmed(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40)
+        html = render_board(data(jobs=[held], review_unconfirmed={held.id}))
+        jobs = html[html.index('id="rows-jobs"') :]
+        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        self.assertIn('data-state="review unconfirmed"', row)
+        self.assertIn(">review unconfirmed<", jobs)
+
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
             reviewer="verifier",
@@ -644,6 +670,11 @@ class PlainNameTest(unittest.TestCase):
             produced.add(one.state_in_words)
         produced.add(
             job(reviewer="verifier", review_commit="a" * 40).state_in_words_at("b" * 40)
+        )
+        produced.add(
+            job(reviewer="verifier", review_commit="a" * 40).state_in_words_at(
+                None, unreadable=True
+            )
         )
         for step in (
             task(),
