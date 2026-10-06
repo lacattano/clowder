@@ -305,6 +305,29 @@ class SkillTest(unittest.TestCase):
         self.assertIn("q-0056", text, "say where the card moves when the journal lands")
         self.assertIn("moves there", text)
 
+    def test_the_reviewer_skill_requires_the_code_reading_session(self) -> None:
+        # The owner cannot read code, so one small piece is read with him in every
+        # walkthrough. The step must not silently disappear.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        self.assertIn("The code-reading session", text)
+        self.assertIn("read ONE small piece of the change with him, line by line", text)
+        self.assertIn("what each line does and why", text)
+        self.assertIn("one piece per change", text)
+        self.assertIn("never every line of every file", text)
+        # The reviewer skill owns it, so there is no second walkthrough voice.
+        self.assertIn("This lives here, not in `teach-what-we-built`", text)
+        self.assertIn("second walkthrough voice", text)
+        # Short, and the owner may skip it.
+        self.assertIn("A few minutes, and he may skip it", text)
+        # Cumulative, with a record that the next session reads first.
+        self.assertIn("It builds up", text)
+        self.assertIn("CODE READING", text)
+        self.assertIn("So far:", text)
+        # It stays in this report until q-0056's learning log has a home.
+        self.assertIn("the learning log q-0056 defines", text)
+        self.assertIn("keep the CODE READING block in this step's report", text)
+
     def test_the_reviewer_skill_states_the_recall_check_and_its_order(self) -> None:
         # The recall check sits between the file walk and the pass: his four questions
         # with the reviewer's answers hidden, his attempt in his own words, then the
