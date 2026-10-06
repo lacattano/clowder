@@ -58,6 +58,10 @@ INTERVIEW CARD
 4. The trade-off or risk: ...
 5. What it changes for a user: ...
 His sentence: "..." (his words)
+CODE READING
+Piece: ...
+Covered: ... | skipped by the owner
+So far: ...
 ```
 
 ## The four owner questions
@@ -96,6 +100,41 @@ OWNER ANSWERS A, so it is filled in from there.
 check. When the learning journal (q-0056) has a home, the card moves there, and this report keeps
 only the pointer.
 
+## The code-reading session
+
+The interview card gives him the reasons; this gives him the code. In every walkthrough, read
+ONE small piece of the change with him, line by line, in plain terms: what each line does and why
+it is there. A function, a test, or one small diff hunk - one piece per change, never every line
+of every file.
+
+**It is the reviewer's job.** The walkthrough is the one moment the change is in front of him and
+you already hold it; a second teaching session would be a second walkthrough voice, the failure
+the crew model exists to prevent.
+
+**A few minutes, and he may skip it.** Name the piece and why you chose it, then read it. If he
+says skip, move on: record it as skipped, not covered.
+
+**It builds up.** Each session continues from the last, so the pieces add up to the whole change.
+Before choosing a piece, read the coverage record below; choose what is not covered yet.
+
+**What to record.** Record the CODE READING block with the block above, cumulatively:
+
+```
+CODE READING
+Piece: <function, test, or hunk, in his words>
+Covered: <what each line does and why, in his words> | skipped by the owner
+So far: <the pieces covered across walkthroughs, newest last>
+```
+
+**Where it lives until q-0056 lands.** The learning base is the learning log q-0056 defines. When
+that home exists, the cumulative coverage lives there. Until it does, keep the CODE READING block
+in this step's report and say it moves there. The next session reads it first, so the record is
+never lost.
+
+**Where the method comes from.** The method is adapted from Matt Pocock's skills (the
+`setup-matt-pocock-skills` set installed here): follow one concrete thing, one step at a time,
+pacing to the reader. The wording is ours; only the idea is borrowed.
+
 ## If the senior check found an irreversible act
 
 Row 11 is a stop, not a question. If the change deletes something, rewrites history, migrates
@@ -118,10 +157,14 @@ no new work from them.
    changed files, one file at a time.
 2. Go file by file, in his terms. For each file say what the file is for, what changed, why, and
    what it means for a user. Quote one short exact line that carries the change. A few sentences
-   is enough. Do not dump the diff, and do not read code aloud.
+   is enough. Do not dump the diff, and do not read code aloud here - the code-reading session
+   below is where one piece is read.
 3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
    not run the code.
-4. **The recall check, after the walk and before the pass.** Put his four questions to him -
+4. **The code-reading session, before the pass.** Read one small piece with him, line by line, in
+   plain terms - see "The code-reading session" above. One piece per change, a few minutes, and
+   he may skip it.
+5. **The recall check, after the walk and before the pass.** Put his four questions to him -
    the ones above, and no other set - with your OWNER ANSWERS A-D hidden. He tries each in his
    own words. Only then do you reveal your A-D, one at a time, and note what he missed.
    - It gates nothing. No score, no pass mark, and he may pass having missed every question.
@@ -131,7 +174,7 @@ no new work from them.
    - It needs no new field or store. His restatement is already the `--answer` you record when
      the front door passes it. What he missed goes in this step's report, where the block above
      already lives, so a later learning record (q-0056) can use it.
-5. The front door records his answer on that line of work: passed, or what to change. A pass is
+6. The front door records his answer on that line of work: passed, or what to change. A pass is
    recorded with `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is
    separate, with `clowder job word <job> --word TEXT --by NAME`. A change means the worker fixes
    it, and you walk him through the new commits the same way.
