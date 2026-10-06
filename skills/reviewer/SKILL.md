@@ -58,6 +58,10 @@ INTERVIEW CARD
 4. The trade-off or risk: ...
 5. What it changes for a user: ...
 His sentence: "..." (his words)
+CODE READING
+Piece: ...
+Covered: ... | skipped by the owner
+So far: ...
 ```
 
 ## The four owner questions
@@ -98,11 +102,38 @@ only the pointer.
 
 ## The code-reading session
 
-The per-review reading is owned by the `teach-what-we-built` skill
-(`/skill:teach-what-we-built`). Read it there: one small piece per change, line by line, in
-plain terms, cumulative, and recorded in the learning log. Keep it to a few minutes, and let him
-skip it. This skill does not restate the method - one owner, so the walkthrough does not become a
-second teaching voice.
+The interview card gives him the reasons; this gives him the code. In every walkthrough, read
+ONE small piece of the change with him, line by line, in plain terms: what each line does and why
+it is there. A function, a test, or one small diff hunk - one piece per change, never every line
+of every file.
+
+**It is the reviewer's job.** The walkthrough is the one moment the change is in front of him and
+you already hold it; a second teaching session would be a second walkthrough voice, the failure
+the crew model exists to prevent.
+
+**A few minutes, and he may skip it.** Name the piece and why you chose it, then read it. If he
+says skip, move on: record it as skipped, not covered.
+
+**It builds up.** Each session continues from the last, so the pieces add up to the whole change.
+Before choosing a piece, read the coverage record below; choose what is not covered yet.
+
+**What to record.** Record the CODE READING block with the block above, cumulatively:
+
+```
+CODE READING
+Piece: <function, test, or hunk, in his words>
+Covered: <what each line does and why, in his words> | skipped by the owner
+So far: <the pieces covered across walkthroughs, newest last>
+```
+
+**Where it lives until q-0056 lands.** The learning base is the learning log q-0056 defines. When
+that home exists, the cumulative coverage lives there. Until it does, keep the CODE READING block
+in this step's report and say it moves there. The next session reads it first, so the record is
+never lost.
+
+**Where the method comes from.** The method is adapted from Matt Pocock's skills (the
+`setup-matt-pocock-skills` set installed here): follow one concrete thing, one step at a time,
+pacing to the reader. The wording is ours; only the idea is borrowed.
 
 ## If the senior check found an irreversible act
 
@@ -130,9 +161,9 @@ no new work from them.
    below is where one piece is read.
 3. When he asks about a line, answer in his terms. Read the surrounding source if you must. Do
    not run the code.
-4. **The code-reading session, before the pass.** Load `/skill:teach-what-we-built` and read one
-   small piece with him, line by line, in plain terms. One piece per change, a few minutes, and
-   he may skip it; the skill records the coverage in the learning log.
+4. **The code-reading session, before the pass.** Read one small piece with him, line by line, in
+   plain terms - see "The code-reading session" above. One piece per change, a few minutes, and
+   he may skip it.
 5. **The recall check, after the walk and before the pass.** Put his four questions to him -
    the ones above, and no other set - with your OWNER ANSWERS A-D hidden. He tries each in his
    own words. Only then do you reveal your A-D, one at a time, and note what he missed.
