@@ -230,6 +230,30 @@ def count_commits(path: str | Path, rev_range: str) -> int:
         return 0
 
 
+def writer_commits_since(path: str | Path, passed: str, tip: str, exclude: str) -> int | None:
+    """Commits after `passed` that are writer content, not the base coming in.
+
+    `passed..tip` minus the merge commits and minus everything reachable from
+    `exclude`: a forward base merge leaves 0, and any writer commit - appended or
+    rewritten - leaves more. None when git cannot tell.
+    """
+    answer = try_git(
+        path,
+        "rev-list",
+        "--count",
+        "--no-merges",
+        f"{passed}..{tip}",
+        "--not",
+        exclude,
+    )
+    if answer is None:
+        return None
+    try:
+        return int(answer.strip())
+    except ValueError:
+        return None
+
+
 def is_ancestor(path: str | Path, ancestor: str, descendant: str) -> bool:
     """Is `ancestor` in `descendant`'s history? One `merge-base` call.
 
@@ -404,6 +428,54 @@ def detach_at(path: str | Path, ref: str) -> None:
     a space detached at the base is free for the next piece of work.
     """
     run_git(path, "switch", "--detach", ref)
+
+
+def unmerged_paths(path: str | Path) -> list[str]:
+    """The paths git left conflicted in a merge that is in progress."""
+    answer = try_git(path, "diff", "--name-only", "--diff-filter=U", "--")
+    if not answer:
+        return []
+    return [line.strip() for line in answer.splitlines() if line.strip()]
+
+
+def merge_branch(
+    path: str | Path,
+    ref: str,
+    message: str,
+    identity: Identity,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> tuple[bool, list[str]]:
+    """Merge one ref into the current branch, under the crew identity.
+
+    Returns (ok, conflicts). On a conflict the merge is aborted before returning,
+    so the tree is left clean and no half-merged state is left behind. A conflict
+    is never resolved here, and neither `-X ours` nor `-X theirs` is ever passed;
+    the writer owns the resolution.
+    """
+    current = current_branch(path) or "the current branch"
+    merged = try_git(
+        path,
+        "merge",
+        "--no-ff",
+        "-m",
+        message,
+        ref,
+        timeout_s=timeout_s,
+        env=identity.env(),
+    )
+    if merged is not None:
+        return True, []
+    # The merge did not finish. If a merge is in progress it conflicted: collect the
+    # unmerged paths, abort, and hand them back with the tree clean.
+    if try_git(path, "rev-parse", "--verify", "--quiet", "MERGE_HEAD") is None:
+        raise GitError(f"could not merge {ref} into {current}")
+    conflicts = unmerged_paths(path)
+    if try_git(path, "merge", "--abort") is None:
+        raise GitError(
+            f"merging {ref} into {current} conflicted, and the merge could not be "
+            "aborted; the tree may be half-merged and needs a hand."
+        )
+    return False, conflicts
 
 
 def branches_containing(path: str | Path, commit: str, remotes: bool = True) -> list[str]:
@@ -820,8 +892,9 @@ def refuse_rewritten_base(
         f"refusing to publish: the job's recorded base {base_commit[:7]} is not an "
         f"ancestor of {remote}/{base} ({remote_commit[:7]}). {remote}/{base} was "
         "rewritten after this job forked from it, so publishing would carry the "
-        f"replaced history back. Rebase the branch onto {remote}/{base}, then open a "
-        "fresh job."
+        "replaced history back. A rebase does not clear this guard - it reads the "
+        "recorded base, not the branch. Only a fresh job, which records the new "
+        "base, publishes after a rewrite."
     )
 
 

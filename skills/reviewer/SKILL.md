@@ -178,3 +178,13 @@ no new work from them.
    recorded with `clowder job pass <job> --shown TEXT --answer TEXT --by NAME`; his merge word is
    separate, with `clowder job word <job> --word TEXT --by NAME`. A change means the worker fixes
    it, and you walk him through the new commits the same way.
+
+## The branch is append-only
+
+A handover merges `origin/<base>` into the branch before you are pinned, so the commit you check
+already contains current base; `job sync` does the same later. Never rebase the branch you are
+reviewing, and never rebase one that has been passed: a rebase rewrites the commits and throws
+away the reviewed commit and the owner's pass. If the base moved after the pass, the front door
+runs `job sync`, which merges, not rebases. A clean merge keeps the pass, so re-run the tests and
+check the merge. A conflict stops the sync, and the writer resolves it. The base branch itself is
+append-only.
