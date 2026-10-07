@@ -103,6 +103,21 @@ removed from the loop either. The chain, and nothing skips a step:
 - Say what changed since he last looked, so silence never hides drift.
 - Say why a pull request or a merge once ended up parked in front of him, and never let one sit.
 
+## Branches are append-only
+
+While a job is open its branch is append-only, and the base branch is append-only too:
+
+- Sync at handover: merge `origin/<base>` in first. `job handover` does it, and the reviewer is
+  pinned at the merged tip. Use `job sync` for a later drift.
+- Never rebase a branch that has been reviewed or passed. A rebase rewrites the commits, so it
+  throws away the reviewed commit, the held ref, and the owner's pass.
+- If the base moved after the pass and the merge is clean, the pass still holds: the reviewed
+  commit is still in the branch. Re-run the tests and check the merge.
+- If the merge conflicts, stop and let the writer resolve it. Never auto-resolve, never take one
+  side, and never leave a half-merged tree.
+- The base branch is append-only: never rewrite main. A rewritten base is the one drift a merge
+  cannot repair.
+
 ## The four walkthrough questions
 
 In his words:

@@ -168,6 +168,10 @@ class Job:
     pass_answer: str | None = None
     pass_at: str | None = None
     pass_by: str | None = None
+    # The commit the owner's pass is bound to: the reviewed commit at the time of
+    # the pass. A forward base merge keeps it an ancestor of the branch; a new
+    # writer commit breaks it, so the pass is stale and the new work is re-walked.
+    pass_commit: str | None = None
     merge_word: str | None = None
     merge_word_at: str | None = None
     merge_word_by: str | None = None
