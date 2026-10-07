@@ -755,3 +755,9 @@ Linux; this is one harness, on Windows, and small. Its licence is MIT.
 Ideas borrowed, no code: the one-liaison model, ship versus scout task shapes, a plain-language
 dispatch rules file, quota-aware model choice, hiding tool noise, and a generated board for
 pending decisions.
+
+The code-reading method in the reviewer skill is adapted from Matt Pocock's skills
+([mattpocock/skills](https://github.com/mattpocock/skills), installed here with
+`setup-matt-pocock-skills`): follow one concrete thing through the code, one step at a time,
+pacing to the reader, and teach the reason rather than the location. The wording is ours; only
+the idea is borrowed.

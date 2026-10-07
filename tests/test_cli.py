@@ -1357,13 +1357,36 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_a_pass_records_what_was_shown_and_when(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
         self.assertEqual(job["pass_shown"], "the diff of task/refund")
         self.assertEqual(job["pass_answer"], "yes, ship it")
         self.assertEqual(job["pass_by"], "lacattano")
         self.assertTrue(job["pass_at"])
+
+    def test_a_pass_is_refused_without_a_reviewed_commit(self) -> None:
+        # The pass is bound to the reviewed commit; without one there is nothing to
+        # bind, so the pass is refused rather than silently unbinding later.
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff",
+            "--answer",
+            "yes",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("no reviewed commit", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertIsNone(job["pass_at"], "nothing was recorded")
 
     def test_a_worker_cannot_record_the_owner_s_pass(self) -> None:
         job_id, _ = self.open_a_job()
@@ -1417,7 +1440,9 @@ class CliTest(unittest.TestCase):
         self.assertIn(f"job pass {job_id}", err)
 
     def test_publish_proceeds_once_the_pass_is_recorded(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         with mock.patch.object(cli, "_publish_branch") as publish:
             code, out, err = self.cli("job", "publish", job_id, env=self.state_env())
@@ -1428,7 +1453,9 @@ class CliTest(unittest.TestCase):
         self.assertTrue(job["published_at"])
 
     def test_merge_is_refused_without_the_owner_s_word(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
         self.assertEqual(code, 1)
@@ -1468,7 +1495,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(job["status"], "open", "a refused close changes nothing")
 
     def test_job_list_shows_the_two_gates(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         code, out, err = self.cli("job", "list", env=self.state_env())
         self.assertEqual(code, 0, err)
@@ -1912,6 +1941,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("not an ancestor", err)
         self.assertIn(base[:7], err)
         self.assertIn("rewritten", err)
+        # The remedy is a fresh job, not a rebase: the guard reads the recorded base.
+        self.assertIn("A rebase does not clear this guard", err)
+        self.assertIn("fresh job", err)
         pushed.assert_not_called()
 
     def test_publish_allows_a_base_that_is_still_an_ancestor(self) -> None:
@@ -1938,6 +1970,195 @@ class CliTest(unittest.TestCase):
             code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
         self.assertEqual(code, 0, err)
         pushed.assert_called_once()
+
+    def test_handover_merges_the_base_and_keeps_the_writer_commits(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        writer = self.save_as_crew(maker_folder)
+        self.advance_origin(origin)
+
+        self.handover(job_id)
+
+        tip = gitcmd.commit_of(maker_folder, "task/refund")
+        self.assertIsNotNone(tip)
+        assert tip is not None
+        parents = gitcmd.run_git(
+            maker_folder, "log", "-1", "--format=%P", "task/refund"
+        ).split()
+        self.assertEqual(len(parents), 2, "the sync made one merge commit")
+        self.assertTrue(
+            gitcmd.is_ancestor(maker_folder, writer, tip), "the writer's commit is unchanged"
+        )
+        self.assertEqual(
+            gitcmd.count_commits(maker_folder, "task/refund..origin/main"),
+            0,
+            "the branch now contains origin/main",
+        )
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertEqual(job["review_commit"], tip, "the reviewer is pinned at the merged tip")
+
+    def test_handover_no_sync_leaves_the_branch_where_it_was(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        writer = self.save_as_crew(maker_folder)
+        self.advance_origin(origin)
+
+        code, _, err = self.cli(
+            "job",
+            "handover",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            "--no-sync",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            gitcmd.commit_of(maker_folder, "task/refund"),
+            writer,
+            "the branch was not merged with the base",
+        )
+
+    def test_handover_merge_conflict_aborts_and_leaves_a_clean_tree(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        writer = self.save_as_crew(maker_folder)
+        self.advance_origin_editing(origin, "refund.py", "theirs\n")
+
+        code, _, err = self.cli(
+            "job",
+            "handover",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("conflicts", err)
+        self.assertIn("refund.py", err)
+        self.assertEqual(gitcmd.status_entries(maker_folder), [], "the tree is clean")
+        self.assertIsNone(gitcmd.commit_of(maker_folder, "MERGE_HEAD"), "no merge is left")
+        self.assertEqual(
+            gitcmd.commit_of(maker_folder, "task/refund"), writer, "the branch was not moved"
+        )
+
+    def test_the_handover_merge_commit_carries_the_crew_identity(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.advance_origin(origin)
+        self.handover(job_id)
+
+        shown = gitcmd.run_git(
+            maker_folder, "log", "-1", "--format=%an <%ae>|%cn <%ce>", "task/refund"
+        )
+        self.assertIn("clowder-bot", shown)
+        self.assertIn("94532220+lacattano@users.noreply.github.com", shown)
+
+    def test_job_sync_merges_the_base_without_rewriting(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        writer = self.save_as_crew(maker_folder)
+        self.advance_origin(origin)
+
+        code, out, err = self.cli("job", "sync", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("synced", out)
+        tip = gitcmd.commit_of(maker_folder, "task/refund")
+        self.assertTrue(gitcmd.is_ancestor(maker_folder, writer, tip))
+        self.assertEqual(gitcmd.count_commits(maker_folder, "task/refund..origin/main"), 0)
+
+    def test_job_sync_after_handover_works_from_the_released_space(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.advance_origin(origin)
+
+        code, _, err = self.cli("job", "sync", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(gitcmd.count_commits(maker_folder, "task/refund..origin/main"), 0)
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "the space stays released")
+
+    def test_job_sync_refuses_on_conflict_and_leaves_a_clean_tree(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        writer = self.save_as_crew(maker_folder)
+        self.advance_origin_editing(origin, "refund.py", "theirs\n")
+
+        code, _, err = self.cli("job", "sync", job_id, env=self.state_env())
+        self.assertEqual(code, 2)
+        self.assertIn("conflicts", err)
+        self.assertEqual(gitcmd.status_entries(maker_folder), [], "the tree is clean")
+        self.assertEqual(gitcmd.commit_of(maker_folder, "task/refund"), writer)
+
+    def test_publish_allows_a_clean_sync_after_the_pass(self) -> None:
+        origin = self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        self.advance_origin(origin)
+        code, _, err = self.cli("job", "sync", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        pushed.assert_called_once()
+
+    def test_publish_is_refused_when_the_branch_moved_past_the_pass(self) -> None:
+        self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        # New writer work after the pass: the owner has not seen this commit.
+        gitcmd.switch_branch(maker_folder, "task/refund")
+        self.save_as_crew(maker_folder, "more.py")
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("moved past the commit the owner passed", err)
+        pushed.assert_not_called()
+
+    def test_publish_is_refused_when_the_pass_commit_is_not_an_ancestor(self) -> None:
+        self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        passed = self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        # A rewrite after the pass: the branch no longer contains the passed commit.
+        gitcmd.switch_branch(maker_folder, "task/refund")
+        gitcmd.run_git(maker_folder, "reset", "--hard", "main")
+        self.save_as_crew(maker_folder, "rewritten.py")
+        self.assertFalse(gitcmd.is_ancestor(maker_folder, passed, "task/refund"))
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("moved past the commit the owner passed", err)
+        pushed.assert_not_called()
+
+    def test_publish_refuses_an_appended_commit_when_the_base_ref_is_absent(self) -> None:
+        # The remote-tracking base was pruned, renamed, or never fetched. The pass
+        # binding must over-refuse, not fail open, on an appended writer commit.
+        self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        gitcmd.switch_branch(maker_folder, "task/refund")
+        self.save_as_crew(maker_folder, "more.py")
+        gitcmd.run_git(maker_folder, "update-ref", "-d", "refs/remotes/origin/main")
+        self.assertIsNone(gitcmd.commit_of(maker_folder, "origin/main"), "the ref is gone")
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("moved past the commit the owner passed", err)
+        pushed.assert_not_called()
 
     def test_a_stale_local_ref_does_not_hide_a_rewrite(self) -> None:
         origin = self.add_origin_at_head()
@@ -2325,7 +2546,14 @@ class CliTest(unittest.TestCase):
         store.save()
 
     def write_job(
-        self, job_id: str, branch: str, commit: str | None = None, held_ref: str | None = None
+        self,
+        job_id: str,
+        branch: str,
+        commit: str | None = None,
+        held_ref: str | None = None,
+        reviewer: str | None = None,
+        review_commit: str | None = None,
+        handed_over_at: str | None = None,
     ) -> None:
         store = StateStore(self.state)
         store.add_job(
@@ -2340,9 +2568,93 @@ class CliTest(unittest.TestCase):
                 agent="maker",
                 commit=commit,
                 held_ref=held_ref,
+                reviewer=reviewer,
+                review_commit=review_commit,
+                handed_over_at=handed_over_at,
             )
         )
         store.save()
+
+    def write_held_job(self, job_id: str, branch: str, moved: bool) -> tuple[str, str]:
+        """A branch holding a reviewed commit, optionally moved past it."""
+        repo = self.repo_path
+        gitcmd.switch_new_branch(repo, branch, "main")
+        (repo / f"{job_id}.txt").write_text("reviewed\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", f"{job_id}.txt")
+        gitcmd.run_git(repo, "commit", "-m", f"reviewed {job_id}")
+        checked = gitcmd.head_commit(repo, short=False) or ""
+        tip = checked
+        if moved:
+            (repo / f"{job_id}-more.txt").write_text("more\n", encoding="utf-8")
+            gitcmd.run_git(repo, "add", f"{job_id}-more.txt")
+            gitcmd.run_git(repo, "commit", "-m", f"moved {job_id}")
+            tip = gitcmd.head_commit(repo, short=False) or ""
+        self.write_job(
+            job_id,
+            branch=branch,
+            reviewer="verifier",
+            review_commit=checked,
+            handed_over_at="2026-10-01T00:00:00Z",
+        )
+        return checked, tip
+
+    def test_the_board_calls_a_moved_after_review_tip_needs_rereview(self) -> None:
+        checked, tip = self.write_held_job("j-0001", "task/stale", moved=True)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("needs re-review", owner)
+        self.assertNotIn("held for your review", owner)
+        self.assertIn(checked[:7], owner, "the checked commit is named")
+        self.assertIn(tip[:7], owner, "the current tip is named")
+
+    def test_the_board_keeps_held_for_review_when_the_tip_was_checked(self) -> None:
+        checked, tip = self.write_held_job("j-0001", "task/held", moved=False)
+        self.assertEqual(checked, tip)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("held for your review", owner)
+        self.assertNotIn("needs re-review", owner)
+
+    def test_job_list_calls_a_moved_after_review_tip_needs_rereview(self) -> None:
+        self.write_held_job("j-0001", "task/stale", moved=True)
+        code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("needs re-review", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+    def test_job_list_keeps_waiting_on_a_walkthrough_when_the_tip_was_checked(self) -> None:
+        self.write_held_job("j-0001", "task/held", moved=False)
+        code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on a walkthrough", out)
+        self.assertNotIn("needs re-review", out)
+
+    def test_job_list_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        # A read failure must not fall back to "waiting on a walkthrough": that is
+        # the stale-walk claim this state exists to prevent.
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("review unconfirmed", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+    def test_the_board_calls_an_unreadable_tip_review_unconfirmed(self) -> None:
+        self.write_held_job("j-0001", "task/hold", moved=False)
+        with mock.patch.object(gitcmd, "commit_of", return_value=None):
+            code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        owner = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("Filters")[0]
+        self.assertIn("review unconfirmed", owner)
+        self.assertNotIn("held for your review", owner)
 
     def test_the_board_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
@@ -2931,6 +3243,17 @@ class CliTest(unittest.TestCase):
         (other / "later.txt").write_text("x\n", encoding="utf-8")
         gitcmd.run_git(other, "add", "later.txt")
         gitcmd.run_git(other, "commit", "-m", "later")
+        gitcmd.run_git(other, "push", "origin", "main")
+
+    def advance_origin_editing(self, origin: Path, name: str, text: str) -> None:
+        """Advance origin/main by adding or editing a file, to force a conflict."""
+        other = self.root / "conflict-clone"
+        gitcmd.run_git(self.root, "clone", str(origin), str(other))
+        gitcmd.run_git(other, "config", "user.email", "test@example.com")
+        gitcmd.run_git(other, "config", "user.name", "Test")
+        (other / name).write_text(text, encoding="utf-8")
+        gitcmd.run_git(other, "add", name)
+        gitcmd.run_git(other, "commit", "-m", f"conflicting {name}")
         gitcmd.run_git(other, "push", "origin", "main")
 
     def rewrite_origin(self, origin: Path) -> None:

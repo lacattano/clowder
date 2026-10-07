@@ -378,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="leave the new pane beside this one instead of opening it as a new tab",
     )
+    j_hand.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="do not merge origin/<base> into the branch before the freeze",
+    )
     j_hand.add_argument("--force", action="store_true")
     j_hand.add_argument("--json", action="store_true")
     j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
@@ -419,6 +424,11 @@ def build_parser() -> argparse.ArgumentParser:
     j_word.add_argument("--by", required=True, metavar="NAME", help="who gave the merge word")
     j_word.add_argument("--json", action="store_true")
     j_word.set_defaults(handler=cmd_job_word, refreshes_board=True)
+
+    j_sync = job_parser("sync", "merge origin/<base> into the job branch, without rewriting it")
+    j_sync.add_argument("id")
+    j_sync.add_argument("--json", action="store_true")
+    j_sync.set_defaults(handler=cmd_job_sync, refreshes_board=True)
 
     j_publish = job_parser("publish", "push the job's branch, once the owner has passed it")
     j_publish.add_argument("id")
@@ -1499,6 +1509,91 @@ def cmd_job_close(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_job_branch(config: Config, store: StateStore, job: Job) -> bool:
+    """Merge origin/<base> into the job branch, under the crew identity.
+
+    A forward merge keeps every writer commit and the reviewed commit alive; a
+    rebase would rewrite them and throw away the owner's pass. Returns True when
+    it made a merge commit, False when the branch was already current. Raises
+    GitError on conflict, after aborting the merge so the tree is left clean.
+    """
+    repo = job.repo_path
+    if not gitcmd.has_remote(repo):
+        return False
+    gitcmd.fetch(repo)
+    remote_ref = f"origin/{job.base}"
+    if gitcmd.commit_of(repo, remote_ref) is None:
+        return False
+
+    worktree = job.worktree
+    if gitcmd.status_entries(worktree):
+        raise GitError(
+            f"{worktree} is not clean, so {remote_ref} cannot be merged in. "
+            f"{job.agent} must commit or stash first."
+        )
+
+    on_branch = gitcmd.current_branch(worktree) == job.branch
+    if not on_branch:
+        # A released space sits detached at the base. Put the branch back only for
+        # this merge, then restore the resting state, unless another open job owns
+        # the space now.
+        if not job.released_at:
+            raise GitError(
+                f"{worktree} is not on {job.branch}, so it cannot be synced there. "
+                f"Sync {job.id} in the writer's own space."
+            )
+        holder = next(
+            (
+                other
+                for other in store.open_jobs()
+                if other.id != job.id and normalise(other.worktree) == normalise(worktree)
+            ),
+            None,
+        )
+        if holder is not None:
+            raise StateError(
+                f"{holder.id} is open on {worktree}, so {job.id}'s branch cannot be "
+                "checked out there to sync."
+            )
+        gitcmd.switch_branch(worktree, job.branch)
+
+    before = gitcmd.commit_of(worktree, "HEAD")
+    message = f"Merge {remote_ref} into {job.branch}"
+    ok, conflicts = gitcmd.merge_branch(worktree, remote_ref, message, _crew_identity(config))
+    if not ok:
+        if not on_branch:
+            base_ref = gitcmd.resolve_base(repo, config.worktree_base)
+            gitcmd.detach_at(worktree, base_ref)
+        raise GitError(
+            f"merging {remote_ref} into {job.branch} conflicts in: "
+            f"{', '.join(conflicts) or 'unknown paths'}. The merge was aborted and "
+            f"the tree is clean. {job.agent} must resolve it by hand, then sync again."
+        )
+    changed = gitcmd.commit_of(worktree, "HEAD") != before
+    if not on_branch and job.released_at:
+        base_ref = gitcmd.resolve_base(repo, config.worktree_base)
+        gitcmd.detach_at(worktree, base_ref)
+    return changed
+
+
+def cmd_job_sync(args: argparse.Namespace) -> int:
+    """Merge origin/<base> into the job branch, without rewriting it."""
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    if not job.is_open:
+        raise StateError(f"{job.id} is closed, so there is nothing to sync.")
+    changed = _sync_job_branch(config, store, job)
+    tip = gitcmd.commit_of(job.worktree, job.branch)
+    if args.json:
+        _emit_json({"job": job.to_dict(), "synced": changed, "commit": tip})
+        return 0
+    if changed:
+        print(f"{job.id} synced: {job.branch} @ {(tip or '')[:7]}")
+    else:
+        print(f"{job.id} already current with origin/{job.base}")
+    return 0
+
+
 def cmd_job_handover(args: argparse.Namespace) -> int:
     """Give a reviewer the writer's saved code, pinned to one commit.
 
@@ -1526,6 +1621,16 @@ def cmd_job_handover(args: argparse.Namespace) -> int:
             f"nothing has been saved on {job.branch} yet, so there is nothing to "
             "hand over. A reviewer needs a save to look at."
         )
+    if not args.no_sync:
+        if pending:
+            print(
+                f"{PROGRAM}: note: not syncing {job.branch}: {writer} is not clean",
+                file=sys.stderr,
+            )
+        else:
+            # Bring the base in before the freeze, so the reviewer checks the code
+            # as it will be merged. A merge keeps every hash; a rebase would not.
+            _sync_job_branch(config, store, job)
     commit = gitcmd.head_commit(writer, short=False)
     if commit is None:
         raise GitError(f"cannot read a commit in {writer}")
@@ -1749,10 +1854,18 @@ def cmd_job_pass(args: argparse.Namespace) -> int:
         raise UsageError(
             "--shown and --answer are both required: what he saw, and what he said"
         )
+    if not job.review_commit:
+        raise StateError(
+            f"{job.id} has no reviewed commit, so the owner's pass cannot be bound to "
+            f"it. Hand the change over first: {PROGRAM} job handover {job.id}"
+        )
     job.pass_shown = shown
     job.pass_answer = answer
     job.pass_at = now_iso()
     job.pass_by = by
+    # Bind the pass to the commit the owner was shown. A forward base merge keeps
+    # it an ancestor of the branch; a new writer commit does not.
+    job.pass_commit = job.review_commit
     store.save()
 
     if args.json:
@@ -1802,6 +1915,37 @@ def _crew_identity(config: Config) -> gitcmd.Identity:
     return gitcmd.Identity(config.git_name, config.git_email)
 
 
+def _require_pass_commit(job: Job) -> None:
+    """The owner's pass is bound to a commit; the branch must not outrun it.
+
+    A forward base merge is the only legitimate move after a pass: it adds a merge
+    commit whose other parent is origin/<base>, and no writer content. A writer
+    commit after the pass, appended or rewritten, is content the owner has not
+    seen, and the pass is stale.
+    """
+    if not job.pass_commit:
+        return
+    tip = gitcmd.commit_of(job.worktree, job.branch)
+    if not tip or not gitcmd.is_ancestor(job.worktree, job.pass_commit, tip):
+        stale = True
+    else:
+        # Only the base coming in is allowed. When the remote-tracking base is
+        # absent (pruned, renamed, never fetched) nothing is subtracted, so an
+        # appended writer commit is still counted: over-refusing, never failing
+        # open.
+        remote_base = f"origin/{job.base}"
+        exclude = remote_base if gitcmd.commit_of(job.worktree, remote_base) else None
+        stray = gitcmd.writer_commits_since(job.worktree, job.pass_commit, tip, exclude)
+        stale = stray != 0
+    if not stale:
+        return
+    raise StateError(
+        f"{job.id} has moved past the commit the owner passed "
+        f"({job.pass_commit[:7]}). The new commits need a walkthrough and a fresh "
+        "pass before publish."
+    )
+
+
 def _publish_branch(job: Job, identity: gitcmd.Identity) -> None:
     """Push the branch. Tests replace this; nothing else may skip the gate.
 
@@ -1825,6 +1969,7 @@ def cmd_job_publish(args: argparse.Namespace) -> int:
     config, store = _context(args)
     job = store.get_job(args.id)
     _require_pass(job)
+    _require_pass_commit(job)
     _publish_branch(job, _crew_identity(config))
     job.published_at = now_iso()
     # The space may be released, so read the commit from the branch or the held
@@ -1871,7 +2016,7 @@ def cmd_job_list(args: argparse.Namespace) -> int:
         rows.append(
             [
                 _clip(job.name_in_words, 30),
-                job.state_in_words,
+                _job_state_word(job),
                 _clip(job.repo, 20),
                 _clip(job.branch, 28),
                 job.agent,
@@ -2468,6 +2613,41 @@ def _risk_memo_path(store: StateStore) -> Path:
     return store.path.parent / gitcmd.RISK_MEMO_FILENAME
 
 
+def _job_review_state(job: Job) -> tuple[str, str | None]:
+    """Where a held candidate's work is: held, moved, or unknown.
+
+    The branch tip is the job's current work; the held ref is what remains when the
+    branch is gone. "held" means a readable ref still points at the reviewed
+    commit, "moved" means a readable ref points elsewhere, and "unknown" means no
+    ref could be read - which must never be reported as held.
+    """
+    resolved = False
+    for ref in (job.branch, job.held_ref):
+        if not ref:
+            continue
+        tip = gitcmd.commit_of(job.repo_path, ref)
+        if tip is None:
+            continue
+        resolved = True
+        if tip != job.review_commit:
+            return "moved", tip
+    if resolved:
+        return "held", job.review_commit
+    return "unknown", None
+
+
+def _job_state_word(job: Job) -> str:
+    """The job's state word, with a re-review state when the work moved past review.
+
+    Only a held candidate is looked up in git: every other job keeps its derived
+    state with no process spent on a question that cannot change it.
+    """
+    if job.is_open and job.reviewer and job.review_commit and not job.has_pass:
+        state, tip = _job_review_state(job)
+        return job.state_in_words_at(tip, unreadable=(state == "unknown"))
+    return job.state_in_words
+
+
 def _job_moved_past(task: Task, job: Job | None) -> bool:
     """Has the task's job branch or held ref moved past the step's commit?
 
@@ -2497,6 +2677,20 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     tasks = store.all()
     jobs = store.all_jobs()
     jobs_by_id = {job.id: job for job in jobs}
+    # A held change whose branch or held ref has moved past the reviewed commit is
+    # not ready for the owner's walk: the reviewer checked an older commit. Record
+    # the current tip so the board asks for a re-review, with both commits named.
+    # A ref that cannot be read is not called held; it is called unconfirmed.
+    rereview: dict[str, str] = {}
+    review_unconfirmed: set[str] = set()
+    for job in jobs:
+        if not (job.is_open and job.reviewer and job.review_commit and not job.has_pass):
+            continue
+        state, tip = _job_review_state(job)
+        if state == "moved" and tip:
+            rereview[job.id] = tip
+        elif state == "unknown":
+            review_unconfirmed.add(job.id)
     # A commit on no branch is only at risk when its change is on no branch either.
     # A rebase rewrites the hash but keeps the patch-id, so the old commit is
     # superseded, not lost. When the change cannot be compared, say so instead of
@@ -2534,6 +2728,8 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         front_door_name=config.front_door_name,
         stranded=stranded,
         risk_notes=risk_notes,
+        rereview=rereview,
+        review_unconfirmed=review_unconfirmed,
     )
 
 

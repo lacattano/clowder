@@ -168,6 +168,10 @@ class Job:
     pass_answer: str | None = None
     pass_at: str | None = None
     pass_by: str | None = None
+    # The commit the owner's pass is bound to: the reviewed commit at the time of
+    # the pass. A forward base merge keeps it an ancestor of the branch; a new
+    # writer commit breaks it, so the pass is stale and the new work is re-walked.
+    pass_commit: str | None = None
     merge_word: str | None = None
     merge_word_at: str | None = None
     merge_word_by: str | None = None
@@ -214,6 +218,40 @@ class Job:
         if self.reviewer and (self.review_commit or self.handed_over_at):
             return "waiting on a walkthrough"
         return "in progress"
+
+    def needs_rereview(self, tip: str | None) -> bool:
+        """Has the job's work moved since the reviewer checked it?
+
+        `tip` is the commit the job's branch or held ref points at now. When it is
+        not the recorded review commit, the reviewer checked an older commit, so
+        the owner must not be invited to walk the stale one.
+        """
+        return bool(
+            self.is_open
+            and self.reviewer
+            and self.review_commit
+            and not self.has_pass
+            and tip
+            and tip != self.review_commit
+        )
+
+    def state_in_words_at(self, tip: str | None, *, unreadable: bool = False) -> str:
+        """The state word, with a re-review state when the tip is not the check.
+
+        `unreadable` means the tip could not be read at all, so the reviewed commit
+        cannot be confirmed as the current one. That must not read as "held".
+        """
+        if self.needs_rereview(tip):
+            return "needs re-review"
+        if (
+            unreadable
+            and self.is_open
+            and self.reviewer
+            and self.review_commit
+            and not self.has_pass
+        ):
+            return "review unconfirmed"
+        return self.state_in_words
 
     @property
     def has_pass(self) -> bool:

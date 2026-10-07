@@ -186,6 +186,11 @@ clowder dispatch myrepo-verifier myrepo "scout: run the unit tests and report" -
 The first command fills the verifier's copy with the writer's files at that one commit, with no
 branch name on it. The writer keeps its branch and can carry on.
 
+- `job handover` merges `origin/<base>` into the branch first, so the reviewer checks the change
+  as it will be merged. It never rebases: a rebase would rewrite the writer's commits and the
+  owner's reviewed commit. A conflict aborts the merge, names the files, and stops; the writer
+  resolves it. `--no-sync` skips the merge when there is a reason to, and `job sync <job-id>`
+  does the same merge later.
 - Unsaved work is refused, with the file names. A reviewer checks a save, not a folder.
 - A job with no commits of its own yet has nothing to hand over, and that is refused too.
 - When the writer's space has moved on to a later job, `job handover` cannot reach the branch.
