@@ -1357,13 +1357,36 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_a_pass_records_what_was_shown_and_when(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
         self.assertEqual(job["pass_shown"], "the diff of task/refund")
         self.assertEqual(job["pass_answer"], "yes, ship it")
         self.assertEqual(job["pass_by"], "lacattano")
         self.assertTrue(job["pass_at"])
+
+    def test_a_pass_is_refused_without_a_reviewed_commit(self) -> None:
+        # The pass is bound to the reviewed commit; without one there is nothing to
+        # bind, so the pass is refused rather than silently unbinding later.
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job",
+            "pass",
+            job_id,
+            "--shown",
+            "the diff",
+            "--answer",
+            "yes",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("no reviewed commit", err)
+        job = json.loads(self.state.read_text(encoding="utf-8"))["jobs"][job_id]
+        self.assertIsNone(job["pass_at"], "nothing was recorded")
 
     def test_a_worker_cannot_record_the_owner_s_pass(self) -> None:
         job_id, _ = self.open_a_job()
@@ -1417,7 +1440,9 @@ class CliTest(unittest.TestCase):
         self.assertIn(f"job pass {job_id}", err)
 
     def test_publish_proceeds_once_the_pass_is_recorded(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         with mock.patch.object(cli, "_publish_branch") as publish:
             code, out, err = self.cli("job", "publish", job_id, env=self.state_env())
@@ -1428,7 +1453,9 @@ class CliTest(unittest.TestCase):
         self.assertTrue(job["published_at"])
 
     def test_merge_is_refused_without_the_owner_s_word(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
         self.assertEqual(code, 1)
@@ -1468,7 +1495,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(job["status"], "open", "a refused close changes nothing")
 
     def test_job_list_shows_the_two_gates(self) -> None:
-        job_id, _ = self.open_a_job()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
         self.owner_pass(job_id)
         code, out, err = self.cli("job", "list", env=self.state_env())
         self.assertEqual(code, 0, err)
@@ -2107,6 +2136,24 @@ class CliTest(unittest.TestCase):
         gitcmd.run_git(maker_folder, "reset", "--hard", "main")
         self.save_as_crew(maker_folder, "rewritten.py")
         self.assertFalse(gitcmd.is_ancestor(maker_folder, passed, "task/refund"))
+        with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("moved past the commit the owner passed", err)
+        pushed.assert_not_called()
+
+    def test_publish_refuses_an_appended_commit_when_the_base_ref_is_absent(self) -> None:
+        # The remote-tracking base was pruned, renamed, or never fetched. The pass
+        # binding must over-refuse, not fail open, on an appended writer commit.
+        self.add_origin_at_head()
+        job_id, maker_folder = self.open_a_job()
+        self.save_as_crew(maker_folder)
+        self.handover(job_id)
+        self.owner_pass(job_id)
+        gitcmd.switch_branch(maker_folder, "task/refund")
+        self.save_as_crew(maker_folder, "more.py")
+        gitcmd.run_git(maker_folder, "update-ref", "-d", "refs/remotes/origin/main")
+        self.assertIsNone(gitcmd.commit_of(maker_folder, "origin/main"), "the ref is gone")
         with mock.patch.object(cli.gitcmd, "push_branch") as pushed:
             code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
         self.assertEqual(code, 1)

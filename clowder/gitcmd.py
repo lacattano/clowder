@@ -230,22 +230,21 @@ def count_commits(path: str | Path, rev_range: str) -> int:
         return 0
 
 
-def writer_commits_since(path: str | Path, passed: str, tip: str, exclude: str) -> int | None:
+def writer_commits_since(
+    path: str | Path, passed: str, tip: str, exclude: str | None = None
+) -> int | None:
     """Commits after `passed` that are writer content, not the base coming in.
 
     `passed..tip` minus the merge commits and minus everything reachable from
     `exclude`: a forward base merge leaves 0, and any writer commit - appended or
-    rewritten - leaves more. None when git cannot tell.
+    rewritten - leaves more. When `exclude` is None nothing is subtracted, so a
+    missing remote-tracking base over-refuses rather than failing open. None when
+    git cannot tell.
     """
-    answer = try_git(
-        path,
-        "rev-list",
-        "--count",
-        "--no-merges",
-        f"{passed}..{tip}",
-        "--not",
-        exclude,
-    )
+    args = ["rev-list", "--count", "--no-merges", f"{passed}..{tip}"]
+    if exclude:
+        args += ["--not", exclude]
+    answer = try_git(path, *args)
     if answer is None:
         return None
     try:

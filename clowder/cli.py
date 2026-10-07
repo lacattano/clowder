@@ -1854,6 +1854,11 @@ def cmd_job_pass(args: argparse.Namespace) -> int:
         raise UsageError(
             "--shown and --answer are both required: what he saw, and what he said"
         )
+    if not job.review_commit:
+        raise StateError(
+            f"{job.id} has no reviewed commit, so the owner's pass cannot be bound to "
+            f"it. Hand the change over first: {PROGRAM} job handover {job.id}"
+        )
     job.pass_shown = shown
     job.pass_answer = answer
     job.pass_at = now_iso()
@@ -1924,14 +1929,13 @@ def _require_pass_commit(job: Job) -> None:
     if not tip or not gitcmd.is_ancestor(job.worktree, job.pass_commit, tip):
         stale = True
     else:
+        # Only the base coming in is allowed. When the remote-tracking base is
+        # absent (pruned, renamed, never fetched) nothing is subtracted, so an
+        # appended writer commit is still counted: over-refusing, never failing
+        # open.
         remote_base = f"origin/{job.base}"
-        # Only the base coming in is allowed. If the remote-tracking base is not
-        # here, the branch never merged a base, so the ancestry test is enough.
-        stray = (
-            gitcmd.writer_commits_since(job.worktree, job.pass_commit, tip, remote_base)
-            if gitcmd.commit_of(job.worktree, remote_base)
-            else 0
-        )
+        exclude = remote_base if gitcmd.commit_of(job.worktree, remote_base) else None
+        stray = gitcmd.writer_commits_since(job.worktree, job.pass_commit, tip, exclude)
         stale = stray != 0
     if not stale:
         return
