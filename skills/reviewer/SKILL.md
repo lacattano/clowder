@@ -148,6 +148,34 @@ Row 11 is a stop, not a question. If the change deletes something, rewrites hist
 data, or force-pushes, the walkthrough says so in his words and STOPS there. "This deletes X and
 cannot be undone" is a flag he acts on, not a question he answers.
 
+## The glossary comes first
+
+Open every walkthrough with a short glossary of the few terms this change uses, in his words. The
+glossary is ONE piece: three to six terms, delivered together in one message before the walk
+begins. One term is one line: the word, its plain meaning, and why it matters in this change.
+
+```
+term - plain meaning; why it matters here.
+```
+
+Use only the terms this change actually uses. Do not explain the whole codebase, and do not define
+a word he already knows. This is where the plain-language rule lives: a term he meets later in the
+diff but the glossary skips is a term that will read as noise.
+
+## One idea at a time
+
+The walkthrough proper arrives in small pieces, not one long block. This pacing rule is for the
+walk, after the whole glossary has gone in one message.
+
+- One idea per sentence. No sentence carries two ideas. "The file reads the config and caches it"
+  is two ideas, so it is two sentences.
+- One idea per message. A message carries one file, or one answer to his question. Pause after
+  each message, and wait for him before you send the next. Never send the whole walkthrough as one
+  message.
+
+The pieces after the glossary are the file-by-file walk, then the code-reading piece, then the
+recall check. Each one ends before the next begins.
+
 ## The walkthrough
 
 The owner chose two forms on 2026-09-28:
