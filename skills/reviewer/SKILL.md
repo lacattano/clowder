@@ -150,9 +150,9 @@ cannot be undone" is a flag he acts on, not a question he answers.
 
 ## The glossary comes first
 
-Open every walkthrough with a short glossary of the few terms this change uses, in his words. It
-comes before the first piece. Three to six terms is usually enough, and one term is one line: the
-word, its plain meaning, and why it matters in this change.
+Open every walkthrough with a short glossary of the few terms this change uses, in his words. The
+glossary is ONE piece: three to six terms, delivered together in one message before the walk
+begins. One term is one line: the word, its plain meaning, and why it matters in this change.
 
 ```
 term - plain meaning; why it matters here.
@@ -164,15 +164,16 @@ diff but the glossary skips is a term that will read as noise.
 
 ## One idea at a time
 
-The walkthrough arrives in small pieces, not one long block.
+The walkthrough proper arrives in small pieces, not one long block. This pacing rule is for the
+walk, after the whole glossary has gone in one message.
 
 - One idea per sentence. No sentence carries two ideas. "The file reads the config and caches it"
   is two ideas, so it is two sentences.
-- One piece per message. A piece is one glossary line, one file, or one answer to his question.
-  Pause after each piece, and wait for him before you send the next. Never send the whole
-  walkthrough as one message.
+- One idea per message. A message carries one file, or one answer to his question. Pause after
+  each message, and wait for him before you send the next. Never send the whole walkthrough as one
+  message.
 
-The pieces are the glossary, then the file-by-file walk, then the code-reading piece, then the
+The pieces after the glossary are the file-by-file walk, then the code-reading piece, then the
 recall check. Each one ends before the next begins.
 
 ## The walkthrough

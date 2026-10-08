@@ -281,22 +281,27 @@ class SkillTest(unittest.TestCase):
         # q-0165 and q-0183.
         reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
-        # The glossary opens the walkthrough, before the first piece.
+        # The glossary is ONE piece: the terms together, in one message, before the
+        # walk. The reviewer (t-0537) found the old wording read as one line per
+        # message, which is slower than the owner intended.
         self.assertIn("The glossary comes first", text)
         self.assertIn("Open every walkthrough with a short glossary", text)
         self.assertIn("the few terms this change uses, in his words", text)
-        self.assertIn("before the first piece", text)
-        self.assertIn("one term is one line", text, "each term is defined on its own line")
+        self.assertIn("The glossary is ONE piece", text)
+        self.assertIn("delivered together in one message before the walk begins", text)
+        self.assertIn("One term is one line", text, "each term is defined on its own line")
         self.assertIn("why it matters in this change", text)
         self.assertIn("only the terms this change actually uses", text)
         self.assertIn("do not define a word he already knows", text)
-        # One idea at a time, one piece per message, a pause after each.
+        # One idea at a time, one idea per message, a pause after each. The pacing
+        # is for the walk proper, after the whole glossary has gone.
         self.assertIn("One idea at a time", text)
-        self.assertIn("arrives in small pieces, not one long block", text)
+        self.assertIn("walkthrough proper arrives in small pieces, not one long block", text)
+        self.assertIn("after the whole glossary has gone in one message", text)
         self.assertIn("One idea per sentence", text)
         self.assertIn("No sentence carries two ideas", text)
-        self.assertIn("One piece per message", text)
-        self.assertIn("Pause after each piece", text)
+        self.assertIn("One idea per message", text)
+        self.assertIn("Pause after each message", text)
         self.assertIn("Never send the whole walkthrough as one message", text)
         # The order: glossary, then the file-by-file walk, and the walkthrough
         # section still follows both rules.
