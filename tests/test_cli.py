@@ -3350,37 +3350,42 @@ class CliTest(unittest.TestCase):
         gitcmd.run_git(other, "commit", "-m", "rewritten root")
         gitcmd.run_git(other, "push", "--force", "origin", "rewritten:main")
 
-    def test_job_open_refuses_a_base_that_is_behind_its_remote(self) -> None:
+    def test_a_stale_local_base_does_not_block_a_job(self) -> None:
+        # The main checkout is one commit behind origin/main. The job forks from
+        # origin/main, so the stale local branch does not block it, and the branch
+        # does not carry old code.
         self.add_origin()
         self.seed_mux([])
-        code, _, err = self.cli(
-            "job",
-            "open",
-            "myrepo",
-            "--label",
-            "refund",
-            "--role",
-            "maker",
-            env=self.state_env(),
-        )
-        self.assertEqual(code, 2)
-        self.assertIn("behind", err)
-        self.assertIn("pull --ff-only", err)
+        code, out, err = self.open_job()
+        self.assertEqual(code, 0, err)
+        self.assertIn("open", out)
 
-    def test_job_open_with_force_ignores_a_stale_base(self) -> None:
-        self.add_origin()
-        self.seed_mux([])
-        code, out, err = self.cli(
-            "job",
-            "open",
-            "myrepo",
-            "--label",
-            "refund",
-            "--role",
-            "maker",
-            "--force",
-            env=self.state_env(),
+        worktree = self.repo_path / ".worktrees" / "myrepo-maker"
+        origin_tip = gitcmd.commit_of(self.repo_path, "origin/main", short=False)
+        local_tip = gitcmd.commit_of(self.repo_path, "main", short=False)
+        self.assertNotEqual(local_tip, origin_tip, "the local base really is stale")
+        self.assertEqual(
+            gitcmd.commit_of(worktree, "task/refund", short=False),
+            origin_tip,
+            "the branch forks from origin/main, not the stale local main",
         )
+        job = next(iter(json.loads(self.state.read_text(encoding="utf-8"))["jobs"].values()))
+        self.assertEqual(job["base"], "main")
+        self.assertEqual(job["base_commit"], origin_tip, "the recorded base is origin/main")
+
+    def test_job_open_refuses_a_rewritten_base(self) -> None:
+        origin = self.add_origin_at_head()
+        self.rewrite_origin(origin)
+        self.seed_mux([])
+        code, _, err = self.open_job()
+        self.assertEqual(code, 2)
+        self.assertIn("rewritten", err)
+
+    def test_job_open_with_force_ignores_a_rewritten_base(self) -> None:
+        origin = self.add_origin_at_head()
+        self.rewrite_origin(origin)
+        self.seed_mux([])
+        code, out, err = self.open_job("--force")
         self.assertEqual(code, 0, err)
         self.assertIn("open", out)
 

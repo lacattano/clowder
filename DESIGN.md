@@ -187,7 +187,7 @@ Two things fall out of "free means detached":
 - Nothing has to be handed back, and no branch is held hostage. Two spaces can sit on the base at
   once, which the per-agent-branch model could not do.
 - Taking a space gives a fresh base, because a free space is re-pointed at the base when work
-  starts. A job cannot accidentally begin from a stale checkout.
+  starts, and the job forks from `origin/<base>`. A stale local branch is never carried in.
 
 What a switch does **not** do is clean up. Untracked files survive it, which is the point (they
 are the install) and also the risk (they can be yesterday's artifacts). Four rules keep it shut:
@@ -460,10 +460,11 @@ keystrokes - and each now does its own work and checks it:
 - `clowder job pin <job> --to <reviewer>` pins the job's recorded save into the reviewer's copy
   and proves the copy holds that commit. It exists for when the writer's space has moved on to a
   later job, so `job handover` can no longer read the commit from the branch.
-- `clowder job open` fetches before it resolves a base, and refuses a base that is behind its
-  remote, naming the count and the pull. `clowder checkouts` prints one line per checkout so a
-  stale one is visible without anyone running git by hand. Without this the front door was the
-  thing that remembered to pull.
+- `clowder job open` fetches, then forks the new branch from `origin/<base>`, so a stale local
+  branch neither blocks nor contaminates a job. It refuses only a base whose own history was
+  rewritten, because then the local branch and the remote disagree about what the base is.
+  `clowder checkouts` prints one line per checkout so a stale one is visible without anyone
+  running git by hand.
 - `clowder state repair --drop-unknown FIELD --backup PATH` removes a field no copy knows from
   every record that carries it. It refuses without a free backup path, writes the backup first,
   names what it removed, and appends one line to `state.json.audit`. The audit format is shared
@@ -732,9 +733,10 @@ conversation; none is fixed by the queue work.
   read fixed it. Later two `report` runs at once left the file as JSON plus a fragment. Now a
   lock serializes saves, a unique temp per writer stops the torn file, and a stale save is
   refused rather than written.
-- **A stale base.** A job's base comes from the local branch, which is behind after a merge
-  elsewhere. Seen: both merges today left local main behind until the front door pulled. Fix:
-  fetch before resolving a base, and refuse a base that is behind its remote.
+- **A stale base.** A job's base came from the local branch, which is behind after a merge
+  elsewhere, so a stale checkout blocked every new job in the repo even though each agent has
+  its own worktree. Seen: the product main was 7 behind, so no product job could open. Fix:
+  fetch, then fork the branch from the remote ref `origin/<base>`; refuse only a rewritten base.
 - **No landed state.** A merged branch still reads as merely closed, so the board cannot show
   what has actually landed. Seen: after today's two merges. Fix: a landed state set when the
   branch's commit is reachable from the base, and shown on the board.
