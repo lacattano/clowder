@@ -3373,6 +3373,35 @@ class CliTest(unittest.TestCase):
         self.assertEqual(job["base"], "main")
         self.assertEqual(job["base_commit"], origin_tip, "the recorded base is origin/main")
 
+    def test_a_failed_fetch_still_forks_from_origin(self) -> None:
+        # The reviewer (t-0544) found that a failed fetch skipped the origin fork
+        # and fell back to the stale local base. `origin/main` is used whenever it
+        # exists locally, with a warning that it may itself be stale.
+        self.add_origin()
+        # Refresh origin/main once, so it is ahead of the stale local main.
+        gitcmd.fetch(self.repo_path)
+        origin_tip = gitcmd.commit_of(self.repo_path, "origin/main", short=False)
+        local_tip = gitcmd.commit_of(self.repo_path, "main", short=False)
+        self.assertNotEqual(local_tip, origin_tip, "the local base really is stale")
+        # The remote is now unreachable, so the fetch inside `job open` fails.
+        gitcmd.run_git(
+            self.repo_path, "remote", "set-url", "origin", str(self.root / "gone.git")
+        )
+        self.seed_mux([])
+        code, out, err = self.open_job()
+        self.assertEqual(code, 0, err)
+        worktree = self.repo_path / ".worktrees" / "myrepo-maker"
+        self.assertEqual(
+            gitcmd.commit_of(worktree, "task/refund", short=False),
+            origin_tip,
+            "the failed fetch did not fall back to the stale local base",
+        )
+        job = next(iter(json.loads(self.state.read_text(encoding="utf-8"))["jobs"].values()))
+        self.assertEqual(job["base_commit"], origin_tip)
+        # The base could not be refreshed, so the reader is told it may be stale.
+        self.assertIn("could not fetch", err)
+        self.assertIn("may be stale", err)
+
     def test_job_open_refuses_a_rewritten_base(self) -> None:
         origin = self.add_origin_at_head()
         self.rewrite_origin(origin)

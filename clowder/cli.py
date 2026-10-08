@@ -1357,22 +1357,26 @@ def cmd_job_open(args: argparse.Namespace) -> int:
             "--force."
         )
 
+    fetched = False
     try:
         fetched = gitcmd.fetch(repo_path)
     except GitError as exc:
-        fetched = False
         print(f"{PROGRAM}: warning: could not fetch {repo_path}: {exc}", file=sys.stderr)
     base_ref = gitcmd.resolve_base(repo_path, args.base or config.worktree_base)
-    # Fork from the fetched remote ref, not the main checkout's local branch. The
+    # Fork from the published base, not the main checkout's local branch. The
     # local branch is often stale, and a job cut from it would carry old code - but
     # refusing every job until that one shared checkout is pulled blocks the whole
-    # repo, even though each agent has its own worktree. `origin/<base>` is current
-    # by definition after the fetch, so the local branch's staleness does not
-    # matter. The one refusal left is a base that was rewritten, because then the
-    # two histories disagree about what the base is.
+    # repo, even though each agent has its own worktree.
+    #
+    # Use the local remote-tracking ref whenever it exists, even after a failed
+    # fetch: it is the last known published base, and the local branch can be older
+    # still. A failed fetch means only that this ref may itself be stale, so it is a
+    # warning. The base is refused only when the two histories disagree (a rewritten
+    # base, or local commits that were never published), because forking from the
+    # remote would then drop the local side.
     fork_from = base_ref
     remote_ref = f"origin/{base_ref}"
-    if fetched and gitcmd.commit_of(repo_path, remote_ref) is not None:
+    if gitcmd.commit_of(repo_path, remote_ref) is not None:
         if not args.force and not gitcmd.is_ancestor(repo_path, base_ref, remote_ref):
             raise GitError(
                 f"{remote_ref} does not contain {base_ref}: the base branch was "
@@ -1382,6 +1386,12 @@ def cmd_job_open(args: argparse.Namespace) -> int:
                 "again. Or pass --force if you know better."
             )
         fork_from = remote_ref
+        if not fetched:
+            print(
+                f"{PROGRAM}: warning: using {remote_ref} as the base, and it could "
+                "not be refreshed, so it may be stale",
+                file=sys.stderr,
+            )
     label = args.label.strip()
     branch = args.branch or f"{config.job_branch_prefix}{sanitise(label)}"
 

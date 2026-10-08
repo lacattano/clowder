@@ -461,7 +461,8 @@ keystrokes - and each now does its own work and checks it:
   and proves the copy holds that commit. It exists for when the writer's space has moved on to a
   later job, so `job handover` can no longer read the commit from the branch.
 - `clowder job open` fetches, then forks the new branch from `origin/<base>`, so a stale local
-  branch neither blocks nor contaminates a job. It refuses only a base whose own history was
+  branch neither blocks nor contaminates a job. It uses that ref whenever it exists, even after a
+  failed fetch, and warns that it may be stale. It refuses only a base whose own history was
   rewritten, because then the local branch and the remote disagree about what the base is.
   `clowder checkouts` prints one line per checkout so a stale one is visible without anyone
   running git by hand.
