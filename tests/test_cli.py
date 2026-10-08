@@ -2953,7 +2953,14 @@ class CliTest(unittest.TestCase):
 
     def test_queue_drop_of_an_unknown_item_refuses(self) -> None:
         code, _, err = self.cli(
-            "queue", "drop", "q-9999", "--why", "already done", env=self.fake_env()
+            "queue",
+            "drop",
+            "q-9999",
+            "--why",
+            "already done",
+            "--by",
+            "topcat",
+            env=self.fake_env(),
         )
         self.assertEqual(code, 1)
         self.assertIn("q-9999", err)
@@ -2980,14 +2987,15 @@ class CliTest(unittest.TestCase):
         self.assertIn("already merged under PR #27", history)
         self.assertIn("topcat", history)
 
-    def test_queue_drop_without_a_by_names_the_front_door_as_unknown(self) -> None:
+    def test_queue_drop_refuses_without_a_by(self) -> None:
+        # The owner's decision at t-0525: there is no guest, so there is always a
+        # person or agent to attribute the drop to. "unknown" is not an answer.
         self.queue_add("--agent", "maker")
         code, _, err = self.cli("queue", "drop", "q-0001", "--why", "done", env=self.fake_env())
-        self.assertEqual(code, 0, err)
-        line = json.loads(
-            (self.root / "state.json.audit").read_text(encoding="utf-8").splitlines()[-1]
-        )
-        self.assertEqual(line["by"], "unknown")
+        self.assertEqual(code, 1)
+        self.assertIn("--by", err)
+        self.assertIn("q-0001", self.load_state()["queued"], "the item stays put")
+        self.assertFalse((self.root / "state.json.audit").exists(), "no line is written")
 
     def test_queue_send_dispatches_and_removes_the_item(self) -> None:
         self.queue_scout("--agent", "maker")

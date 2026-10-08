@@ -484,7 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
     q_drop.add_argument("id")
     q_drop.add_argument("--why", metavar="TEXT", help="why it is dropped (required)")
     q_drop.add_argument(
-        "--by", metavar="NAME", help="who is dropping it (goes in the audit line)"
+        "--by", metavar="NAME", help="who is dropping it (required; goes in the audit line)"
     )
     q_drop.add_argument("--json", action="store_true")
     q_drop.set_defaults(handler=cmd_queue_drop, refreshes_board=True)
@@ -2102,21 +2102,26 @@ def cmd_queue_list(args: argparse.Namespace) -> int:
 
 
 def cmd_queue_drop(args: argparse.Namespace) -> int:
-    """Drop a queued item, with a reason that stays on the record.
+    """Drop a queued item, with a reason and a name that stay on the record.
 
     The queue had add, list and send, so an item found already done could not
     leave it - the only way out was editing the state file by hand, which left no
     trace. This removes the item and appends one audit line: what was dropped, why,
     when, and who. The line is written before the item leaves, so a drop that
     cannot be recorded does not happen.
+
+    The reason and the name are both required. There is no guest, so there is
+    always a person or an agent to attribute the drop to; "unknown" is not an
+    answer. The owner's decision at t-0525.
     """
-    config, store = _context(args)
+    _, store = _context(args)
     why = (args.why or "").strip()
     if not why:
         raise UsageError("--why is required: say why the item is being dropped")
+    who = (args.by or "").strip()
+    if not who:
+        raise UsageError("--by is required: name who is dropping the item")
     item = store.get_queued(args.id)
-
-    who = (args.by or config.front_door_name or "unknown").strip()
     at = now_iso()
     audit_file = audit.append_audit(
         store.path,
