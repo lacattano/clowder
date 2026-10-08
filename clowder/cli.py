@@ -1357,19 +1357,41 @@ def cmd_job_open(args: argparse.Namespace) -> int:
             "--force."
         )
 
+    fetched = False
     try:
-        gitcmd.fetch(repo_path)
+        fetched = gitcmd.fetch(repo_path)
     except GitError as exc:
         print(f"{PROGRAM}: warning: could not fetch {repo_path}: {exc}", file=sys.stderr)
     base_ref = gitcmd.resolve_base(repo_path, args.base or config.worktree_base)
-    behind = gitcmd.branch_behind(repo_path, base_ref)
-    if behind and not args.force:
-        raise GitError(
-            f"{base_ref} is {behind} commit(s) behind origin/{base_ref}. A job from a "
-            "stale base carries old code, and its report would be about code that is "
-            f'not current. Pull first: git -C "{repo_path}" pull --ff-only, then open '
-            "the job again. Or pass --force if you know better."
-        )
+    # Fork from the published base, not the main checkout's local branch. The
+    # local branch is often stale, and a job cut from it would carry old code - but
+    # refusing every job until that one shared checkout is pulled blocks the whole
+    # repo, even though each agent has its own worktree.
+    #
+    # Use the local remote-tracking ref whenever it exists, even after a failed
+    # fetch: it is the last known published base, and the local branch can be older
+    # still. A failed fetch means only that this ref may itself be stale, so it is a
+    # warning. The base is refused only when the two histories disagree (a rewritten
+    # base, or local commits that were never published), because forking from the
+    # remote would then drop the local side.
+    fork_from = base_ref
+    remote_ref = f"origin/{base_ref}"
+    if gitcmd.commit_of(repo_path, remote_ref) is not None:
+        if not args.force and not gitcmd.is_ancestor(repo_path, base_ref, remote_ref):
+            raise GitError(
+                f"{remote_ref} does not contain {base_ref}: the base branch was "
+                f"rewritten, or {base_ref} has local commits that were never "
+                "published. A job forks from the published base, so the two must "
+                f"agree first. Reconcile {base_ref} by hand, then open the job "
+                "again. Or pass --force if you know better."
+            )
+        fork_from = remote_ref
+        if not fetched:
+            print(
+                f"{PROGRAM}: warning: using {remote_ref} as the base, and it could "
+                "not be refreshed, so it may be stale",
+                file=sys.stderr,
+            )
     label = args.label.strip()
     branch = args.branch or f"{config.job_branch_prefix}{sanitise(label)}"
 
@@ -1411,7 +1433,7 @@ def cmd_job_open(args: argparse.Namespace) -> int:
     elif gitcmd.branch_exists(worktree, branch):
         gitcmd.switch_branch(worktree, branch)
     else:
-        gitcmd.switch_new_branch(worktree, branch, base_ref)
+        gitcmd.switch_new_branch(worktree, branch, fork_from)
 
     job = Job(
         id=store.next_job_id(),
@@ -1422,8 +1444,10 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         branch=branch,
         base=base_ref,
         # The true fork point. For an existing branch that is not the base tip:
-        # `merge-base` finds where the branch actually left the base.
-        base_commit=gitcmd.merge_base(worktree, base_ref, branch),
+        # `merge-base` finds where the branch actually left the base. It is
+        # measured against the ref the branch forked from, so a stale local base
+        # does not make the record point at old code.
+        base_commit=gitcmd.merge_base(worktree, fork_from, branch),
         agent=agent.name,
         commit=gitcmd.head_commit(worktree),
         # The change in the owner's words. Title falls back to the label, which is
