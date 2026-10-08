@@ -274,6 +274,44 @@ class SkillTest(unittest.TestCase):
                 step, front, f"the walkthrough step is still in the front-door skill: {step}"
             )
 
+    def test_the_reviewer_skill_opens_with_a_glossary_and_paces_one_idea(self) -> None:
+        # The owner's feedback after the j-0107 walkthrough (t-0523): he wanted more
+        # context going in, and one idea at a time, so his questions did not lead to
+        # more questions. The glossary and the pacing carry the intent of q-0157,
+        # q-0165 and q-0183.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        # The glossary opens the walkthrough, before the first piece.
+        self.assertIn("The glossary comes first", text)
+        self.assertIn("Open every walkthrough with a short glossary", text)
+        self.assertIn("the few terms this change uses, in his words", text)
+        self.assertIn("before the first piece", text)
+        self.assertIn("one term is one line", text, "each term is defined on its own line")
+        self.assertIn("why it matters in this change", text)
+        self.assertIn("only the terms this change actually uses", text)
+        self.assertIn("do not define a word he already knows", text)
+        # One idea at a time, one piece per message, a pause after each.
+        self.assertIn("One idea at a time", text)
+        self.assertIn("arrives in small pieces, not one long block", text)
+        self.assertIn("One idea per sentence", text)
+        self.assertIn("No sentence carries two ideas", text)
+        self.assertIn("One piece per message", text)
+        self.assertIn("Pause after each piece", text)
+        self.assertIn("Never send the whole walkthrough as one message", text)
+        # The order: glossary, then the file-by-file walk, and the walkthrough
+        # section still follows both rules.
+        low = text.lower()
+        self.assertLess(
+            low.index("the glossary comes first"),
+            low.index("one idea at a time"),
+            "the glossary comes before the pacing rule",
+        )
+        self.assertLess(
+            low.index("one idea at a time"),
+            low.index("## the walkthrough"),
+            "both rules come before the walkthrough steps",
+        )
+
     def test_the_reviewer_skill_requires_the_interview_card(self) -> None:
         # A walkthrough report without the card leaves the owner with nothing he
         # can say in an interview, so the skill must require it and name its lines.
