@@ -44,3 +44,28 @@ def read_audit(state_path: str | Path) -> list[dict[str, object]]:
             raise ValueError(f"{path}:{number}: audit line is not an object")
         rows.append(payload)
     return rows
+
+
+def read_actions(state_path: str | Path, action: str) -> list[dict[str, object]]:
+    """Every line for one action, oldest first. For display, so it never raises.
+
+    `read_audit` refuses a malformed line, because a record that cannot be read is
+    a fault. The board is a view: it must draw with one hand-written line that is
+    not JSON (there is one in the real file), so this skips what it cannot parse
+    and keeps the well-formed lines for the action asked for.
+    """
+    path = audit_path(state_path)
+    if not path.is_file():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("action") == action:
+            rows.append(payload)
+    return rows

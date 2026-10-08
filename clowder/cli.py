@@ -480,6 +480,15 @@ def build_parser() -> argparse.ArgumentParser:
     q_send.add_argument("--json", action="store_true")
     q_send.set_defaults(handler=cmd_queue_send, refreshes_board=True)
 
+    q_drop = queue_parser("drop", "drop an item that is already done or will never be sent")
+    q_drop.add_argument("id")
+    q_drop.add_argument("--why", metavar="TEXT", help="why it is dropped (required)")
+    q_drop.add_argument(
+        "--by", metavar="NAME", help="who is dropping it (goes in the audit line)"
+    )
+    q_drop.add_argument("--json", action="store_true")
+    q_drop.set_defaults(handler=cmd_queue_drop, refreshes_board=True)
+
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
@@ -2092,6 +2101,60 @@ def cmd_queue_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_queue_drop(args: argparse.Namespace) -> int:
+    """Drop a queued item, with a reason that stays on the record.
+
+    The queue had add, list and send, so an item found already done could not
+    leave it - the only way out was editing the state file by hand, which left no
+    trace. This removes the item and appends one audit line: what was dropped, why,
+    when, and who. The line is written before the item leaves, so a drop that
+    cannot be recorded does not happen.
+    """
+    config, store = _context(args)
+    why = (args.why or "").strip()
+    if not why:
+        raise UsageError("--why is required: say why the item is being dropped")
+    item = store.get_queued(args.id)
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    at = now_iso()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": at,
+            "by": who,
+            "action": "queue-drop",
+            "item": item.id,
+            "question": item.question or _first_line(item.brief),
+            "repo": item.repo,
+            "target": item.target,
+            "agent": item.agent,
+            "role": item.role,
+            "shape": item.shape,
+            "job": item.job,
+            "reason": why,
+        },
+    )
+    store.remove_queued(item.id)
+    store.save()
+
+    if args.json:
+        _emit_json(
+            {
+                "dropped": item.to_dict(),
+                "by": who,
+                "at": at,
+                "reason": why,
+                "audit": str(audit_file),
+            }
+        )
+        return 0
+    print(f"{item.id} dropped: {why}")
+    print(f"{INDENT}queued for {item.target} in {item.repo}")
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
+
+
 def cmd_queue_send(args: argparse.Namespace) -> int:
     config, store = _context(args)
     item = store.get_queued(args.id)
@@ -2730,6 +2793,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         risk_notes=risk_notes,
         rereview=rereview,
         review_unconfirmed=review_unconfirmed,
+        dropped=audit.read_actions(store.path, "queue-drop"),
     )
 
 

@@ -494,7 +494,7 @@ remembering to refresh it, and it has to carry every decision put to him.
 
 - Every command that changes state rewrites the board file beside the state: dispatch, report,
   ensure, owner `--item`/`--clear`, step abandon, state repair, and job open/close/handover/pin/
-  pass/word/publish/merge and queue add/send. The write is best effort: a failure warns on stderr
+  pass/word/publish/merge and queue add/send/drop. The write is best effort: a failure warns on stderr
   and never fails the command that triggered it. `clowder board` still writes and prints the path.
 - A decision is recorded with `clowder owner <task> --item TEXT` at the moment it is put, or as an
   open decision on a report. The board numbers every question the owner must answer, both kinds in
@@ -645,10 +645,15 @@ The page opens with **waiting on you**, because that is the only part with a dea
 
 A second section, **waiting for a worker**, holds the front door's own list: queued items, and
 steps that have gone quiet while their agent is idle, or whose agent is not in the live list at
-all. Then open steps, agents and their spaces, recent answers with usage, and jobs.
+all. Then open steps, agents and their spaces, recent answers with usage, dropped queue items, and
+jobs. An item the front door drops with `clowder queue drop <id> --why TEXT --by NAME` leaves the
+waiting list and moves to the **dropped from the queue** history, which reads the queue-drop lines
+of the audit file: what left, why, when, and who decided it. A drop with no reason is refused, and
+the audit line is written before the item leaves, so the record cannot be skipped.
 
-The page is a pure function of the state, the live agent list and a few git reads, so it is tested
-without a browser. The agent list is best effort: when the multiplexer cannot be read the page says
+The page is a pure function of the state, the live agent list, the audit file's queue-drop
+lines, and a few git reads, so it is tested without a browser. The agent list is best effort:
+when the multiplexer cannot be read the page says
 so and shows the state anyway, which is what makes it useful during a restart. Text that came from
 a worker is escaped, because a report is data and not markup.
 
