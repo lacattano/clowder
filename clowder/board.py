@@ -312,6 +312,9 @@ class BoardData:
     # Job ids whose reviewed commit cannot be confirmed: no ref could be read. They
     # must not be shown as held, which is the stale-walk claim this exists to stop.
     review_unconfirmed: set[str] = field(default_factory=set)
+    # Queue items a command dropped, oldest first, read from the audit file. This is
+    # the page's history of leaving the queue: what was dropped, why, and by whom.
+    dropped: list[dict[str, object]] = field(default_factory=list)
 
 
 def _e(value: object) -> str:
@@ -362,6 +365,16 @@ def open_tasks(tasks: Sequence[Task]) -> list[Task]:
 def recent_answers(tasks: Sequence[Task], limit: int = 12) -> list[Task]:
     answered = [task for task in tasks if task.answer]
     return list(reversed(answered))[:limit]
+
+
+def dropped_items(data: BoardData) -> list[dict[str, object]]:
+    """The dropped queue items, newest first. A view, so a missing field is blank."""
+    return list(reversed(data.dropped))
+
+
+def _drop_when(record: dict[str, object]) -> float:
+    at = record.get("at")
+    return elapsed_seconds(str(at), None) if at else 0.0
 
 
 def model_rollup(data: BoardData) -> list[tuple[str, int, int]]:
@@ -845,6 +858,24 @@ def render_board(data: BoardData) -> str:
         else _nothing("Nothing has been answered yet.")
     )
 
+    dropped = dropped_items(data)
+    dropped_rows = [
+        [
+            _id(str(record.get("item") or "-")),
+            _e(str(record.get("repo") or "-")),
+            _e(str(record.get("by") or "unknown")),
+            _e(human_age(_drop_when(record))) if record.get("at") else "-",
+            _more(str(record.get("question") or record.get("brief") or ""), 120),
+            _more(str(record.get("reason") or record.get("why") or ""), 160),
+        ]
+        for record in dropped
+    ]
+    dropped_html = (
+        _table(["item", "repo", "by", "when", "question", "why"], dropped_rows)
+        if dropped_rows
+        else _nothing("No queue item has been dropped.")
+    )
+
     rollup = model_rollup(data)
     models_html = (
         _table(
@@ -943,6 +974,7 @@ now, the page is stale.</p>
 {_section("Open steps", len(open_rows), open_html)}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
 {_section("Answers", len(answer_rows), answers_html)}
+{_section("Dropped from the queue", len(dropped_rows), dropped_html)}
 {_section("By model", len(rollup), models_html) if rollup else ""}
 {_section("Jobs", len(job_rows), jobs_html)}
 <footer>{footer}</footer>

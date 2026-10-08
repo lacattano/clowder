@@ -69,6 +69,19 @@ def queued(item_id: str = "q-0001", **overrides: object) -> Queued:
     return Queued(**base)  # type: ignore[arg-type]
 
 
+def dropped(item_id: str = "q-0009", **overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "item": item_id,
+        "question": "can the docker images be a tenth of their size?",
+        "reason": "already merged under PR #27",
+        "by": "topcat",
+        "at": "2026-10-01T09:40:00Z",
+        "repo": "myrepo",
+    }
+    base.update(overrides)
+    return base
+
+
 def old_task(task_id: str = "t-0001", **overrides: object) -> Task:
     """A step that has been open long enough to be worth a second look."""
     return task(task_id, dispatched_at="2020-01-01T00:00:00Z", **overrides)
@@ -130,11 +143,13 @@ class RenderTest(unittest.TestCase):
             "Open steps",
             "Agents and spaces",
             "Answers",
+            "Dropped from the queue",
             "Jobs",
         ):
             self.assertIn(heading, html)
         self.assertIn("Nothing is recorded as waiting on you.", html)
         self.assertIn("Nothing is waiting for the front door.", html)
+        self.assertIn("No queue item has been dropped.", html)
 
     def test_an_open_step_is_shown(self) -> None:
         html = render_board(data(tasks=[task()], agents=[agent()]))
@@ -185,6 +200,28 @@ class RenderTest(unittest.TestCase):
     def test_the_front_door_name_is_used_when_its_list_is_not_empty(self) -> None:
         html = render_board(data(queued=[queued()], front_door_name="topcat"))
         self.assertIn("topcat chases them", html)
+
+    def test_a_dropped_item_is_history_not_work(self) -> None:
+        html = render_board(data(dropped=[dropped()]))
+        self.assertIn("Dropped from the queue", html)
+        history = html.split("Dropped from the queue", 1)[1]
+        self.assertIn("q-0009", history)
+        self.assertIn("already merged under PR #27", history)
+        self.assertIn("topcat", history)
+        worker = html.split("Waiting for a worker", 1)[1].split("Open steps", 1)[0]
+        self.assertNotIn("q-0009", worker, "a dropped item is not waiting for a worker")
+
+    def test_the_drop_history_is_newest_first(self) -> None:
+        html = render_board(
+            data(
+                dropped=[
+                    dropped("q-0009", question="the first drop"),
+                    dropped("q-0010", question="the second drop"),
+                ]
+            )
+        )
+        history = html.split("Dropped from the queue", 1)[1]
+        self.assertLess(history.index("q-0010"), history.index("q-0009"))
 
 
 class WaitingTest(unittest.TestCase):

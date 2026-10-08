@@ -2806,6 +2806,7 @@ class CliTest(unittest.TestCase):
             refreshes("queue", "add", "myrepo", "ship: x", "--agent", "maker", "--why", "w")
         )
         self.assertTrue(refreshes("queue", "send", "q-0001"))
+        self.assertTrue(refreshes("queue", "drop", "q-0001", "--why", "done"))
         self.assertFalse(refreshes("tasks"))
         self.assertFalse(refreshes("agents"))
         self.assertFalse(refreshes("board"))
@@ -2915,6 +2916,86 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("q-0001", owner, "a queued item is the front door's, not the owner's")
         self.assertIn("q-0001", worker)
         self.assertIn("the space holds an open job", worker)
+
+    def test_queue_drop_removes_the_item_and_writes_one_audit_line(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, out, err = self.cli(
+            "queue",
+            "drop",
+            "q-0001",
+            "--why",
+            "already merged under PR #27",
+            "--by",
+            "topcat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("q-0001 dropped: already merged under PR #27", out)
+
+        payload = self.load_state()
+        self.assertEqual(payload["queued"], {}, "the item left the waiting list")
+
+        audit_file = self.root / "state.json.audit"
+        line = json.loads(audit_file.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(line["action"], "queue-drop")
+        self.assertEqual(line["item"], "q-0001")
+        self.assertEqual(line["reason"], "already merged under PR #27")
+        self.assertEqual(line["by"], "topcat")
+        self.assertEqual(line["repo"], "myrepo")
+        self.assertEqual(line["question"], "ship: add the refund page")
+
+    def test_queue_drop_refuses_without_a_why(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, _, err = self.cli("queue", "drop", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--why", err)
+        self.assertIn("q-0001", self.load_state()["queued"], "the item stays put")
+
+    def test_queue_drop_of_an_unknown_item_refuses(self) -> None:
+        code, _, err = self.cli(
+            "queue",
+            "drop",
+            "q-9999",
+            "--why",
+            "already done",
+            "--by",
+            "topcat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("q-9999", err)
+
+    def test_a_dropped_item_moves_to_the_board_history(self) -> None:
+        self.queue_add("--agent", "maker")
+        code, _, err = self.cli(
+            "queue",
+            "drop",
+            "q-0001",
+            "--why",
+            "already merged under PR #27",
+            "--by",
+            "topcat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("Dropped from the queue", html)
+        worker = html.split("Waiting for a worker", 1)[1].split("Open steps", 1)[0]
+        self.assertNotIn("q-0001", worker, "a dropped item is out of the waiting list")
+        history = html.split("Dropped from the queue", 1)[1]
+        self.assertIn("q-0001", history)
+        self.assertIn("already merged under PR #27", history)
+        self.assertIn("topcat", history)
+
+    def test_queue_drop_refuses_without_a_by(self) -> None:
+        # The owner's decision at t-0525: there is no guest, so there is always a
+        # person or agent to attribute the drop to. "unknown" is not an answer.
+        self.queue_add("--agent", "maker")
+        code, _, err = self.cli("queue", "drop", "q-0001", "--why", "done", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--by", err)
+        self.assertIn("q-0001", self.load_state()["queued"], "the item stays put")
+        self.assertFalse((self.root / "state.json.audit").exists(), "no line is written")
 
     def test_queue_send_dispatches_and_removes_the_item(self) -> None:
         self.queue_scout("--agent", "maker")
