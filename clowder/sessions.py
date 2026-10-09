@@ -56,6 +56,28 @@ class Usage:
         return cls(**{k: v for k, v in data.items() if k in known})  # type: ignore[arg-type]
 
 
+@dataclass
+class ModelInfo:
+    """The provider, model and thinking level one session is running on."""
+
+    provider: str | None = None
+    model: str | None = None
+    thinking: str | None = None
+
+    @property
+    def label(self) -> str:
+        """One line for a person: `provider/model (thinking level)`."""
+        if not self.provider and not self.model:
+            name = "unknown"
+        elif self.provider:
+            name = f"{self.provider}/{self.model}"
+        else:
+            name = self.model or "unknown"
+        if self.thinking:
+            return f"{name} (thinking {self.thinking})"
+        return name
+
+
 def iter_records(path: str | Path) -> Iterator[dict[str, object]]:
     """Yield each parseable record. A torn last line is skipped, not fatal."""
     try:
@@ -123,6 +145,41 @@ def read_usage(path: str | Path, since: float | None = None) -> Usage | None:
     if usage.turns == 0:
         return None
     return usage
+
+
+def read_model(path: str | Path) -> ModelInfo | None:
+    """The model a session is running, or None when the file says nothing.
+
+    A Pi session records a `model_change` when its model changes, and every
+    assistant turn carries the provider and model it ran on. Later records win, so
+    a fresh session (its opening `model_change`) and an older one (its assistant
+    turns) both answer. The thinking level travels in `thinking_level_change`
+    records, and the newest non-empty value of each field wins, so a message that
+    does not carry a level never blanks the one before it.
+    """
+    provider: str | None = None
+    model: str | None = None
+    thinking: str | None = None
+    for record in iter_records(path):
+        kind = record.get("type")
+        if kind == "model_change":
+            provider = _opt_str(record.get("provider")) or provider
+            model = _opt_str(record.get("modelId")) or model
+            continue
+        if kind == "thinking_level_change":
+            thinking = _opt_str(record.get("thinkingLevel")) or thinking
+            continue
+        if kind != "message":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        provider = _opt_str(message.get("provider")) or provider
+        model = _opt_str(message.get("model")) or model
+        thinking = _opt_str(message.get("thinkingLevel")) or thinking
+    if provider is None and model is None and thinking is None:
+        return None
+    return ModelInfo(provider=provider, model=model, thinking=thinking)
 
 
 def read_answer(path: str | Path, since: float | None = None) -> str | None:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from clowder.sessions import extract_text, read_answer, read_usage
+from clowder.sessions import extract_text, read_answer, read_model, read_usage
 from tests.support import default_usage, write_session
 
 # 2026-09-27T10:00:03Z and two later instants, in epoch milliseconds.
@@ -122,6 +122,79 @@ class UsageTest(unittest.TestCase):
         assert usage is not None
         self.assertEqual(usage.turns, 1)
         self.assertEqual(usage.total_tokens, 0)
+
+
+class ModelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "session.jsonl"
+
+    def write_records(self, *records: dict[str, object]) -> None:
+        self.path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+        )
+
+    def test_missing_file_reads_as_nothing(self) -> None:
+        self.assertIsNone(read_model(self.path))
+
+    def test_the_opening_model_change_is_read(self) -> None:
+        self.write_records(
+            {"type": "session", "id": "s", "cwd": "C:/code/myrepo"},
+            {"type": "model_change", "provider": "prov", "modelId": "big-model"},
+            {"type": "thinking_level_change", "thinkingLevel": "high"},
+        )
+        info = read_model(self.path)
+        assert info is not None
+        self.assertEqual(info.provider, "prov")
+        self.assertEqual(info.model, "big-model")
+        self.assertEqual(info.thinking, "high")
+        self.assertEqual(info.label, "prov/big-model (thinking high)")
+
+    def test_an_old_session_falls_back_to_its_assistant_turns(self) -> None:
+        self.write_records(
+            {
+                "type": "message",
+                "message": {"role": "assistant", "provider": "a", "model": "one"},
+            },
+            {
+                "type": "message",
+                "message": {"role": "assistant", "provider": "b", "model": "two"},
+            },
+        )
+        info = read_model(self.path)
+        assert info is not None
+        self.assertEqual(info.label, "b/two")
+
+    def test_a_later_record_wins(self) -> None:
+        self.write_records(
+            {
+                "type": "message",
+                "message": {"role": "assistant", "provider": "a", "model": "one"},
+            },
+            {"type": "model_change", "provider": "c", "modelId": "three"},
+        )
+        info = read_model(self.path)
+        assert info is not None
+        self.assertEqual(info.label, "c/three")
+
+    def test_a_message_without_a_level_keeps_the_last_one(self) -> None:
+        self.write_records(
+            {"type": "thinking_level_change", "thinkingLevel": "high"},
+            {
+                "type": "message",
+                "message": {"role": "assistant", "provider": "a", "model": "one"},
+            },
+        )
+        info = read_model(self.path)
+        assert info is not None
+        self.assertEqual(info.thinking, "high")
+
+    def test_label_without_a_provider(self) -> None:
+        self.write_records({"type": "model_change", "modelId": "solo"})
+        info = read_model(self.path)
+        assert info is not None
+        self.assertEqual(info.label, "solo")
 
 
 class ExtractTextTest(unittest.TestCase):
