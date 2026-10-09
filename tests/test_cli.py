@@ -3193,6 +3193,17 @@ class CliTest(unittest.TestCase):
         )
         return session
 
+    def seed_agent_model(self, session: Path, provider: str, model: str, thinking: str) -> None:
+        """Give a seeded session the model Pi would have recorded."""
+        records = [
+            {"type": "session", "version": 3, "id": "old-session", "cwd": str(self.repo_path)},
+            {"type": "model_change", "provider": provider, "modelId": model},
+            {"type": "thinking_level_change", "thinkingLevel": thinking},
+        ]
+        session.write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+        )
+
     def test_agent_reset_changes_the_session_and_names_it(self) -> None:
         self.seed_agent()
         code, out, err = self.cli(
@@ -3201,6 +3212,37 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("reset: new session", out)
         self.assertIn("myrepo-maker-reset", out)
+
+    def test_agent_reset_reports_and_records_the_model(self) -> None:
+        # A fresh session takes the startup default, so the reset can silently
+        # swap the model. It must say so and record it, and it must still run.
+        session = self.seed_agent()
+        self.seed_agent_model(session, "old-provider", "old-model", "high")
+        code, out, err = self.cli(
+            "agent",
+            "reset",
+            "myrepo-maker",
+            "--timeout",
+            "2",
+            env=self.state_env(
+                CLOWDER_FAKE_RESET_PROVIDER="new-provider",
+                CLOWDER_FAKE_RESET_MODEL="new-model",
+                CLOWDER_FAKE_RESET_THINKING="off",
+            ),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "model: old-provider/old-model (thinking high) -> "
+            "new-provider/new-model (thinking off)",
+            out,
+        )
+        line = json.loads(
+            (self.root / "state.json.audit").read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertEqual(line["action"], "agent-reset")
+        self.assertEqual(line["agent"], "myrepo-maker")
+        self.assertEqual(line["model_before"], "old-provider/old-model (thinking high)")
+        self.assertEqual(line["model_after"], "new-provider/new-model (thinking off)")
 
     def test_agent_reset_refuses_while_a_step_is_unreported(self) -> None:
         job_id, _ = self.open_a_job()

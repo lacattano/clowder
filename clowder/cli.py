@@ -23,7 +23,7 @@ from .errors import ClowderError, DispatchError, GitError, MuxError, StateError,
 from .marker import DEFAULT_SENDER, apply_marker
 from .mux import AgentInfo, Mux
 from .report import INDENT, build_report, usage_breakdown
-from .sessions import read_answer, read_usage
+from .sessions import read_answer, read_model, read_usage
 from .state import (
     ABANDONED,
     CLOSED,
@@ -2363,6 +2363,7 @@ def cmd_agent_reset(args: argparse.Namespace) -> int:
         )
 
     before = agent.session_path
+    model_before = read_model(before) if before else None
     result = mux.send_keys(name, ["/", "n", "e", "w", "enter"])
     if not result.ok:
         raise MuxError(f"could not type the reset into {name}: {result.error_text()}")
@@ -2373,10 +2374,42 @@ def cmd_agent_reset(args: argparse.Namespace) -> int:
             "refreshed. The keys may not have arrived; check the pane and try again."
         )
 
+    # A reset starts a fresh session that takes the startup default, so the pane's
+    # model and thinking level can silently change. Say so, and record it. The
+    # reset still goes through: it is a recovery action, and the change is not
+    # destructive. Nothing is restored unless the owner asks for it.
+    model_after = read_model(after)
+    before_label = model_before.label if model_before else "unknown"
+    after_label = model_after.label if model_after else "unknown"
+    who = (config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": now_iso(),
+            "by": who,
+            "action": "agent-reset",
+            "agent": name,
+            "session_before": before,
+            "session_after": after,
+            "model_before": before_label,
+            "model_after": after_label,
+        },
+    )
+
     if args.json:
-        _emit_json({"agent": name, "session_before": before, "session_after": after})
+        _emit_json(
+            {
+                "agent": name,
+                "session_before": before,
+                "session_after": after,
+                "model_before": before_label,
+                "model_after": after_label,
+                "audit": str(audit_file),
+            }
+        )
         return 0
     print(f"{name} reset: new session {after}")
+    print(f"{INDENT}model: {before_label} -> {after_label}")
     return 0
 
 

@@ -26,6 +26,7 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_START_FAIL   "1" makes agent start fail
     CLOWDER_FAKE_LOG          append the received argv, one JSON line per call
     CLOWDER_FAKE_RESET_FAIL   "1" makes `/new` keys leave the session unchanged
+    CLOWDER_FAKE_RESET_PROVIDER / _MODEL / _THINKING  the model a reset lands on
 """
 
 from __future__ import annotations
@@ -72,6 +73,28 @@ def _save(state: dict[str, object]) -> None:
     path = _state_path()
     assert path is not None
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _write_fresh_session(path: Path, cwd: str) -> None:
+    """A new session file, as Pi writes one: header, model, thinking level.
+
+    The model comes from the environment so a test can prove that a reset reports
+    the change. The defaults are a visible swap from any test session.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"type": "session", "version": 3, "id": "reset-session", "cwd": cwd},
+        {
+            "type": "model_change",
+            "provider": os.environ.get("CLOWDER_FAKE_RESET_PROVIDER", "reset-provider"),
+            "modelId": os.environ.get("CLOWDER_FAKE_RESET_MODEL", "reset-model"),
+        },
+        {
+            "type": "thinking_level_change",
+            "thinkingLevel": os.environ.get("CLOWDER_FAKE_RESET_THINKING", "medium"),
+        },
+    ]
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
 def _agents() -> list[dict[str, object]]:
@@ -206,7 +229,9 @@ def main(argv: list[str]) -> int:
             base = Path(session_dir) if session_dir else Path(".")
             nonce = int(state.get("next_pane", 2))  # type: ignore[arg-type]
             state["next_pane"] = nonce + 1
-            found["session_file"] = str(base / f"{target}-reset-{nonce}.jsonl")
+            new_session = base / f"{target}-reset-{nonce}.jsonl"
+            _write_fresh_session(new_session, str(found.get("cwd") or ""))
+            found["session_file"] = str(new_session)
         _save(state)
         return _emit(
             {"id": "cli:agent:send-keys", "result": {"agent": {"name": target, "keys": keys}}}
