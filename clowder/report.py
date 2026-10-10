@@ -16,6 +16,11 @@ from .timeutil import human_duration
 
 INDENT = "    "
 
+# How much of an answer `report` prints before it points at `--full`. The answer is
+# the free-form part of a report, so it is the part that can bury a reader; the
+# fixed lines above it (question, usage, change) are always shown.
+REPORT_LINE_LIMIT = 40
+
 
 def format_tokens(count: int) -> str:
     if count >= 1_000_000:
@@ -79,11 +84,16 @@ def build_report(
     usage: Usage | None,
     answer: str | None,
     job: Job | None = None,
+    *,
+    full: bool = False,
 ) -> str:
     """One report block, in the fixed order.
 
     When the step is a step of a job, the change is named first, in words, so a
     report reads as "the page-context fix", not as a handle.
+
+    A long answer is cut at REPORT_LINE_LIMIT lines and names `--full`; the JSON
+    path never truncates, so a machine always gets the whole answer.
     """
     lines = [f"Re: {task.question}", INDENT + usage_line(task, usage)]
 
@@ -91,8 +101,13 @@ def build_report(
         lines.append(INDENT + f"change: {job.title} - {job.state_in_words}")
 
     if answer:
-        for line in answer.splitlines():
+        shown, hidden = _answer_lines(answer, full)
+        for line in shown:
             lines.append(INDENT + line.rstrip())
+        if hidden:
+            lines.append(
+                INDENT + f"... {hidden} more line(s) hidden; read the whole answer with --full"
+            )
     elif task.is_abandoned:
         reason = task.abandon_reason or "no reason recorded"
         lines.append(INDENT + f"(abandoned: {reason} - no answer will come)")
@@ -108,6 +123,17 @@ def build_report(
         lines.append(INDENT + f"Open decision: {task.open_decision}")
 
     return "\n".join(lines)
+
+
+def _answer_lines(answer: str, full: bool) -> tuple[list[str], int]:
+    """The answer lines to print, and how many were held back.
+
+    `full` turns the cut off. An answer shorter than the limit loses nothing.
+    """
+    lines = answer.splitlines()
+    if full or len(lines) <= REPORT_LINE_LIMIT:
+        return lines, 0
+    return lines[:REPORT_LINE_LIMIT], len(lines) - REPORT_LINE_LIMIT
 
 
 def usage_breakdown(usage: Usage) -> str:

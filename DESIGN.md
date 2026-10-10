@@ -321,14 +321,16 @@ So the tool tells it. Every dispatched brief carries the report instruction, nex
 send the report to the sender named in the marker, resolved by name in the worker's own peer
 list, with the job id, a headline, and where the full answer is. No address is baked in -
 addresses are per-observer and move when panes reload. The answer still stays in the worker's
-session.
+session. The instruction is short: the bus mechanics live in the shipped crew skill, which the
+worker has in its system prompt, and the marker keeps only the instruction to send, so shortening
+it cannot lose the behavior that decision was about.
 
 A pane can send only once the remote-pi Docker service is running and the pane is joined with
 `/remote-pi join`; a pane that has not joined answers "Not in a session", which looks the same as
 a failed send, so the front door says which it is rather than let it fail quietly. The front door
 can join an unjoined pane from its side by typing the command into the pane as keys
 (`herdr agent send-keys`); a slash command sent through the agent prompt is a message, not a
-command.
+command. These mechanics are in the crew skill's Reporting section, not in the marker.
 
 `clowder inbox` is the fallback, not the first check. When a send fails, the step stays in the
 inbox until `report` reads it, so the bus message is never the only record. The board is not a

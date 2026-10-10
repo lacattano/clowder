@@ -25,17 +25,17 @@ DEFAULT_SENDER = "the front door"
 
 # Appended to every dispatched brief. It names no address on purpose: addresses are
 # per-observer and move when panes reload, so the worker resolves the name afresh.
-# A pane can only send once the remote-pi Docker service runs and the pane is joined.
-# The front door joins an unjoined pane from its side with `herdr agent send-keys`.
+# The bus mechanics - the remote-pi Docker service, `/remote-pi join`, the "Not in a
+# session" answer and the `clowder inbox` fallback - live in the shipped crew skill,
+# which the worker has in its system prompt. The marker keeps only the instruction to
+# send, so shortening it cannot repeat the decision-22 failure: the worker is still
+# told to send, with the job id, a headline and the answer's place.
 REPORT_INSTRUCTION = (
-    "When this step is done, send its report to {sender} over the agent bus: find them by\n"
-    "name in your own peer list (never reuse an old address from earlier), then send the\n"
-    "job id, a one-line headline, and where the full answer is. A pane can only send once\n"
-    "two things are true: the remote-pi Docker service is running, and this pane is joined\n"
-    "with /remote-pi join. If `list_peers` says 'Not in a session', the pane is not joined -\n"
-    "say so rather than fail quietly; the front door can join it from its side. A slash\n"
-    "command sent as a prompt is a message, not a command. Your answer also stays in your\n"
-    "session, and `clowder inbox` is the fallback if the send does not arrive."
+    "Report per the crew skill.\n"
+    "When this step is done, send its report to {sender} over the agent bus. Find them by\n"
+    "name in your own peer list, and send the job id, a one-line headline, and\n"
+    "where the full answer is. The answer also stays in your session, so `clowder inbox`\n"
+    "can find it."
 )
 
 
