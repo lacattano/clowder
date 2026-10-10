@@ -36,19 +36,28 @@ class ApplyMarkerTest(unittest.TestCase):
 
     def test_the_tool_tells_the_worker_how_to_report(self) -> None:
         text = apply_marker("do the thing", "t-0001", "ship", "r", "topcat")
-        self.assertIn("agent bus", text)
-        self.assertIn("topcat", text)
+        # The short marker still carries the essential instruction: send, to whom,
+        # resolved in the worker's own peer list, with the id, a headline and where
+        # the answer is. Without this, decision 22's failure returns.
+        self.assertIn("send its report to topcat over the agent bus", text)
         self.assertIn("peer list", text)
+        self.assertIn("job id", text)
+        self.assertIn("one-line headline", text)
+        self.assertIn("where the full answer is", text)
         self.assertIn("clowder inbox", text)
-        # Both steps a pane needs before it can send, in order.
-        self.assertIn("remote-pi Docker service is running", text)
-        self.assertIn("/remote-pi join", text)
-        self.assertLess(text.index("Docker service"), text.index("/remote-pi join"))
-        self.assertIn("list_peers", text)
-        # The front door can join the pane from its side; it is not human-only.
+        # The bus mechanics moved to the crew skill, which the worker has in its
+        # system prompt, so the marker points there instead of repeating them.
+        self.assertIn("crew skill", text)
+        self.assertNotIn("remote-pi", text)
         self.assertNotIn("only a human", text.lower())
-        self.assertIn("front door can join", text)
         self.assertTrue(text.endswith("do the thing"))
+
+    def test_the_marker_is_short(self) -> None:
+        # The whole point of the move: the per-dispatch instruction is small. The
+        # old marker was 128 words; this bounds it well below that.
+        from clowder.marker import REPORT_INSTRUCTION
+
+        self.assertLessEqual(len(REPORT_INSTRUCTION.split()), 60)
 
     def test_the_message_names_no_bus_address(self) -> None:
         # The worker resolves the name in its own peer list; addresses move.

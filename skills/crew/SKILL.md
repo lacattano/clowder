@@ -80,6 +80,12 @@ A vague ask wastes the peer's turn.
 - Never claim a test passed unless the report says it ran and passed.
 - Large output goes to a file. Reply with the path.
 
+**Sending over the bus.** A pane can send only once the remote-pi Docker service is running and
+the pane is joined with `/remote-pi join`. If `list_peers` says "Not in a session", the pane is
+not joined - say so rather than fail quietly; the front door can join it from its side. A slash
+command sent as a prompt is a message, not a command. The answer also stays in the worker's
+session, so `clowder inbox` is the fallback if the send does not arrive.
+
 ## The owner gate
 
 The owner cannot read or write code. He is never handed a diff as a check, and he is never

@@ -146,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_tasks.add_argument("--repo")
     list_tasks.add_argument("--open", action="store_true", help="only tasks with no answer yet")
     list_tasks.add_argument("--json", action="store_true")
+    list_tasks.add_argument(
+        "--fields",
+        metavar="NAMES",
+        help="for --json: only these task fields, comma-separated (e.g. id,status,agent)",
+    )
     list_tasks.set_defaults(handler=cmd_tasks)
 
     inbox = sub.add_parser(
@@ -170,7 +175,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="answer the task's open decision, so it leaves the board's owner section",
     )
     show.add_argument("--verbose", action="store_true", help="show the usage breakdown")
+    show.add_argument(
+        "--full",
+        action="store_true",
+        help="print the whole answer, not the first lines with a --full hint",
+    )
     show.add_argument("--json", action="store_true")
+    show.add_argument(
+        "--fields",
+        metavar="NAMES",
+        help="for --json: only these task fields, comma-separated (e.g. id,status,agent)",
+    )
     show.set_defaults(handler=cmd_report, refreshes_board=True)
 
     owner = sub.add_parser(
@@ -570,6 +585,23 @@ def _emit_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True))
 
 
+def _select_fields(item: dict, fields: str | None) -> dict:
+    """Keep only the named fields, for a smaller --json record.
+
+    A task record is around thirty fields. A reader that wants three of them should
+    not have to receive the rest. An unknown name is refused rather than ignored,
+    so a typo cannot silently drop a field.
+    """
+    if not fields:
+        return item
+    wanted = [name.strip() for name in fields.split(",") if name.strip()]
+    unknown = [name for name in wanted if name not in item]
+    if unknown:
+        known = ", ".join(sorted(item))
+        raise UsageError(f"unknown field(s): {', '.join(unknown)}. Known fields: {known}")
+    return {name: item[name] for name in wanted}
+
+
 # -- commands --------------------------------------------------------------
 
 
@@ -816,11 +848,13 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     )
 
     if args.json:
-        _emit_json({"tasks": [t.to_dict() for t in tasks], "count": len(tasks)})
+        records = [_select_fields(t.to_dict(), args.fields) for t in tasks]
+        _emit_json({"tasks": records, "count": len(tasks)})
         return 0
 
     if not tasks:
         print("no tasks")
+        print(f"\nNext: check what has reported with: {PROGRAM} inbox")
         return 0
 
     rows = [["ID", "STATUS", "JOB", "AGENT", "REPO", "AGE", "QUESTION"]]
@@ -845,6 +879,8 @@ def cmd_tasks(args: argparse.Namespace) -> int:
         f"\n{len(tasks)} task(s), {open_count} still open, {abandoned} abandoned, "
         f"{closed} closed, {unanswered} with no answer"
     )
+    nxt = next((task for task in tasks if task.is_open and not task.answer), tasks[0])
+    print(f"Next: read one with: {PROGRAM} report {nxt.id}")
     return 0
 
 
@@ -1033,7 +1069,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.json:
         _emit_json(
             {
-                "task": task.to_dict(),
+                "task": _select_fields(task.to_dict(), args.fields),
                 "usage": usage.to_dict() if usage else None,
                 "answer": answer,
                 "answer_source": source,
@@ -1044,7 +1080,15 @@ def cmd_report(args: argparse.Namespace) -> int:
         )
         return 0
 
-    print(build_report(task, usage, answer, store.get_job(task.job) if task.job else None))
+    print(
+        build_report(
+            task,
+            usage,
+            answer,
+            store.get_job(task.job) if task.job else None,
+            full=args.full,
+        )
+    )
     if agent_status == "working":
         print(INDENT + "(the agent is working; this may not be its final word)")
     if stranded:
@@ -1060,7 +1104,19 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(usage_breakdown(usage) if usage else INDENT + "no session turns found")
         if session_path:
             print(INDENT + f"session: {session_path}")
+    print(_report_next(task))
     return 0
+
+
+def _report_next(task: Task) -> str:
+    """One line naming what the reader most likely does after the report."""
+    if task.open_decision:
+        return (
+            f"\nNext: answer the open decision with: {PROGRAM} report {task.id} --decide TEXT"
+        )
+    if task.job:
+        return f"\nNext: see the job with: {PROGRAM} job list"
+    return f"\nNext: see the other steps with: {PROGRAM} tasks"
 
 
 def cmd_owner(args: argparse.Namespace) -> int:

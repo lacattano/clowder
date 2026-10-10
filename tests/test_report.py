@@ -129,6 +129,25 @@ class BuildReportTest(unittest.TestCase):
         text = build_report(task(), usage(), "the answer")
         self.assertNotIn("Open decision", text)
 
+    def test_a_long_answer_is_cut_and_names_the_full_escape_hatch(self) -> None:
+        answer = "\n".join(f"line {index}" for index in range(1, 61))
+        text = build_report(task(), usage(), answer)
+        self.assertIn("    line 40", text)
+        self.assertNotIn("line 41", text)
+        self.assertIn("20 more line(s) hidden; read the whole answer with --full", text)
+
+    def test_full_prints_the_whole_answer(self) -> None:
+        answer = "\n".join(f"line {index}" for index in range(1, 61))
+        text = build_report(task(), usage(), answer, full=True)
+        self.assertIn("    line 60", text)
+        self.assertNotIn("more line(s) hidden", text)
+
+    def test_an_answer_at_the_limit_is_not_cut(self) -> None:
+        answer = "\n".join(f"line {index}" for index in range(1, 41))
+        text = build_report(task(), usage(), answer)
+        self.assertIn("    line 40", text)
+        self.assertNotIn("more line(s) hidden", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,6 +146,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("send its report to topcat over the agent bus", sent)
         self.assertIn("peer list", sent)
         self.assertIn("clowder inbox", sent)
+        self.assertIn("crew skill", sent)
         self.assertTrue(sent.endswith("ship: add the refund page"), sent)
 
     def test_the_marker_reaches_the_process(self) -> None:
@@ -419,6 +420,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("dispatched", out)
         self.assertIn("add the refund page", out)
         self.assertIn("1 task(s), 1 still open", out)
+        self.assertIn("Next: read one with: clowder report t-0001", out)
 
     def test_tasks_open_filter(self) -> None:
         self.dispatch(
@@ -438,6 +440,25 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.cli("tasks", env=self.fake_env())
         self.assertEqual(code, 0)
         self.assertIn("no tasks", out)
+        self.assertIn("Next: check what has reported with: clowder inbox", out)
+
+    def test_tasks_json_fields_keep_only_the_named_ones(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, out, _ = self.cli("tasks", "--json", "--fields", "id,status", env=self.fake_env())
+        self.assertEqual(code, 0)
+        record = json.loads(out)["tasks"][0]
+        self.assertEqual(set(record), {"id", "status"})
+        self.assertEqual(record["id"], "t-0001")
+
+    def test_tasks_json_fields_refuse_an_unknown_name(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, _, err = self.cli("tasks", "--json", "--fields", "id,nope", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("nope", err)
 
     def test_unknown_task_id_exits_one(self) -> None:
         code, _, err = self.cli("report", "t-4242", env=self.fake_env())
@@ -576,6 +597,67 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["usage"]["turns"], 1)
         self.assertEqual(payload["agent_status"], "idle")
         self.assertEqual(payload["session_file"], str(self.session_file))
+
+    def test_report_json_fields_keep_only_the_named_ones(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.session_turns()
+        code, out, _ = self.cli(
+            "report", "t-0001", "--json", "--fields", "id,status", env=self.fake_env()
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(set(payload["task"]), {"id", "status"})
+        self.assertEqual(payload["task"]["id"], "t-0001")
+
+    def test_report_cuts_a_long_answer_and_full_shows_it(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        answer = "\n".join(f"line {index}" for index in range(1, 61))
+        write_session(
+            self.session_file,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": int(time.time() * 1000) + 1000,
+                    "text": answer,
+                    "usage": default_usage(1000, 200),
+                }
+            ],
+        )
+        code, out, _ = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0)
+        self.assertIn("line 40", out)
+        self.assertNotIn("line 41", out)
+        self.assertIn("20 more line(s) hidden", out)
+        self.assertIn("--full", out)
+
+        code, out, _ = self.cli("report", "t-0001", "--full", "--no-save", env=self.fake_env())
+        self.assertEqual(code, 0)
+        self.assertIn("line 60", out)
+        self.assertNotIn("more line(s) hidden", out)
+
+    def test_report_suggests_the_next_step(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.session_turns()
+        _, out, _ = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertIn("Next: see the other steps with: clowder tasks", out)
+
+    def test_report_with_an_open_decision_suggests_answering_it(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.session_turns()
+        _, out, _ = self.cli(
+            "report", "t-0001", "--open-decision", "14 days or 30?", env=self.fake_env()
+        )
+        self.assertIn(
+            "Next: answer the open decision with: clowder report t-0001 --decide TEXT", out
+        )
 
     def test_report_verbose_shows_the_breakdown(self) -> None:
         self.dispatch(

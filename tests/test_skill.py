@@ -207,6 +207,23 @@ class SkillTest(unittest.TestCase):
             self.assertIn(rule, text, f"a write-for-the-owner rule is missing: {rule}")
         self.assertIn("is one line of work", text, "the glossary is missing")
 
+    def test_the_crew_skill_carries_the_bus_mechanics(self) -> None:
+        # The dispatched marker is short and points at the crew skill, so the
+        # mechanics that used to ride in the marker must live in the skill, or a
+        # worker cannot send. DESIGN.md decision 22.
+        crew = (REPO / "skills" / "crew" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(crew.split())
+        for rule in (
+            "Sending over the bus",
+            "remote-pi Docker service is running",
+            "/remote-pi join",
+            "Not in a session",
+            "say so rather than fail quietly",
+            "slash command sent as a prompt is a message, not a command",
+            "clowder inbox",
+        ):
+            self.assertIn(rule, text, f"a bus mechanic is missing from the crew skill: {rule}")
+
     def test_the_skill_does_not_restate_the_always_rules(self) -> None:
         # They live in the shipped crew skill. Held in both places, they drift.
         text = " ".join(read_skill().split())
