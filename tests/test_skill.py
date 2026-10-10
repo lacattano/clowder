@@ -284,7 +284,7 @@ class SkillTest(unittest.TestCase):
         # The glossary is ONE piece: the terms together, in one message, before the
         # walk. The reviewer (t-0537) found the old wording read as one line per
         # message, which is slower than the owner intended.
-        self.assertIn("The glossary comes first", text)
+        self.assertIn("The glossary comes next", text)
         self.assertIn("Open every walkthrough with a short glossary", text)
         self.assertIn("the few terms this change uses, in his words", text)
         self.assertIn("The glossary is ONE piece", text)
@@ -303,11 +303,11 @@ class SkillTest(unittest.TestCase):
         self.assertIn("One idea per message", text)
         self.assertIn("Pause after each message", text)
         self.assertIn("Never send the whole walkthrough as one message", text)
-        # The order: glossary, then the file-by-file walk, and the walkthrough
-        # section still follows both rules.
+        # The order: effect line, glossary, then the file-by-file walk, and the
+        # walkthrough section still follows them.
         low = text.lower()
         self.assertLess(
-            low.index("the glossary comes first"),
+            low.index("the glossary comes next"),
             low.index("one idea at a time"),
             "the glossary comes before the pacing rule",
         )
@@ -316,6 +316,30 @@ class SkillTest(unittest.TestCase):
             low.index("## the walkthrough"),
             "both rules come before the walkthrough steps",
         )
+
+    def test_the_reviewer_skill_leads_with_the_effect_for_an_internal_mechanism(self) -> None:
+        # The owner's feedback after the origin/base walkthrough (t-0553): the
+        # mechanism explanation ran long and lost him until the reviewer re-anchored
+        # on the one-line user effect. An internal-mechanism change opens with that
+        # line; the mechanism is offered only if he asks.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        self.assertIn("Lead with the effect", text)
+        self.assertIn("the change is about an internal mechanism", text)
+        self.assertIn("open the walk with ONE line on its effect", text)
+        self.assertIn("before any file or any mechanism", text)
+        self.assertIn("offer the mechanism only if he asks", text)
+        self.assertIn("do not let the walk turn into a tour of the machinery", text)
+        self.assertIn("answer that one question and return to the effect", text)
+        # The effect line comes before the glossary, which still comes before the
+        # walk. The glossary and the one-idea pacing are kept.
+        low = text.lower()
+        self.assertLess(
+            low.index("lead with the effect"),
+            low.index("the glossary comes next"),
+            "the effect line comes before the glossary",
+        )
+        self.assertIn("One idea at a time", text)
 
     def test_the_reviewer_skill_requires_the_interview_card(self) -> None:
         # A walkthrough report without the card leaves the owner with nothing he

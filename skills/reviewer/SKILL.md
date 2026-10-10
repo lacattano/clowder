@@ -148,11 +148,23 @@ Row 11 is a stop, not a question. If the change deletes something, rewrites hist
 data, or force-pushes, the walkthrough says so in his words and STOPS there. "This deletes X and
 cannot be undone" is a flag he acts on, not a question he answers.
 
-## The glossary comes first
+## Lead with the effect
+
+When the change is about an internal mechanism - plumbing, a guard, a refactor, anything the owner
+does not touch directly - open the walk with ONE line on its effect for him or for a user. Say what
+changes for them, in plain words, before any file or any mechanism. That line is the OWNER ANSWERS
+"what changes for a user", said to him.
+
+Then offer the mechanism only if he asks. Do not explain how it works unprompted, and do not let
+the walk turn into a tour of the machinery. If he asks, answer that one question and return to the
+effect.
+
+## The glossary comes next
 
 Open every walkthrough with a short glossary of the few terms this change uses, in his words. The
-glossary is ONE piece: three to six terms, delivered together in one message before the walk
-begins. One term is one line: the word, its plain meaning, and why it matters in this change.
+effect line above, when there is one, comes first. The glossary is ONE piece: three to six terms,
+delivered together in one message before the walk begins. One term is one line: the word, its
+plain meaning, and why it matters in this change.
 
 ```
 term - plain meaning; why it matters here.
