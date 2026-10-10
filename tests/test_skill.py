@@ -182,6 +182,11 @@ class SkillTest(unittest.TestCase):
         ):
             self.assertIn(step, text, f"the gate chain is missing a step: {step}")
         self.assertIn("CI is not acceptance", text)
+        # The walk is short by default now, and the teaching parts are offered.
+        self.assertIn("short by default", text)
+        self.assertIn("offers the deeper walk once", text)
+        self.assertIn("gives a part only if he asks", text)
+        self.assertIn("These are the deeper walk", text)
         for question in (
             "what changes for me, or for the person using it",
             "the worst thing this could break, and what would catch it",
@@ -303,10 +308,10 @@ class SkillTest(unittest.TestCase):
         # message, which is slower than the owner intended.
         self.assertIn("## How the walk arrives", reviewer, "the walk shape is one section")
         self.assertIn("The glossary comes next", text)
-        self.assertIn("Every walkthrough opens with a short glossary", text)
+        self.assertIn("The deeper walk opens with a short glossary", text)
         self.assertIn("the few terms this change uses, in his words", text)
         self.assertIn("The glossary is ONE piece", text)
-        self.assertIn("delivered together in one message before the walk begins", text)
+        self.assertIn("delivered together in one message before the deeper walk begins", text)
         self.assertIn("One term is one line", text, "each term is defined on its own line")
         self.assertIn("why it matters in this change", text)
         self.assertIn("only the terms this change actually uses", text)
@@ -314,13 +319,13 @@ class SkillTest(unittest.TestCase):
         # One idea at a time, one idea per message, a pause after each. The pacing
         # is for the walk proper, after the whole glossary has gone.
         self.assertIn("One idea at a time", text)
-        self.assertIn("walkthrough proper arrives in small pieces, not one long block", text)
+        self.assertIn("deeper walk arrives in small pieces, not one long block", text)
         self.assertIn("after the whole glossary has gone in one message", text)
         self.assertIn("One idea per sentence", text)
         self.assertIn("No sentence carries two ideas", text)
         self.assertIn("One idea per message", text)
         self.assertIn("Pause after each message", text)
-        self.assertIn("Never send the whole walkthrough as one message", text)
+        self.assertIn("Never send the whole deeper walk as one message", text)
         # The pacing list names every piece, the effect line included, so the two
         # rules cannot drift apart again.
         self.assertIn(
@@ -356,12 +361,9 @@ class SkillTest(unittest.TestCase):
         self.assertIn("mechanism is offered only if he asks", text)
         self.assertIn("do not let the walk turn into a tour of the machinery", text)
         self.assertIn("answer that one question and return to the effect", text)
-        # The mechanism rule and the code-reading session do not pull apart: the
-        # reading is the one piece read without him asking.
-        self.assertIn(
-            "The code-reading session is the one exception: one chosen piece, by default",
-            text,
-        )
+        # The mechanism rule and the deeper walk do not pull apart: the reading is
+        # part of the deeper walk, given only if he asks.
+        self.assertIn("The code-reading session (the deeper walk)", reviewer)
         # The effect line comes before the glossary, which still comes before the
         # walk. The glossary and the one-idea pacing are kept.
         low = text.lower()
@@ -372,15 +374,45 @@ class SkillTest(unittest.TestCase):
         )
         self.assertIn("One idea at a time", text)
 
+    def test_the_reviewer_skill_defaults_to_a_short_walk(self) -> None:
+        # The owner finds the walks tiresome and long, and agreed the teaching parts
+        # should be optional. The default is the effect line plus the decisions; the
+        # deeper walk is offered once and given only if he asks. The parts stay.
+        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(reviewer.split())
+        self.assertIn("The walk is short by default", text)
+        self.assertIn("the effect line and the decisions, nothing else", text)
+        self.assertIn("**The decisions he must make.**", text)
+        self.assertIn("want the four questions, the recall check and your sentence?", text)
+        self.assertIn("Give a part only if he asks", text)
+        self.assertIn("record the walk as short", text)
+        # The owner is not the code checker; that is the reviewer's and the tests'.
+        self.assertIn("Spotting code issues is not the owner's job", text)
+        self.assertIn("That is the reviewer's and the tests'", text)
+        self.assertIn("His role is the decision and the merge word", text)
+        # The teaching parts are kept, marked as the deeper walk.
+        for heading in (
+            "The four owner questions (the deeper walk)",
+            "The interview card (the deeper walk)",
+            "The code-reading session (the deeper walk)",
+        ):
+            self.assertIn(heading, reviewer, f"a deeper-walk part lost its mark: {heading}")
+        # The senior check and its 13-row block are the safety net, not teaching, so
+        # the short walk leaves them alone.
+        self.assertIn("## The senior check, before any walkthrough", reviewer)
+        self.assertIn("## The block you record, before any walkthrough", reviewer)
+        for row in ("Problem fit", "Irreversible acts", "Verified vs inferred"):
+            self.assertIn(row, text, f"the short walk dropped a senior-check row: {row}")
+
     def test_the_reviewer_skill_requires_the_interview_card(self) -> None:
         # A walkthrough report without the card leaves the owner with nothing he
         # can say in an interview, so the skill must require it and name its lines.
         reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn(
-            "Every walkthrough report carries an interview card",
-            text,
-            "the card is not required in every walkthrough report",
+            "The interview card (the deeper walk)",
+            reviewer,
+            "the card is part of the deeper walk, not every walk",
         )
         self.assertIn("INTERVIEW CARD", text, "the report block has no card")
         for line in (
