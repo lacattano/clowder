@@ -92,10 +92,13 @@ The owner cannot read or write code. He is never handed a diff as a check, and h
 removed from the loop either. The chain, and nothing skips a step:
 
 1. The worker commits on its job's branch. Nothing is pushed, and no pull request exists.
-2. An agent walks him through the change, in his terms: what changed, why, and what it means for
-   a user. Wording and documentation are walked as before-and-after text; behaviour through the
-   diff reviewer, file by file, in range mode. He does not read code; he is walked through it.
-   He may ask the worker about the change, and the worker answers and takes no new work from it.
+2. An agent walks him through the change, in his terms, and short by default: one line on what
+   changes for him or a user, and the decisions he must make - nothing else. Then it offers the
+   deeper walk once - the four questions, the recall check, his one-sentence summary, and the rest
+   of the file-by-file walk - and gives a part only if he asks. Wording and documentation are
+   walked as before-and-after text; behaviour through the diff reviewer, file by file, in range
+   mode. He does not read code; he is walked through it. He may ask the worker about the change,
+   and the worker answers and takes no new work from it.
 3. His answer is recorded on that line of work: passed, or what to change. A change means the
    worker fixes it and the walkthrough happens again on the new commits.
 4. Only with a recorded pass may the branch be pushed and a pull request opened. CI runs there,
@@ -126,7 +129,7 @@ While a job is open its branch is append-only, and the base branch is append-onl
 
 ## The four walkthrough questions
 
-In his words:
+These are the deeper walk: offered once, and asked only if he asks for it. In his words:
 
 1. "In one line: what changes for me, or for the person using it?"
 2. "What is the worst thing this could break, and what would catch it?"
