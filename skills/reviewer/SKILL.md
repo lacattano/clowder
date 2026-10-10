@@ -65,17 +65,21 @@ Covered: ... | skipped by the owner
 So far: ...
 ```
 
-## The four owner questions
+## The four owner questions (the deeper walk)
+
+These are part of the deeper walk: offered once, and given only if he asks.
 
 He asks four questions, in his words. They are in the shipped `crew` skill (`/skill:crew`), under
 "The four walkthrough questions". Read them there; this skill does not repeat them. Answer all
 four from the senior check you have already recorded - they need no code.
 
-## The interview card
+## The interview card (the deeper walk)
 
-Every walkthrough report carries an interview card. He cannot explain the work he did beyond
-"I used AI", and an interview asks "why did you do this?". The card is that answer, in words he
-can repeat. Record it with the block above, in this step's report.
+With his sentence, the card is part of the deeper walk: offered once, and given only if he asks.
+Record it with the block above, in this step's report.
+
+He cannot explain the work he did beyond "I used AI", and an interview asks "why did you do
+this?". The card is that answer, in words he can repeat.
 
 Five lines, plus his sentence:
 
@@ -109,9 +113,11 @@ moves there, and the cumulative coverage lives in the learning log q-0056 define
 keep the CODE READING block in this step's report and say it moves there. The next session reads
 it first, so the record is never lost.
 
-## The code-reading session
+## The code-reading session (the deeper walk)
 
-The interview card gives him the reasons; this gives him the code. In every walkthrough, read
+The reading is part of the deeper walk: offered once, and given only if he asks.
+
+The interview card gives him the reasons; this gives him the code. In a deeper walk, read
 ONE small piece of the change with him, line by line, in plain terms: what each line does and why
 it is there. A function, a test, or one small diff hunk - one piece per change, never every line
 of every file.
@@ -142,42 +148,68 @@ cannot be undone" is a flag he acts on, not a question he answers.
 
 ## How the walk arrives
 
+The walk is short by default. He gets the effect line and the decisions, nothing else. The
+teaching parts are the deeper walk: offered once, and given only if he asks.
+
 **Lead with the effect, for an internal-mechanism change.** When the change is about an internal
 mechanism - plumbing, a guard, a refactor, anything the owner does not touch directly - open the
 walk with ONE line on its effect for him or for a user, before any file or any mechanism. Any other
-change starts at the glossary.
+change starts at the decisions.
 
-**The glossary comes next.** Every walkthrough opens with a short glossary of the few terms this
+**The decisions he must make.** Say what he must decide: pass, or what to change, and any open
+decision the change creates. Nothing else is required of him.
+
+**Spotting code issues is not the owner's job.** That is the reviewer's and the tests'. His role
+is the decision and the merge word.
+
+**Offer the deeper walk, once.** After the short walk, offer it in one line: "want the four
+questions, the recall check and your sentence?" Give a part only if he asks; if he does not, stop
+and record the walk as short. He may ask for one part only - give that one.
+
+### The deeper walk
+
+The deeper walk is the glossary, the file-by-file walk, the code-reading piece, the four questions,
+the recall check, and the interview card with his sentence. The sections marked "(the deeper walk)"
+say how each goes.
+
+**The glossary comes next.** The deeper walk opens with a short glossary of the few terms this
 change uses, in his words, after the effect line when there is one. The glossary is ONE piece:
-three to six terms, delivered together in one message before the walk begins. One term is one
-line - the word, its plain meaning, and why it matters in this change: `term - plain meaning; why
-it matters here.` Use only the terms this change actually uses. Do not explain the whole codebase,
-and do not define a word he already knows. A term he meets later in the diff but the glossary skips
-will read as noise.
+three to six terms, delivered together in one message before the deeper walk begins. One term is
+one line - the word, its plain meaning, and why it matters in this change: `term - plain meaning;
+why it matters here.` Use only the terms this change actually uses. Do not explain the whole
+codebase, and do not define a word he already knows. A term he meets later in the diff but the
+glossary skips will read as noise.
 
 **One idea at a time, through the pieces.** The pieces are the effect line, the glossary, the
-file-by-file walk, the code-reading piece and the recall check. The walkthrough proper arrives in
-small pieces, not one long block, after the whole glossary has gone in one message; each ends
-before the next begins. One idea per sentence. No sentence carries two ideas. "The file reads the
-config and caches it" is two ideas, so it is two sentences. One idea per message. A message carries
-one file, or one answer to his question. Pause after each message, and wait for him before you send
-the next. Never send the whole walkthrough as one message.
+file-by-file walk, the code-reading piece and the recall check. The deeper walk arrives in small
+pieces, not one long block, after the whole glossary has gone in one message; each ends before the
+next begins. One idea per sentence. No sentence carries two ideas. "The file reads the config and
+caches it" is two ideas, so it is two sentences. One idea per message. A message carries one file,
+or one answer to his question. Pause after each message, and wait for him before you send the next.
+Never send the whole deeper walk as one message.
 
 **The mechanism is offered only if he asks.** Do not explain how it works unprompted, and do not
 let the walk turn into a tour of the machinery. If he asks, answer that one question and return to
-the effect. The code-reading session is the one exception: one chosen piece, by default, and he may
-skip it.
+the effect.
 
 ## The walkthrough
 
-The owner chose two forms on 2026-09-28:
+The short walk is the default. It has two steps:
+
+1. **The effect line, when the change is internal.** One line on what changes for him or a user.
+2. **The decisions he must make.** Pass or what to change, and any open decision. Then stop.
+
+Then offer the deeper walk once - "want the four questions, the recall check and your sentence?" -
+and give it only if he asks.
+
+The deeper walk keeps the two forms the owner chose on 2026-09-28:
 
 - **Wording and documentation** are walked as before-and-after text: his old words or the old
   text, then the new. No viewer is needed for these.
 - **Behaviour** is walked through the diff viewer, file by file, in range mode:
   `/diff main...HEAD`.
 
-He may question the worker during the walkthrough. The worker answers those questions and takes
+He may question the worker during the deeper walk. The worker answers those questions and takes
 no new work from them.
 
 1. Open the diff in range mode in the worker's space: `/diff main...HEAD`. It lists the branch's
