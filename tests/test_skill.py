@@ -284,8 +284,9 @@ class SkillTest(unittest.TestCase):
         # The glossary is ONE piece: the terms together, in one message, before the
         # walk. The reviewer (t-0537) found the old wording read as one line per
         # message, which is slower than the owner intended.
+        self.assertIn("## How the walk arrives", reviewer, "the walk shape is one section")
         self.assertIn("The glossary comes next", text)
-        self.assertIn("Open every walkthrough with a short glossary", text)
+        self.assertIn("Every walkthrough opens with a short glossary", text)
         self.assertIn("the few terms this change uses, in his words", text)
         self.assertIn("The glossary is ONE piece", text)
         self.assertIn("delivered together in one message before the walk begins", text)
@@ -303,6 +304,13 @@ class SkillTest(unittest.TestCase):
         self.assertIn("One idea per message", text)
         self.assertIn("Pause after each message", text)
         self.assertIn("Never send the whole walkthrough as one message", text)
+        # The pacing list names every piece, the effect line included, so the two
+        # rules cannot drift apart again.
+        self.assertIn(
+            "The pieces are the effect line, the glossary, the file-by-file walk, "
+            "the code-reading piece and the recall check",
+            text,
+        )
         # The order: effect line, glossary, then the file-by-file walk, and the
         # walkthrough section still follows them.
         low = text.lower()
@@ -328,9 +336,15 @@ class SkillTest(unittest.TestCase):
         self.assertIn("the change is about an internal mechanism", text)
         self.assertIn("open the walk with ONE line on its effect", text)
         self.assertIn("before any file or any mechanism", text)
-        self.assertIn("offer the mechanism only if he asks", text)
+        self.assertIn("mechanism is offered only if he asks", text)
         self.assertIn("do not let the walk turn into a tour of the machinery", text)
         self.assertIn("answer that one question and return to the effect", text)
+        # The mechanism rule and the code-reading session do not pull apart: the
+        # reading is the one piece read without him asking.
+        self.assertIn(
+            "The code-reading session is the one exception: one chosen piece, by default",
+            text,
+        )
         # The effect line comes before the glossary, which still comes before the
         # walk. The glossary and the one-idea pacing are kept.
         low = text.lower()
@@ -376,9 +390,20 @@ class SkillTest(unittest.TestCase):
         self.assertIn("No flattery and no vague praise", text)
         self.assertIn("never asks him to redo it", text)
         self.assertIn("sits beside it", text)
-        # It stays in this report until the learning journal has a home.
+        # It stays in this report until the learning journal has a home. The card and
+        # the code-reading record share one paragraph, so it is written once.
         self.assertIn("q-0056", text, "say where the card moves when the journal lands")
         self.assertIn("moves there", text)
+        self.assertIn(
+            "What it changes for a user is the effect line",
+            text,
+            "the card's line 5 is the effect line",
+        )
+        self.assertEqual(
+            text.count("until q-0056 lands"),
+            1,
+            "the 'until q-0056 lands' paragraph is written once, not twice",
+        )
 
     def test_the_reviewer_skill_carries_the_code_reading_method(self) -> None:
         # The owner cannot read code, so one small piece is read with him in every
@@ -397,6 +422,12 @@ class SkillTest(unittest.TestCase):
         self.assertIn("It builds up", text)
         self.assertIn("CODE READING", text)
         self.assertIn("So far:", text)
+        self.assertIn("Piece is the function, test or hunk in his words", text)
+        # The block is drawn once, in the fixed block above; the code-reading method
+        # points at it instead of repeating it.
+        self.assertEqual(reviewer.count("CODE READING\n"), 1, "the block is drawn once")
+        self.assertEqual(reviewer.count("Piece:"), 1, "the block is drawn once")
+        self.assertEqual(reviewer.count("So far:"), 1, "the block is drawn once")
         # It stays in this report until q-0056's learning log has a home.
         self.assertIn("the learning log q-0056 defines", text)
         self.assertIn("keep the CODE READING block in this step's report", text)
