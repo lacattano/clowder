@@ -100,12 +100,14 @@ it, you record it as his, and the feedback sits beside it. He may act on it or n
 
 **Start with three lines.** The card can go into the same report as the first walkthrough, before
 the walk is complete: the problem, the option rejected, and his sentence. The other two lines -
-why this one, and the trade-off or risk - can follow. What it changes for a user is already
-OWNER ANSWERS A, so it is filled in from there.
+why this one, and the trade-off or risk - can follow. What it changes for a user is the effect
+line, already recorded as OWNER ANSWERS A, so it is filled in from there.
 
-**Where it lives until q-0056 lands.** Keep the card in this step's report, beside the senior
-check. When the learning journal (q-0056) has a home, the card moves there, and this report keeps
-only the pointer.
+**Where both records live until q-0056 lands.** Keep the card and the CODE READING block in this
+step's report, beside the senior check. When the learning journal (q-0056) has a home, the card
+moves there, and the cumulative coverage lives in the learning log q-0056 defines. Until then,
+keep the CODE READING block in this step's report and say it moves there. The next session reads
+it first, so the record is never lost.
 
 ## The code-reading session
 
@@ -124,19 +126,9 @@ says skip, move on: record it as skipped, not covered.
 **It builds up.** Each session continues from the last, so the pieces add up to the whole change.
 Before choosing a piece, read the coverage record below; choose what is not covered yet.
 
-**What to record.** Record the CODE READING block with the block above, cumulatively:
-
-```
-CODE READING
-Piece: <function, test, or hunk, in his words>
-Covered: <what each line does and why, in his words> | skipped by the owner
-So far: <the pieces covered across walkthroughs, newest last>
-```
-
-**Where it lives until q-0056 lands.** The learning base is the learning log q-0056 defines. When
-that home exists, the cumulative coverage lives there. Until it does, keep the CODE READING block
-in this step's report and say it moves there. The next session reads it first, so the record is
-never lost.
+**What to record.** Record the CODE READING block shown above, cumulatively. Piece is the
+function, test or hunk in his words. Covered is what each line does and why, in his words, or
+"skipped by the owner". So far is the pieces covered across walkthroughs, newest last.
 
 **Where the method comes from.** The method is adapted from Matt Pocock's skills (the
 `setup-matt-pocock-skills` set installed here): follow one concrete thing, one step at a time,
@@ -148,45 +140,33 @@ Row 11 is a stop, not a question. If the change deletes something, rewrites hist
 data, or force-pushes, the walkthrough says so in his words and STOPS there. "This deletes X and
 cannot be undone" is a flag he acts on, not a question he answers.
 
-## Lead with the effect
+## How the walk arrives
 
-When the change is about an internal mechanism - plumbing, a guard, a refactor, anything the owner
-does not touch directly - open the walk with ONE line on its effect for him or for a user. Say what
-changes for them, in plain words, before any file or any mechanism. That line is the OWNER ANSWERS
-"what changes for a user", said to him.
+**Lead with the effect, for an internal-mechanism change.** When the change is about an internal
+mechanism - plumbing, a guard, a refactor, anything the owner does not touch directly - open the
+walk with ONE line on its effect for him or for a user, before any file or any mechanism. Any other
+change starts at the glossary.
 
-Then offer the mechanism only if he asks. Do not explain how it works unprompted, and do not let
-the walk turn into a tour of the machinery. If he asks, answer that one question and return to the
-effect.
+**The glossary comes next.** Every walkthrough opens with a short glossary of the few terms this
+change uses, in his words, after the effect line when there is one. The glossary is ONE piece:
+three to six terms, delivered together in one message before the walk begins. One term is one
+line - the word, its plain meaning, and why it matters in this change: `term - plain meaning; why
+it matters here.` Use only the terms this change actually uses. Do not explain the whole codebase,
+and do not define a word he already knows. A term he meets later in the diff but the glossary skips
+will read as noise.
 
-## The glossary comes next
+**One idea at a time, through the pieces.** The pieces are the effect line, the glossary, the
+file-by-file walk, the code-reading piece and the recall check. The walkthrough proper arrives in
+small pieces, not one long block, after the whole glossary has gone in one message; each ends
+before the next begins. One idea per sentence. No sentence carries two ideas. "The file reads the
+config and caches it" is two ideas, so it is two sentences. One idea per message. A message carries
+one file, or one answer to his question. Pause after each message, and wait for him before you send
+the next. Never send the whole walkthrough as one message.
 
-Open every walkthrough with a short glossary of the few terms this change uses, in his words. The
-effect line above, when there is one, comes first. The glossary is ONE piece: three to six terms,
-delivered together in one message before the walk begins. One term is one line: the word, its
-plain meaning, and why it matters in this change.
-
-```
-term - plain meaning; why it matters here.
-```
-
-Use only the terms this change actually uses. Do not explain the whole codebase, and do not define
-a word he already knows. This is where the plain-language rule lives: a term he meets later in the
-diff but the glossary skips is a term that will read as noise.
-
-## One idea at a time
-
-The walkthrough proper arrives in small pieces, not one long block. This pacing rule is for the
-walk, after the whole glossary has gone in one message.
-
-- One idea per sentence. No sentence carries two ideas. "The file reads the config and caches it"
-  is two ideas, so it is two sentences.
-- One idea per message. A message carries one file, or one answer to his question. Pause after
-  each message, and wait for him before you send the next. Never send the whole walkthrough as one
-  message.
-
-The pieces after the glossary are the file-by-file walk, then the code-reading piece, then the
-recall check. Each one ends before the next begins.
+**The mechanism is offered only if he asks.** Do not explain how it works unprompted, and do not
+let the walk turn into a tour of the machinery. If he asks, answer that one question and return to
+the effect. The code-reading session is the one exception: one chosen piece, by default, and he may
+skip it.
 
 ## The walkthrough
 
