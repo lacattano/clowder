@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -99,49 +100,86 @@ class BuildArgvTest(unittest.TestCase):
 class InputLineTest(unittest.TestCase):
     """The input box is read off the screen, against captured real snapshots.
 
-    The fixtures are raw `herdr agent read --source visible --format text`
-    output from a real pane. `input_box_empty.txt` and `input_box_draft.txt`
-    are the same working pane with the editor empty and holding a draft;
-    `input_box_empty_idle.txt` is an idle pane, where the editor is drawn
+    The snapshots are raw `herdr agent read --source visible --format text`
+    output from a real pane. They hold non-ASCII box drawing and status glyphs,
+    and the repo has to stay ASCII, so they live in `fixtures/input_boxes.json`
+    as escaped `\\uXXXX` strings. `json.loads` rebuilds the exact captured text,
+    CRLFs included, so the parser is tested on the real bytes.
+
+    `empty` and `draft` are the same working pane with the editor empty and
+    holding a draft; `empty_idle` is an idle pane, where the editor is drawn
     between two bare rules.
     """
 
     FIXTURES = Path(__file__).with_name("fixtures")
 
-    def snapshot(self, name: str) -> str:
-        return (self.FIXTURES / name).read_text(encoding="utf-8")
+    @classmethod
+    def all_snapshots(cls) -> dict[str, str]:
+        raw = (cls.FIXTURES / "input_boxes.json").read_bytes()
+        raw.decode("ascii")  # the committed fixture must stay ASCII
+        return json.loads(raw.decode("ascii"))
+
+    def snapshot(self, key: str) -> str:
+        return self.all_snapshots()[key]
+
+    def with_editor(self, key: str, text: str) -> str:
+        """Put `text` on the idle editor's blank line, keeping the CRLFs."""
+        snapshot = self.snapshot(key)
+        marker = "\r\n\r\n"
+        self.assertIn(marker, snapshot)
+        return snapshot.replace(marker, "\r\n" + text + "\r\n", 1)
+
+    # sha256 of each snapshot's UTF-8 bytes as captured from the real pane. The
+    # JSON is lossy only in appearance: the escapes decode back to exactly these
+    # bytes. A changed line, glyph or CRLF moves the hash and the test fails.
+    CAPTURED_SHA256 = {
+        "empty": "51bdfff3a25e5a32abcfb60e34dc6373278ab7447e8ac743361840363d580801",
+        "draft": "4fca9fae6aa26b268ee98916b8bd2ff064a488876cca82e89ca6ac91159b71aa",
+        "empty_idle": "ee95622db4e7befead5145e9ea1eda3f1064aeea4d632031197465b8e4af1816",
+    }
+
+    def test_the_committed_fixture_is_ascii_and_keeps_the_real_bytes(self) -> None:
+        raw = (self.FIXTURES / "input_boxes.json").read_bytes()
+        raw.decode("ascii")
+        for key, digest in self.CAPTURED_SHA256.items():
+            snapshot = self.snapshot(key)
+            self.assertIn("\r\n", snapshot, f"{key}: CRLFs were lost")
+            self.assertEqual(
+                hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+                digest,
+                f"{key}: the decoded bytes are not the captured bytes",
+            )
 
     def test_a_real_empty_box_reads_as_empty(self) -> None:
-        self.assertEqual(input_line(self.snapshot("input_box_empty.txt")), "")
+        self.assertEqual(input_line(self.snapshot("empty")), "")
 
     def test_a_real_draft_is_read(self) -> None:
-        self.assertEqual(input_line(self.snapshot("input_box_draft.txt")), "ownerdraftxyz")
+        self.assertEqual(input_line(self.snapshot("draft")), "ownerdraftxyz")
 
     def test_a_real_idle_box_reads_as_empty(self) -> None:
-        self.assertEqual(input_line(self.snapshot("input_box_empty_idle.txt")), "")
+        self.assertEqual(input_line(self.snapshot("empty_idle")), "")
 
     def test_an_idle_box_with_a_draft_is_read(self) -> None:
-        # The idle layout is two bare rules with the editor between them. A
-        # draft goes on the blank line between the rules.
-        idle = self.snapshot("input_box_empty_idle.txt")
-        with_draft = idle.replace("\n\n", "\na draft here\n", 1)
-        self.assertEqual(input_line(with_draft), "a draft here")
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "a draft here")), "a draft here"
+        )
 
     def test_a_multiline_draft_is_joined(self) -> None:
-        idle = self.snapshot("input_box_empty_idle.txt")
-        with_draft = idle.replace("\n\n", "\nfirst line\nsecond line\n", 1)
-        self.assertEqual(input_line(with_draft), "first line\nsecond line")
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "first line\r\nsecond line")),
+            "first line\nsecond line",
+        )
 
     def test_a_draft_that_starts_with_a_slash_is_still_read(self) -> None:
-        idle = self.snapshot("input_box_empty_idle.txt")
-        with_draft = idle.replace("\n\n", "\n/remote-pi join\n", 1)
-        self.assertEqual(input_line(with_draft), "/remote-pi join")
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "/remote-pi join")), "/remote-pi join"
+        )
 
     def test_a_fresh_pane_with_no_usage_arrows_is_still_read(self) -> None:
         # A pane that has not run a turn has no stats line. The borders are the
         # anchor, so the draft is still read without it.
-        draft = self.snapshot("input_box_draft.txt")
-        without_arrows = "\n".join(
+        draft = self.snapshot("draft")
+        without_arrows = "\r\n".join(
             line for line in draft.splitlines() if "\u2191" not in line and "\u2193" not in line
         )
         self.assertNotIn("\u2191", without_arrows)
