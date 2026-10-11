@@ -18,7 +18,7 @@ from html import escape
 from pathlib import Path
 
 from .report import format_cost, format_tokens
-from .state import CLOSED, REPORTED, Job, Queued, Task
+from .state import CLOSED, FAILED, REPORTED, Job, Queued, Task
 from .timeutil import elapsed_seconds, human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
@@ -39,11 +39,13 @@ STYLE = """
 :root {
   --ink: #1b1b1f; --muted: #6b6b76; --line: #e2e2e8; --bg: #fbfbfd;
   --card: #ffffff; --accent: #2f6f4f; --warn: #8a5300; --warnbg: #fff8e8;
+  --danger: #b3261e; --todo: #2f6f4f; --doing: #8a5300; --done: #4a4a8a;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --ink: #e8e8ee; --muted: #9a9aa6; --line: #2d2d36; --bg: #131317;
     --card: #1b1b21; --accent: #7fc39b; --warn: #e2b463; --warnbg: #2a2317;
+    --danger: #f28b82; --todo: #7fc39b; --doing: #e2b463; --done: #a6a6e0;
   }
 }
 * { box-sizing: border-box; }
@@ -99,6 +101,42 @@ details.more { margin: 0; }
 details.more summary { cursor: pointer; color: var(--muted); }
 details.more[open] summary { color: var(--ink); }
 details.more .full { margin-top: .25rem; }
+/* The three columns, the same filterable cards the rest of the page uses. */
+.kanban {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem;
+  margin: 0 0 1rem; align-items: start;
+}
+.column { margin: 0; }
+.column.todo h2 { color: var(--todo); }
+.column.doing h2 { color: var(--doing); }
+.column.done summary .colhead { color: var(--done); }
+.colhead {
+  font-size: 1rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted);
+}
+.column.done details > summary { list-style: none; cursor: pointer; }
+.column.done details > summary::-webkit-details-marker { display: none; }
+.column.done details > summary::marker { content: ""; }
+.column.done details > summary .colhead::before { content: "\25b8 "; }
+.column.done details[open] > summary .colhead::before { content: "\25be "; }
+.cards { border-collapse: separate; border-spacing: 0; }
+.cards td.card-cell { padding: 0; border: 0; }
+.card {
+  border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem;
+  margin: 0 0 .5rem; background: var(--card);
+}
+.card-pills { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: .3rem; }
+.card-title { font-weight: 600; }
+.card-line {
+  display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; margin-top: .2rem;
+}
+.card .why { margin-top: .25rem; }
+.pill.sev-blocker { color: var(--danger); border-color: var(--danger); }
+.pill.sev-high { color: var(--warn); border-color: var(--warn); }
+.pill.sev-normal { color: var(--muted); }
+.pill.sev-low { color: var(--muted); opacity: .7; }
+.pill.phase-pre-launch { color: var(--accent); border-color: var(--accent); }
+.pill.phase-post-launch { color: var(--muted); }
 """
 
 # Client-side filtering over the data already on the page: no server, no store, no query
@@ -130,19 +168,30 @@ FILTER_SCRIPT = """
     }
     return true;
   }
-  function newestFirst() { return sort && sort.value === 'newest'; }
+
+  function filtering() {
+    for (var i = 0; i < controls.length; i++) {
+      if ((controls[i].value || '').toLowerCase()) { return true; }
+    }
+    return false;
+  }
+  function newestFirst(body) {
+    var wanted = body.getAttribute('data-order');
+    if (wanted) { return wanted === 'newest'; }
+    return sort && sort.value === 'newest';
+  }
+  function capOf(body) {
+    var value = Number(body.getAttribute('data-cap') || '0');
+    return value > 0 ? value : 0;
+  }
 
   function apply() {
-    var flip = newestFirst();
+    // A filter is never capped: it reaches every card, including the rest of Done.
+    var narrowed = filtering();
     for (var b = 0; b < bodies.length; b++) {
       var body = bodies[b];
+      var flip = newestFirst(body);
       var rows = body.querySelectorAll('tr');
-      var shown = 0;
-      for (var r = 0; r < rows.length; r++) {
-        var on = keep(rows[r]);
-        rows[r].hidden = !on;
-        if (on) { shown++; }
-      }
       var ordered = [];
       for (var k = 0; k < rows.length; k++) { ordered.push(rows[k]); }
       ordered.sort(function (a, b) {
@@ -151,9 +200,18 @@ FILTER_SCRIPT = """
         if (one === two) { return 0; }
         return (one < two ? -1 : 1) * (flip ? -1 : 1);
       });
-      for (var j = 0; j < ordered.length; j++) { body.appendChild(ordered[j]); }
+      var cap = narrowed ? 0 : capOf(body);
+      var matched = 0;
+      for (var j = 0; j < ordered.length; j++) {
+        var row = ordered[j];
+        var on = keep(row);
+        var show = on && (cap === 0 || matched < cap);
+        row.hidden = !show;
+        if (on) { matched++; }
+      }
+      for (var m = 0; m < ordered.length; m++) { body.appendChild(ordered[m]); }
       var empty = document.querySelector('[data-empty][data-for="' + body.id + '"]');
-      if (empty) { empty.hidden = shown !== 0; }
+      if (empty) { empty.hidden = matched !== 0; }
     }
   }
 
@@ -235,6 +293,7 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         # that silently matches nothing - the defect this list exists to stop.
         (
             "in progress",
+            "failed",
             "waiting on a walkthrough",
             "needs re-review",
             "review unconfirmed",
@@ -266,6 +325,20 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         ("yes", "no"),
         "blocked_by - the field is not recorded yet, so this reads empty until it lands",
     ),
+    FilterField(
+        "severity",
+        "severity",
+        "choice",
+        ("blocker", "high", "normal", "low"),
+        "the sev: label on a queued item or job; empty when none is set",
+    ),
+    FilterField(
+        "phase",
+        "phase",
+        "choice",
+        ("pre-launch", "post-launch"),
+        "the phase: label on a queued item or job; empty when none is set",
+    ),
     FilterField("created", "created", "date", (), "created_at, ISO-8601"),
     FilterField("updated", "updated", "date", (), "the newest recorded timestamp, ISO-8601"),
     FilterField(
@@ -284,6 +357,24 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
 #     FilterField("blocked", "blocked", "choice", (), "the record's blocked_by"),
 #
 # The `blocked` column is already above, waiting on its field.
+
+# The two reserved label families. A label is `<family>:<value>`; the board colours
+# it by family and exposes the value as its own filter column (severity, phase). One
+# list, so a new family is one entry here and one column above.
+LABEL_FAMILIES: dict[str, tuple[str, ...]] = {
+    "sev": ("blocker", "high", "normal", "low"),
+    "phase": ("pre-launch", "post-launch"),
+}
+
+
+def label_value(labels: Sequence[str] | None, family: str) -> str:
+    """The value of a `family:` label, or empty when the record carries none."""
+    prefix = f"{family}:"
+    for label in labels or ():
+        text = str(label)
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return ""
 
 
 @dataclass
@@ -528,19 +619,14 @@ def waiting_on_you(data: BoardData) -> list[str]:
 
 
 def waiting_for_worker(data: BoardData) -> list[str]:
-    """The front door's own list: queued items, and steps with no answer yet.
+    """Warnings for the front door: a step gone quiet, or a commit on no branch.
 
-    None of these needs the owner, so none is counted under "Waiting on you".
+    The queued pile is not here any more - it is the To Do column, and the live
+    status of a running step is on its In Progress card. What stays is the warning
+    a card cannot carry: an agent that vanished, and a commit whose change cannot
+    be judged. None of these needs the owner.
     """
     lines: list[str] = []
-
-    for item in data.queued:
-        lines.append(
-            f"<b>queued</b> <span class='id'>{_e(item.id)}</span> "
-            f"for {_e(item.target)} in {_e(item.repo)} "
-            f"<span class='why'>{_more(item.why, 160)} - "
-            f"{_more(item.question or item.brief, 120)}</span>"
-        )
 
     for task in open_tasks(data.tasks):
         if task.age_seconds < QUIET_AFTER_SECONDS:
@@ -631,6 +717,8 @@ def _job_fields(job: Job, state: str) -> dict[str, str]:
         "job": job.id,
         "waiting-on-you": "yes" if waiting else "no",
         "blocked": getattr(job, "blocked_by", "") or "",
+        "severity": label_value(job.labels, "sev"),
+        "phase": label_value(job.labels, "phase"),
         "created": job.created_at or "",
         "updated": updated,
         "age": str(int(job.age_seconds)),
@@ -641,6 +729,10 @@ def _step_state_in_words(task: Task) -> str:
     """Where a step is, in words, derived from what it holds. Never stored."""
     if task.status == REPORTED:
         return "answered"
+    if task.status == FAILED:
+        # A dispatch whose send failed. It stopped, so it is never called in
+        # progress; it never reported, so it is not answered either.
+        return "failed"
     if task.is_abandoned:
         return "abandoned, no answer came"
     if task.is_closed:
@@ -661,7 +753,7 @@ def _task_fields(task: Task, jobs: dict[str, Job] | None = None) -> dict[str, st
     updated = _newest(task.reported_at, task.abandoned_at, task.closed_at)
     waiting = bool(task.owner_item) or bool(task.decision_is_open)
     job = (jobs or {}).get(task.job or "")
-    title = job.name_in_words if job else (task.branch or task.question)
+    title = job.name_in_words if job else (task.question or task.branch or "")
     state = job.state_in_words if job else _step_state_in_words(task)
     return {
         "repo": task.repo,
@@ -673,9 +765,32 @@ def _task_fields(task: Task, jobs: dict[str, Job] | None = None) -> dict[str, st
         "job": task.job or "",
         "waiting-on-you": "yes" if waiting else "no",
         "blocked": getattr(task, "blocked_by", "") or "",
+        # A step carries no labels yet; its job's labels are on the job's card.
+        "severity": "",
+        "phase": "",
         "created": task.dispatched_at or task.created_at or "",
         "updated": updated,
         "age": str(int(task.age_seconds)),
+    }
+
+
+def _queued_fields(item: Queued) -> dict[str, str]:
+    """A queued item's filterable values, each read from a field it records."""
+    return {
+        "repo": item.repo,
+        "title": item.question or item.brief,
+        "state": "queued",
+        "kind": item.shape,
+        "status": "queued",
+        "agent": item.target,
+        "job": item.job or "",
+        "waiting-on-you": "no",
+        "blocked": "",
+        "severity": label_value(item.labels, "sev"),
+        "phase": label_value(item.labels, "phase"),
+        "created": item.created_at or "",
+        "updated": item.created_at or "",
+        "age": str(int(item.age_seconds)),
     }
 
 
@@ -740,24 +855,29 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
-def _filter_table(
+def _card_table(
     table_id: str,
-    headers: Sequence[str],
-    rows: Sequence[tuple[Sequence[str], dict[str, str]]],
+    rows: Sequence[tuple[str, dict[str, str]]],
+    *,
+    extra: str = "",
 ) -> str:
-    """A table whose rows carry the filterable fields, plus its empty state."""
-    head = "".join(f"<th>{_e(name)}</th>" for name in headers)
+    """One column of cards: one row per card, each carrying the filterable fields.
+
+    The row is a table row, so the page's own filter script reaches the cards with
+    no change to the filter loop. `extra` carries the Done column's cap and its
+    newest-first order.
+    """
     body = "".join(
-        f"<tr{_row_attrs(fields)}>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
-        for cells, fields in rows
+        f"<tr{_row_attrs(fields)}><td class='card-cell'>{card}</td></tr>"
+        for card, fields in rows
     )
     empty = (
         f"<p class='empty' data-empty data-for=\"{_e(table_id)}\" hidden>"
         "Nothing matches those filters.</p>"
     )
     return (
-        f"<table><thead><tr>{head}</tr></thead>"
-        f'<tbody id="{_e(table_id)}" data-rows>{body}</tbody></table>{empty}'
+        "<table class='cards'><tbody "
+        f'id="{_e(table_id)}" data-rows{extra}>{body}</tbody></table>{empty}'
     )
 
 
@@ -772,6 +892,204 @@ def _section(title: str, count: int | None, inner: str, css: str = "") -> str:
 
 def _nothing(what: str) -> str:
     return f"<p class='nothing'>{_e(what)}</p>"
+
+
+DONE_CAP = 20
+
+
+def _label_pills(labels: Sequence[str] | None) -> str:
+    """A pill per label, coloured by its reserved family; other labels plain."""
+    pills: list[str] = []
+    for raw in labels or ():
+        text = str(raw)
+        family, _, value = text.partition(":")
+        css = f" {family} {family}-{value}" if family in LABEL_FAMILIES and value else ""
+        pills.append(f"<span class='pill{css}'>{_e(text)}</span>")
+    return "".join(pills)
+
+
+def _card(
+    title: str,
+    ident: str,
+    state: str,
+    reason: str,
+    *,
+    repo: str = "",
+    kind: str = "",
+    labels: Sequence[str] | None = None,
+    details: str = "",
+) -> str:
+    """One card: badges, the title in his words, the id, the state, the reason.
+
+    No branch, commit or agent handle on the face - those go in `details`, folded,
+    because the owner cannot read a handle and does not need one.
+    """
+    pills: list[str] = []
+    if repo:
+        pills.append(f"<span class='pill'>{_e(repo)}</span>")
+    if kind:
+        pills.append(f"<span class='pill'>{_e(kind)}</span>")
+    pills.append(_label_pills(labels))
+    reason_html = f"<span class='why'>{_e(reason)}</span>" if reason else ""
+    return (
+        "<div class='card'>"
+        f"<div class='card-pills'>{''.join(pills)}</div>"
+        f"<div class='card-title'>{_e(title)}</div>"
+        f"<div class='card-line'><span class='id'>{_e(ident)}</span>"
+        f"<span class='pill'>{_e(state)}</span></div>"
+        f"{reason_html}{details}"
+        "</div>"
+    )
+
+
+def _agent_reason(data: BoardData, name: str, reviewer: str | None = None) -> str:
+    """Why a card waits: the live agent and its status, or the reviewer holding it."""
+    if reviewer:
+        return f"{reviewer} is checking it"
+    agent = next((item for item in data.agents if item.name == name), None)
+    if agent is None:
+        if data.live_ok:
+            return f"{name} is not in the live agent list"
+        return f"{name} is not running"
+    return f"{name} is {agent.status or 'idle'}"
+
+
+def _job_details(job: Job) -> str:
+    """The handles kept off the card face, folded so they are never lost."""
+    bits: list[str] = []
+    if job.effect:
+        bits.append(f"effect {job.effect}")
+    bits.append(f"branch {job.branch}")
+    if job.commit:
+        bits.append(f"commit {job.commit}")
+    if job.reviewer:
+        bits.append(f"reviewer {job.reviewer}")
+    bits.append(f"pass {'yes' if job.has_pass else 'no'}")
+    bits.append(f"word {'yes' if job.has_merge_word else 'no'}")
+    return (
+        "<details class='more'><summary>details</summary>"
+        f"<div class='full'>{_e(' | '.join(bits))}</div></details>"
+    )
+
+
+def _queued_card(item: Queued) -> tuple[str, dict[str, str]]:
+    card = _card(
+        _clip(item.question or item.brief, 160),
+        item.id,
+        "queued",
+        item.why,
+        repo=item.repo,
+        kind=item.shape,
+        labels=item.labels,
+    )
+    return card, _queued_fields(item)
+
+
+def _job_card(data: BoardData, job: Job, state: str, shape: str) -> tuple[str, dict[str, str]]:
+    holding = state in ("waiting on a walkthrough", "needs re-review", "review unconfirmed")
+    reviewer = job.reviewer if holding else None
+    reason = _agent_reason(data, job.agent, reviewer) if job.is_open else ""
+    card = _card(
+        _clip(job.name_in_words, 160),
+        job.id,
+        state,
+        reason,
+        repo=job.repo,
+        kind=shape,
+        labels=job.labels,
+        details=_job_details(job),
+    )
+    return card, _job_fields(job, state)
+
+
+def _step_card(data: BoardData, task: Task, state: str) -> tuple[str, dict[str, str]]:
+    reason = _agent_reason(data, task.agent) if task.is_open else ""
+    card = _card(
+        _clip(task.question, 160),
+        task.id,
+        state,
+        reason,
+        repo=task.repo,
+        kind=task.shape,
+    )
+    return card, _task_fields(task)
+
+
+def _column(
+    css: str,
+    heading: str,
+    count: int,
+    table_id: str,
+    rows: Sequence[tuple[str, dict[str, str]]],
+    *,
+    cap: int = 0,
+    note: str = "",
+    abandoned: int = 0,
+) -> str:
+    if cap:
+        inner = _card_table(table_id, rows, extra=f' data-cap="{cap}" data-order="newest"')
+        if note:
+            inner = f"<p class='why'>{_e(note)}</p>{inner}"
+        # The abandoned count rides in the collapsed header, so work that stopped
+        # without an answer cannot sit unseen behind the collapse.
+        count_text = f"({count}, {abandoned} abandoned)" if abandoned else f"({count})"
+        return (
+            f"<section class='column {css}'><details><summary>"
+            f"<span class='colhead'>{_e(heading)}</span> "
+            f"<span class='count'>{_e(count_text)}</span></summary>{inner}</details></section>"
+        )
+    return (
+        f"<section class='column {css}'><h2>{_e(heading)} "
+        f"<span class='count'>{count}</span></h2>{_card_table(table_id, rows)}</section>"
+    )
+
+
+def _kanban(data: BoardData) -> str:
+    """To Do, In Progress and Done, each the same filterable card table.
+
+    A job and its steps are one card: a step of a job is folded into that job's
+    card. A step with no job is its own card.
+    """
+    jobs_by_id = _job_by_id(data)
+    shapes: dict[str, str] = {}
+    for task in data.tasks:
+        if task.job and task.shape and task.job not in shapes:
+            shapes[task.job] = task.shape
+
+    todo = [_queued_card(item) for item in data.queued]
+    doing: list[tuple[str, dict[str, str]]] = []
+    done: list[tuple[str, dict[str, str]]] = []
+    for job in data.jobs:
+        state = _state_of(data, job)
+        card = _job_card(data, job, state, shapes.get(job.id, ""))
+        (doing if job.is_open else done).append(card)
+    for task in data.tasks:
+        if task.job and task.job in jobs_by_id:
+            continue  # folded into its job's card
+        state = _step_state_in_words(task)
+        card = _step_card(data, task, state)
+        if task.is_open:
+            doing.append(card)
+        else:
+            done.append(card)
+    done.sort(key=lambda pair: pair[1]["created"], reverse=True)
+    abandoned = sum(1 for _, fields in done if fields["state"] == "abandoned, no answer came")
+    return (
+        "<div class='kanban'>"
+        + _column("todo", "To Do", len(todo), "rows-todo", todo)
+        + _column("doing", "In Progress", len(doing), "rows-doing", doing)
+        + _column(
+            "done",
+            "Done",
+            len(done),
+            "rows-done",
+            done,
+            cap=DONE_CAP,
+            note="Showing the newest 20; the filter reaches the rest.",
+            abandoned=abandoned,
+        )
+        + "</div>"
+    )
 
 
 def render_board(data: BoardData) -> str:
@@ -795,31 +1113,7 @@ def render_board(data: BoardData) -> str:
     else:
         worker_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
 
-    open_rows = [
-        (
-            [
-                _id(task.id),
-                _id(task.job),
-                _e(task.agent),
-                _e(task.repo),
-                _e(task.branch or task.commit or "-"),
-                _e(human_age(task.age_seconds)),
-                _more(task.question, 120),
-                _agent_state(data, task.agent),
-            ],
-            _task_fields(task, _job_by_id(data)),
-        )
-        for task in open_tasks(data.tasks)
-    ]
-    open_html = (
-        _filter_table(
-            "rows-open",
-            ["id", "job", "agent", "repo", "branch", "age", "question", "agent"],
-            open_rows,
-        )
-        if open_rows
-        else _nothing("No open steps. Nothing is being worked on.")
-    )
+    kanban_html = _kanban(data)
 
     agent_rows = [
         [
@@ -890,57 +1184,14 @@ def render_board(data: BoardData) -> str:
         else _nothing("No step has recorded the model it ran on yet.")
     )
 
-    job_rows = [
-        (
-            [
-                # Title first: the change named in his words. The id follows in
-                # brackets, for the places he has to type it.
-                f"<b>{_e(job.name_in_words)}</b> <span class='id'>[{_e(job.id)}]</span>",
-                _e(job.effect_in_words),
-                f"<span class='pill {'open' if job.is_open else ''}'>"
-                f"{_e(_state_of(data, job))}</span>",
-                _e(job.branch),
-                _e(job.agent),
-                _e(job.reviewer or "-"),
-                _e(job.commit or "-"),
-                _e("yes" if job.has_pass else "no"),
-                _e("yes" if job.has_merge_word else "no"),
-                _e(human_age(job.age_seconds)),
-            ],
-            _job_fields(job, _state_of(data, job)),
-        )
-        for job in data.jobs
-    ]
-    jobs_html = (
-        _filter_table(
-            "rows-jobs",
-            [
-                "change",
-                "effect",
-                "state",
-                "branch",
-                "agent",
-                "reviewer",
-                "commit",
-                "pass",
-                "word",
-                "age",
-            ],
-            job_rows,
-        )
-        if job_rows
-        else _nothing("No jobs yet.")
-    )
-
-    filterable = bool(open_rows or job_rows)
+    filterable = bool(data.queued or data.jobs or data.tasks)
     filters_html = (
         _section(
             "Filters",
             None,
             _filter_controls()
-            + "<p class='why'>These narrow the open steps and the jobs below, on the "
-            "page, where you already are. What waits on you is above them and is not "
-            "narrowed.</p>",
+            + "<p class='why'>These narrow the cards below, on the page, where you "
+            "already are. What waits on you is above them and is not narrowed.</p>",
             css="filters",
         )
         if filterable
@@ -971,26 +1222,17 @@ now, the page is stale.</p>
 {_section("Waiting on you", len(needs), needs_html, css="needs")}
 {filters_html}
 {_section("Waiting for a worker", len(worker), worker_html)}
-{_section("Open steps", len(open_rows), open_html)}
+{kanban_html}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
 {_section("Answers", len(answer_rows), answers_html)}
 {_section("Dropped from the queue", len(dropped_rows), dropped_html)}
 {_section("By model", len(rollup), models_html) if rollup else ""}
-{_section("Jobs", len(job_rows), jobs_html)}
 <footer>{footer}</footer>
 </main>
 <script>{FILTER_SCRIPT}</script>
 </body>
 </html>
 """
-
-
-def _agent_state(data: BoardData, name: str) -> str:
-    agent = next((a for a in data.agents if a.name == name), None)
-    if agent is None:
-        return "-"
-    css = "open" if (agent.status or "") == "working" else ""
-    return f"<span class='pill {css}'>{_e(agent.status or '-')}</span>"
 
 
 def _tokens(task: Task) -> str:
