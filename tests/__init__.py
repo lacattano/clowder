@@ -1,1 +1,1 @@
-"""Tests for clowder. Stdlib only: `py -3.14 -m unittest discover -s tests -t .`"""
+"""Tests for clowder. Stdlib only: `py -3.15 -m unittest discover -s tests -t .`"""
