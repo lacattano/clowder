@@ -639,6 +639,15 @@ class KanbanTest(unittest.TestCase):
         html = render_board(data(tasks=[failed]))
         done = html[html.index("rows-done") :]
         self.assertIn("t-0001", done, "a failed job-less step must not disappear")
+        self.assertIn(">failed<", done, "a stopped step is not called in progress")
+
+    def test_the_collapsed_done_header_names_the_abandoned_count(self) -> None:
+        # Abandoned work must not sit unseen behind the collapse, so the header
+        # says how many stopped without an answer.
+        gone = task("t-0001", job=None, status="abandoned")
+        html = render_board(data(tasks=[gone]))
+        done = html[html.index("column done") :]
+        self.assertIn("count'>(1, 1 abandoned)</span>", done)
 
     def test_the_labels_are_recorded_and_coloured(self) -> None:
         html = render_board(
@@ -668,7 +677,7 @@ class KanbanTest(unittest.TestCase):
         done = html[html.index("column done") :]
         self.assertIn("<details>", done, "Done is collapsed by default")
         self.assertIn("colhead'>Done</span>", done)
-        self.assertIn("count'>3</span>", done, "the count is visible with the collapse")
+        self.assertIn("count'>(3)</span>", done, "the count is visible with the collapse")
         self.assertIn('data-cap="20"', done)
         self.assertIn('data-order="newest"', done)
         self.assertIn("the filter reaches the rest", done)
@@ -825,6 +834,7 @@ class PlainNameTest(unittest.TestCase):
             task(task_id="t-0002", status=REPORTED),
             task(task_id="t-0003", status="abandoned"),
             task(task_id="t-0004", status="closed"),
+            task(task_id="t-0005", status=FAILED),
         ):
             produced.add(_task_fields(step)["state"])
         self.assertEqual(

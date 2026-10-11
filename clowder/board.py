@@ -18,7 +18,7 @@ from html import escape
 from pathlib import Path
 
 from .report import format_cost, format_tokens
-from .state import CLOSED, REPORTED, Job, Queued, Task
+from .state import CLOSED, FAILED, REPORTED, Job, Queued, Task
 from .timeutil import elapsed_seconds, human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
@@ -293,6 +293,7 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
         # that silently matches nothing - the defect this list exists to stop.
         (
             "in progress",
+            "failed",
             "waiting on a walkthrough",
             "needs re-review",
             "review unconfirmed",
@@ -728,6 +729,10 @@ def _step_state_in_words(task: Task) -> str:
     """Where a step is, in words, derived from what it holds. Never stored."""
     if task.status == REPORTED:
         return "answered"
+    if task.status == FAILED:
+        # A dispatch whose send failed. It stopped, so it is never called in
+        # progress; it never reported, so it is not answered either.
+        return "failed"
     if task.is_abandoned:
         return "abandoned, no answer came"
     if task.is_closed:
@@ -1019,15 +1024,19 @@ def _column(
     *,
     cap: int = 0,
     note: str = "",
+    abandoned: int = 0,
 ) -> str:
     if cap:
         inner = _card_table(table_id, rows, extra=f' data-cap="{cap}" data-order="newest"')
         if note:
             inner = f"<p class='why'>{_e(note)}</p>{inner}"
+        # The abandoned count rides in the collapsed header, so work that stopped
+        # without an answer cannot sit unseen behind the collapse.
+        count_text = f"({count}, {abandoned} abandoned)" if abandoned else f"({count})"
         return (
             f"<section class='column {css}'><details><summary>"
             f"<span class='colhead'>{_e(heading)}</span> "
-            f"<span class='count'>{count}</span></summary>{inner}</details></section>"
+            f"<span class='count'>{_e(count_text)}</span></summary>{inner}</details></section>"
         )
     return (
         f"<section class='column {css}'><h2>{_e(heading)} "
@@ -1064,6 +1073,7 @@ def _kanban(data: BoardData) -> str:
         else:
             done.append(card)
     done.sort(key=lambda pair: pair[1]["created"], reverse=True)
+    abandoned = sum(1 for _, fields in done if fields["state"] == "abandoned, no answer came")
     return (
         "<div class='kanban'>"
         + _column("todo", "To Do", len(todo), "rows-todo", todo)
@@ -1076,6 +1086,7 @@ def _kanban(data: BoardData) -> str:
             done,
             cap=DONE_CAP,
             note="Showing the newest 20; the filter reaches the rest.",
+            abandoned=abandoned,
         )
         + "</div>"
     )
