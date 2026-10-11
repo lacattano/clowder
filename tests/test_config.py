@@ -130,6 +130,47 @@ class LoadConfigTest(unittest.TestCase):
         config = load_config(path)
         self.assertEqual(config.mux_prompt_argv, ("send", "{brief}"))
 
+    def test_the_bus_is_off_by_default(self) -> None:
+        config = load_config(self.config_path)
+        self.assertIsNone(config.bus_send_argv)
+        self.assertIsNone(config.bus_peers_argv)
+
+    def test_bus_send_and_peers_argv_can_be_set(self) -> None:
+        path = write_config(
+            self.root / "bus.toml",
+            bus={
+                "send_argv": ["remote-pi", "mesh", "send", "{agent}", "{brief}"],
+                "peers_argv": ["remote-pi", "peers"],
+            },
+        )
+        config = load_config(path)
+        self.assertEqual(
+            config.bus_send_argv, ("remote-pi", "mesh", "send", "{agent}", "{brief}")
+        )
+        self.assertEqual(config.bus_peers_argv, ("remote-pi", "peers"))
+
+    def test_bus_argv_must_be_strings(self) -> None:
+        path = write_config(self.root / "odd-bus.toml", bus={"send_argv": [1, 2]})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("send_argv", str(caught.exception))
+
+    def test_unknown_bus_keys_are_refused(self) -> None:
+        path = write_config(self.root / "typo-bus.toml", bus={"send": "x"})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("bus", str(caught.exception))
+
+    def test_input_wait_defaults_and_can_be_set(self) -> None:
+        self.assertEqual(load_config(self.config_path).dispatch_input_wait, 1.5)
+        path = write_config(self.root / "wait.toml", dispatch={"input_wait": 0})
+        self.assertEqual(load_config(path).dispatch_input_wait, 0.0)
+
+    def test_a_negative_input_wait_is_refused(self) -> None:
+        path = write_config(self.root / "neg.toml", dispatch={"input_wait": -1})
+        with self.assertRaises(ConfigError):
+            load_config(path)
+
     def test_as_dict_is_json_ready(self) -> None:
         import json
 

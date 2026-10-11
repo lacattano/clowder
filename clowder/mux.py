@@ -71,28 +71,47 @@ class MuxResult:
 class Mux:
     """Drives one multiplexer binary by agent name."""
 
-    def __init__(self, binary: str, prompt_argv: Sequence[str]) -> None:
+    def __init__(
+        self,
+        binary: str,
+        prompt_argv: Sequence[str],
+        bus_send_argv: Sequence[str] | None = None,
+        bus_peers_argv: Sequence[str] | None = None,
+    ) -> None:
         self.binary = binary
         self.prompt_argv = tuple(prompt_argv)
+        self.bus_send_argv = tuple(bus_send_argv) if bus_send_argv else None
+        self.bus_peers_argv = tuple(bus_peers_argv) if bus_peers_argv else None
 
     # -- argv --------------------------------------------------------------
 
-    def build_prompt_argv(self, agent: str, brief: str) -> list[str]:
-        """Fill the configured template. {agent} and {brief} are substituted."""
+    @staticmethod
+    def _fill(parts: Sequence[str], agent: str, brief: str) -> list[str]:
+        """Substitute {agent} and {brief}; append the brief when it is unnamed."""
         if len(brief) > MAX_BRIEF_CHARS:
             raise MuxError(
                 f"brief is {len(brief)} characters; the limit is {MAX_BRIEF_CHARS}. "
                 "Put it in a file and pass --brief-file."
             )
-        argv = [self.binary]
+        argv: list[str] = []
         filled = False
-        for part in self.prompt_argv:
+        for part in parts:
             argv.append(part.replace("{agent}", agent).replace("{brief}", brief))
             if "{brief}" in part:
                 filled = True
         if not filled:
             argv.append(brief)
         return argv
+
+    def build_prompt_argv(self, agent: str, brief: str) -> list[str]:
+        """Fill the configured template. {agent} and {brief} are substituted."""
+        return [self.binary, *self._fill(self.prompt_argv, agent, brief)]
+
+    def build_bus_send_argv(self, agent: str, brief: str) -> list[str]:
+        """The agent-bus send command. Unlike the prompt, this is a full argv."""
+        if self.bus_send_argv is None:
+            raise MuxError("no agent-bus send command is configured")
+        return self._fill(self.bus_send_argv, agent, brief)
 
     # -- running -----------------------------------------------------------
 
@@ -261,6 +280,72 @@ class Mux:
         """Type key presses into an agent's pane and report what happened."""
         return self._run(self.build_send_keys_argv(target, keys), timeout_s)
 
+    # -- the agent bus -----------------------------------------------------
+
+    def bus_send(self, agent: str, brief: str, timeout_s: float = 60.0) -> MuxResult:
+        """Send a brief over the agent bus. The command is the configured one."""
+        return self._run(self.build_bus_send_argv(agent, brief), timeout_s)
+
+    def bus_peers(self, timeout_s: float = 15.0) -> list[tuple[str, str]] | None:
+        """The peers joined to the bus, as (path, name). None = cannot tell.
+
+        None is not the same as an empty list: an empty list means the bus was
+        read and nobody is on it, while None means the probe itself failed. The
+        caller treats the first as "not joined" and the second as "do not guess".
+        """
+        if self.bus_peers_argv is None:
+            return None
+        try:
+            result = self._run(list(self.bus_peers_argv), timeout_s)
+        except MuxError:
+            return None
+        if not result.ok:
+            return None
+        return parse_peer_addresses(result.stdout)
+
+    def is_bus_joined(
+        self, agent: str, cwd: str | None = None, timeout_s: float = 15.0
+    ) -> bool | None:
+        """Whether the target agent is on the bus.
+
+        True when the peers probe says so, or when no probe is configured but a
+        send command is. False when the probe names other peers and not this
+        one. None when the probe ran but could not be read - the caller then
+        treats it as "not joined" and types under the guard, because a failed
+        probe is not proof the box is clear.
+        """
+        if self.bus_peers_argv is None:
+            return True
+        peers = self.bus_peers(timeout_s)
+        if peers is None:
+            return None
+        return peer_joined(peers, agent, cwd)
+
+    def read_input(self, target: str, timeout_s: float = 15.0) -> str | None:
+        """The text sitting in an agent's input box. None = cannot read it.
+
+        This is the pane the owner types in, so the caller must not send while
+        it holds text. The read is a screen snapshot, because the multiplexer
+        exposes the input box no other way.
+        """
+        argv = [
+            self.binary,
+            "agent",
+            "read",
+            target,
+            "--source",
+            "visible",
+            "--format",
+            "text",
+        ]
+        try:
+            result = self._run(argv, timeout_s)
+        except MuxError:
+            return None
+        if not result.ok:
+            return None
+        return input_line(result.stdout)
+
     def start_agent(
         self,
         name: str,
@@ -341,6 +426,90 @@ def _as_text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+# A horizontal rule: the line Pi draws above the input box. The box-drawing
+# characters are named by code point so this file stays ASCII.
+_RULE_CHARS = set("-=_\u2500\u2501\u2550")
+
+
+def _is_rule(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 8 and all(ch in _RULE_CHARS for ch in stripped)
+
+
+def _is_stats(line: str) -> bool:
+    """The Pi usage footer, e.g. the line carrying the up and down arrows."""
+    return "\u2191" in line or "\u2193" in line
+
+
+def input_line(snapshot: str) -> str | None:
+    """The text in a Pi pane's input box, read from a screen snapshot.
+
+    The box sits between the last horizontal rule and the working-directory
+    line of the footer. The footer is anchored by its stats line, so a draft
+    that itself starts with a path-like word is still read as a draft. An empty
+    box reads as ""; a snapshot with no rule or footer reads as None, because
+    the box cannot be judged and the caller must not type blind.
+    """
+    lines = [line.rstrip() for line in snapshot.splitlines()]
+    rule = -1
+    for index, line in enumerate(lines):
+        if _is_rule(line):
+            rule = index
+    if rule < 0:
+        return None
+
+    stats = -1
+    for index in range(len(lines) - 1, rule, -1):
+        if _is_stats(lines[index]):
+            stats = index
+            break
+    if stats <= rule:
+        return None
+    # The working-directory line sits directly above the stats line.
+    box = lines[rule + 1 : stats - 1]
+    return "\n".join(part for part in box if part.strip())
+
+
+def parse_peer_addresses(output: str) -> list[tuple[str, str]]:
+    """Read `remote-pi peers` output as (path, name) pairs.
+
+    A peer line is `<path>@<name>`, optionally prefixed by a cross-PC label
+    (`<pc>:`). The path is kept so a name that repeats in another folder cannot
+    pass the membership check on its own.
+    """
+    peers: list[tuple[str, str]] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or "@" not in line:
+            continue
+        path, _, name = line.rpartition("@")
+        name = name.strip()
+        if not name or " " in name or not path:
+            continue
+        peers.append((path.strip(), name))
+    return peers
+
+
+def _normalize_path(value: str) -> str:
+    return value.replace("/", "\\").rstrip("\\").lower()
+
+
+def peer_joined(peers: Sequence[tuple[str, str]], agent: str, cwd: str | None = None) -> bool:
+    """Whether `agent` is on the bus. With a cwd, the folder must match too."""
+    want = _normalize_path(cwd) if cwd else None
+    for path, name in peers:
+        if name != agent:
+            continue
+        if want is None:
+            return True
+        have = _normalize_path(path)
+        # The peer path may drop the drive letter (a receive-side alias), so a
+        # suffix match in either direction is the identity here.
+        if have.endswith(want) or want.endswith(have):
+            return True
+    return False
 
 
 def parse_agent_list(output: str) -> list[AgentInfo]:

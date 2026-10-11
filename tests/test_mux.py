@@ -8,7 +8,15 @@ import unittest
 from pathlib import Path
 
 from clowder.errors import MuxError
-from clowder.mux import Mux, MuxResult, parse_agent_list, reply_pane_id
+from clowder.mux import (
+    Mux,
+    MuxResult,
+    input_line,
+    parse_agent_list,
+    parse_peer_addresses,
+    peer_joined,
+    reply_pane_id,
+)
 from tests.support import clean_env, make_mux_launcher, write_fake_state
 
 # Captured from `herdr agent list`, trimmed to two agents.
@@ -70,6 +78,101 @@ class BuildArgvTest(unittest.TestCase):
     def test_split_argv_has_no_env_by_default(self) -> None:
         mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
         self.assertNotIn("--env", mux.build_split_argv("C:/code/myrepo"))
+
+    def test_bus_send_argv_is_a_full_command(self) -> None:
+        mux = Mux(
+            "herdr",
+            ("agent", "prompt", "{agent}", "{brief}"),
+            bus_send_argv=["remote-pi", "mesh", "send", "{agent}", "{brief}"],
+        )
+        self.assertEqual(
+            mux.build_bus_send_argv("maker", "the brief"),
+            ["remote-pi", "mesh", "send", "maker", "the brief"],
+        )
+
+    def test_bus_send_without_a_configured_command_is_an_error(self) -> None:
+        mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
+        with self.assertRaises(MuxError):
+            mux.build_bus_send_argv("maker", "the brief")
+
+
+class InputLineTest(unittest.TestCase):
+    """The input box is read off the screen, so the parser is pinned here."""
+
+    @staticmethod
+    def snapshot(box: str) -> str:
+        rule = "-" * 40
+        return "\n".join(
+            [
+                "some earlier output",
+                rule,
+                box,
+                "~\\code\\myrepo (task/x)",
+                "\u219112k \u21933k R1k CH10% $0.01 (auto) model \u2022 high",
+                "~\\code\\myrepo relay local (8)",
+            ]
+        )
+
+    def test_an_empty_box_reads_as_empty(self) -> None:
+        self.assertEqual(input_line(self.snapshot("")), "")
+
+    def test_owner_text_is_returned(self) -> None:
+        self.assertEqual(
+            input_line(self.snapshot("half a sentence I was writing")),
+            "half a sentence I was writing",
+        )
+
+    def test_a_multiline_draft_is_joined(self) -> None:
+        self.assertEqual(
+            input_line(self.snapshot("first line\nsecond line")),
+            "first line\nsecond line",
+        )
+
+    def test_a_draft_that_starts_with_a_slash_is_still_read(self) -> None:
+        # A slash command looks like a footer path but is really the owner's
+        # draft; anchoring the footer on the stats line keeps it in the box.
+        self.assertEqual(input_line(self.snapshot("/remote-pi join")), "/remote-pi join")
+
+    def test_a_snapshot_with_no_rule_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("just some output\nno rule here"))
+
+    def test_a_snapshot_with_no_stats_line_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("-------\na draft\n~\\code"))
+
+
+class PeerListTest(unittest.TestCase):
+    REAL_OUTPUT = (
+        "[remote-pi] peers:\n"
+        "  local:\n"
+        "    C:\\code\\myrepo@maker\n"
+        "    C:\\code\\other@verifier\n"
+        "\n"
+        "  remote:C\n"
+        "    \\Users\\me\\code\\myrepo@maker\n"
+    )
+
+    def test_peer_addresses_are_parsed(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertIn(("C:\\code\\myrepo", "maker"), peers)
+        self.assertIn(("\\Users\\me\\code\\myrepo", "maker"), peers)
+
+    def test_a_cross_pc_path_matches_by_suffix(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertTrue(peer_joined(peers, "maker", "C:\\code\\myrepo"))
+        self.assertTrue(
+            peer_joined(
+                [("\\Users\\me\\code\\myrepo", "maker")],
+                "maker",
+                "C:\\Users\\me\\code\\myrepo",
+            )
+        )
+
+    def test_a_name_in_another_folder_does_not_count_as_joined(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertFalse(peer_joined(peers, "maker", "C:\\code\\elsewhere"))
+
+    def test_an_empty_roster_is_not_joined(self) -> None:
+        self.assertFalse(peer_joined(parse_peer_addresses("(none)"), "maker"))
 
 
 class ParseAgentListTest(unittest.TestCase):

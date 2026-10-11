@@ -21,7 +21,7 @@ from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
 from .marker import DEFAULT_SENDER, apply_marker
-from .mux import AgentInfo, Mux
+from .mux import AgentInfo, Mux, MuxResult
 from .report import INDENT, build_report, usage_breakdown
 from .sessions import read_answer, read_model, read_usage
 from .state import (
@@ -671,7 +671,12 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
             )
         worktree = job.worktree
 
-    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    mux = Mux(
+        config.mux_bin,
+        config.mux_prompt_argv,
+        bus_send_argv=config.bus_send_argv,
+        bus_peers_argv=config.bus_peers_argv,
+    )
 
     agent_info = None
     if not args.force and not args.dry_run:
@@ -740,13 +745,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
             file=sys.stderr,
         )
 
-    result = mux.prompt(
-        args.agent,
-        message,
-        timeout_s=args.timeout,
-        wait=args.wait,
-        until=args.until,
-    )
+    result = _deliver(mux, args, config, message, agent_info)
     task.mux_argv = list(result.argv)
     task.mux_returncode = result.returncode
     task.dispatched_at = now_iso()
@@ -776,6 +775,80 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         print(f"{PROGRAM}: recorded as {task.id} ({FAILED})", file=sys.stderr)
 
     return 0 if result.ok else 2
+
+
+def _deliver(
+    mux: Mux,
+    args: argparse.Namespace,
+    config: Config,
+    message: str,
+    agent_info: AgentInfo | None,
+) -> MuxResult:
+    """Send one brief: over the agent bus when it can, else typed under the guard.
+
+    A bus send never touches the pane's input box, so it cannot collide with the
+    owner. The typed fallback always reads the box first.
+    """
+    cwd = agent_info.cwd if agent_info is not None else None
+    if config.bus_send_argv:
+        joined = mux.is_bus_joined(args.agent, cwd)
+        if joined is True:
+            try:
+                return mux.bus_send(args.agent, message, timeout_s=args.timeout)
+            except MuxError as exc:
+                # The configured bus command is missing or unrunnable. Refuse
+                # rather than silently type: the config promised the bus.
+                raise DispatchError(f"cannot send over the agent bus: {exc}") from exc
+        if joined is None:
+            print(
+                f"{PROGRAM}: warning: cannot read the bus membership; typing the "
+                "brief under the input-box guard",
+                file=sys.stderr,
+            )
+    _refuse_if_input_dirty(mux, args.agent, config, args.force, "the brief")
+    return mux.prompt(
+        args.agent,
+        message,
+        timeout_s=args.timeout,
+        wait=args.wait,
+        until=args.until,
+    )
+
+
+def _refuse_if_input_dirty(
+    mux: Mux,
+    name: str,
+    config: Config,
+    force: bool,
+    what: str,
+) -> None:
+    """Never type while text the owner left sits in the same input box.
+
+    The multiplexer writes a sent message into the pane's own input box. The
+    owner writes there too, so a non-empty box means the two texts would merge.
+    Wait briefly for a mid-keystroke to clear, then refuse. A box that cannot be
+    read is refused as well: typing blind is the collision this prevents.
+    """
+    if force:
+        return
+    deadline = time.monotonic() + max(0.0, config.dispatch_input_wait)
+    while True:
+        line = mux.read_input(name)
+        if line is None:
+            raise DispatchError(
+                f"cannot read {name}'s input box, so {what} would be typed blind and "
+                "could merge with text the owner left there. Check the pane, or pass "
+                "--force to send anyway."
+            )
+        if not line.strip():
+            return
+        if time.monotonic() >= deadline:
+            raise DispatchError(
+                f"{name}'s input box is not empty, so {what} would merge with: "
+                f"{_clip(line, 60)!r}. Send or clear it, then try again - or pass "
+                "--force to type anyway."
+            )
+        time.sleep(min(0.25, max(0.05, deadline - time.monotonic())))
 
 
 def _where(task: Task) -> str:
@@ -2440,6 +2513,10 @@ def cmd_agent_reset(args: argparse.Namespace) -> int:
             f"its answer is read from. Read it first: {PROGRAM} report {pending[0].id}, "
             "or pass --force."
         )
+
+    # The reset is typed into the same box the owner uses, so it takes the same
+    # guard a dispatch does: never type over text that is already there.
+    _refuse_if_input_dirty(mux, name, config, args.force, "the reset")
 
     before = agent.session_path
     model_before = read_model(before) if before else None
