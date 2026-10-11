@@ -18,7 +18,7 @@ from clowder.board import (
     waiting_on_you,
     write_board,
 )
-from clowder.state import CLOSED, REPORTED, Job, Queued, Task
+from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
 from clowder.timeutil import now_iso
 
 
@@ -140,11 +140,12 @@ class RenderTest(unittest.TestCase):
         for heading in (
             "Waiting on you",
             "Waiting for a worker",
-            "Open steps",
+            "To Do",
+            "In Progress",
+            "Done",
             "Agents and spaces",
             "Answers",
             "Dropped from the queue",
-            "Jobs",
         ):
             self.assertIn(heading, html)
         self.assertIn("Nothing is recorded as waiting on you.", html)
@@ -152,11 +153,11 @@ class RenderTest(unittest.TestCase):
         self.assertIn("No queue item has been dropped.", html)
 
     def test_an_open_step_is_shown(self) -> None:
-        html = render_board(data(tasks=[task()], agents=[agent()]))
-        self.assertIn("t-0001", html)
-        self.assertIn("does the site need a refund policy?", html)
-        self.assertIn("task/refund", html)
-        self.assertNotIn("No open steps", html)
+        html = render_board(data(tasks=[task(job=None)], agents=[agent()]))
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        self.assertIn("t-0001", doing)
+        self.assertIn("does the site need a refund policy?", doing)
+        self.assertIn("in progress", doing)
 
     def test_an_answer_is_shown_with_its_usage(self) -> None:
         answered = task(
@@ -174,31 +175,38 @@ class RenderTest(unittest.TestCase):
         self.assertIn("closed", html)
         self.assertIn("refund", html)
 
-    def test_the_job_table_shows_the_owner_s_gates(self) -> None:
+    def test_the_job_card_folds_the_owner_s_gates(self) -> None:
+        # The pass and the merge word are off the card face now; they are folded
+        # into the details line, so the record is never lost.
         passed = job(pass_at="2026-09-29T10:00:00Z", pass_by="lacattano")
         html = render_board(data(jobs=[passed]))
-        self.assertIn("<th>pass</th>", html)
-        self.assertIn("<th>word</th>", html)
-        self.assertIn("<td>yes</td>", html, "the pass column")
-        self.assertIn("<td>no</td>", html, "the merge word column")
+        self.assertIn("details", html)
+        self.assertIn("pass yes", html)
+        self.assertIn("word no", html)
 
-    def test_the_worker_section_is_marked_apart_from_the_owner(self) -> None:
+    def test_a_queued_item_is_to_do_not_the_owner_s_work(self) -> None:
         html = render_board(data(queued=[queued()]))
         self.assertIn(
             "Nothing is recorded as waiting on you.", html, "the owner has nothing to do"
         )
-        self.assertIn("Waiting for a worker", html)
-        owner, worker = html.split("Waiting on you", 1)[1].split("Waiting for a worker")
+        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker", 1)[0]
         self.assertNotIn("q-0001", owner, "a queued item is not the owner's work")
-        self.assertIn("q-0001", worker)
-        self.assertIn("the space holds an open job", worker)
+        todo = html[html.index("rows-todo") : html.index("rows-doing")]
+        self.assertIn("q-0001", todo)
+        self.assertIn("the space holds an open job", todo)
 
     def test_the_worker_section_names_the_front_door(self) -> None:
         html = render_board(data(front_door_name="topcat"))
         self.assertIn("Nothing is waiting for topcat.", html)
 
     def test_the_front_door_name_is_used_when_its_list_is_not_empty(self) -> None:
-        html = render_board(data(queued=[queued()], front_door_name="topcat"))
+        html = render_board(
+            data(
+                tasks=[old_task()],
+                agents=[agent("verifier", status="idle")],
+                front_door_name="topcat",
+            )
+        )
         self.assertIn("topcat chases them", html)
 
     def test_a_dropped_item_is_history_not_work(self) -> None:
@@ -208,7 +216,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("q-0009", history)
         self.assertIn("already merged under PR #27", history)
         self.assertIn("topcat", history)
-        worker = html.split("Waiting for a worker", 1)[1].split("Open steps", 1)[0]
+        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
         self.assertNotIn("q-0009", worker, "a dropped item is not waiting for a worker")
 
     def test_the_drop_history_is_newest_first(self) -> None:
@@ -382,34 +390,34 @@ class WaitingTest(unittest.TestCase):
     def test_the_jobs_table_shows_needs_rereview_when_the_tip_moved(self) -> None:
         held = job(reviewer="verifier", review_commit="a" * 40)
         html = render_board(data(jobs=[held], rereview={held.id: "b" * 40}))
-        jobs = html[html.index('id="rows-jobs"') :]
-        self.assertIn("needs re-review", jobs)
+        doing = html[html.index('id="rows-doing"') :]
+        self.assertIn("needs re-review", doing)
 
     def test_the_row_data_state_matches_the_displayed_state_for_a_rereview(self) -> None:
         # The state filter reads data-state; the pill shows the words. They must be
         # the same, or selecting "needs re-review" matches no row.
         held = job(reviewer="verifier", review_commit="a" * 40)
         html = render_board(data(jobs=[held], rereview={held.id: "b" * 40}))
-        jobs = html[html.index('id="rows-jobs"') :]
-        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        doing = html[html.index('id="rows-doing"') :]
+        row = re.search(r"<tr([^>]*)>", doing).group(1)
         self.assertIn('data-state="needs re-review"', row)
-        self.assertIn(">needs re-review<", jobs)
+        self.assertIn(">needs re-review<", doing)
 
     def test_the_row_data_state_matches_the_displayed_state_for_the_equal_tip(self) -> None:
         held = job(reviewer="verifier", review_commit="a" * 40)
         html = render_board(data(jobs=[held]))
-        jobs = html[html.index('id="rows-jobs"') :]
-        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        doing = html[html.index('id="rows-doing"') :]
+        row = re.search(r"<tr([^>]*)>", doing).group(1)
         self.assertIn('data-state="waiting on a walkthrough"', row)
-        self.assertIn(">waiting on a walkthrough<", jobs)
+        self.assertIn(">waiting on a walkthrough<", doing)
 
     def test_the_row_data_state_matches_review_unconfirmed(self) -> None:
         held = job(reviewer="verifier", review_commit="a" * 40)
         html = render_board(data(jobs=[held], review_unconfirmed={held.id}))
-        jobs = html[html.index('id="rows-jobs"') :]
-        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        doing = html[html.index('id="rows-doing"') :]
+        row = re.search(r"<tr([^>]*)>", doing).group(1)
         self.assertIn('data-state="review unconfirmed"', row)
-        self.assertIn(">review unconfirmed<", jobs)
+        self.assertIn(">review unconfirmed<", doing)
 
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
@@ -486,13 +494,13 @@ class WaitingTest(unittest.TestCase):
             [],
         )
 
-    def test_a_queued_item_waits(self) -> None:
-        waiting = waiting_for_worker(data(queued=[queued()]))
-        self.assertEqual(len(waiting), 1)
-        self.assertIn("queued", waiting[0])
-        self.assertIn("q-0001", waiting[0])
-        self.assertIn("maker", waiting[0])
-        self.assertIn("open job", waiting[0])
+    def test_a_queued_item_is_a_to_do_card(self) -> None:
+        # It no longer sits in the worker's bullet list; it is a card in To Do.
+        html = render_board(data(queued=[queued()]))
+        todo = html[html.index("rows-todo") : html.index("rows-doing")]
+        self.assertIn("q-0001", todo)
+        self.assertIn("maker", todo)
+        self.assertIn("the space holds an open job", todo)
 
     def test_a_queued_item_does_not_wait_on_the_owner(self) -> None:
         self.assertEqual(waiting_on_you(data(queued=[queued()])), [])
@@ -521,18 +529,18 @@ class FilterTest(unittest.TestCase):
         return found
 
     def test_the_filterable_field_list_matches_the_rows(self) -> None:
-        # A filter may not name a field the rows do not carry, so every row on the
-        # page must expose exactly the declared fields.
+        # A filter may not name a field the rows do not carry, so every card on
+        # the page must expose exactly the declared fields.
         names = [field.name for field in FILTERABLE_FIELDS]
         self.assertTrue(names, "the column list is the point")
         html = render_board(
             data(
-                tasks=[task(), task(task_id="t-0002")],
+                tasks=[task(job=None)],
                 jobs=[job(), job(job_id="j-0002")],
             )
         )
         rows = self.rows(html)
-        self.assertGreaterEqual(len(rows), 4, "jobs and steps both carry the fields")
+        self.assertGreaterEqual(len(rows), 3, "a job and a job-less step both carry them")
         for row in rows:
             self.assertEqual(row, names, "a row must expose exactly the declared fields")
 
@@ -557,15 +565,15 @@ class FilterTest(unittest.TestCase):
         # error and not a half-drawn table.
         html = render_board(data(tasks=[task()], jobs=[job()]))
         empties = re.findall(r"data-empty data-for=\"([a-z-]+)\"", html)
-        self.assertEqual(sorted(empties), ["rows-jobs", "rows-open"])
+        self.assertEqual(sorted(empties), ["rows-doing", "rows-done", "rows-todo"])
         self.assertIn("Nothing matches those filters.", html)
-        self.assertIn("empty.hidden = shown !== 0", html, "the script shows the empty state")
+        self.assertIn("empty.hidden = matched !== 0", html, "the script shows the empty state")
 
     def test_the_owner_section_is_first_and_is_not_filtered(self) -> None:
         html = render_board(data(tasks=[task()], jobs=[job()]))
         waiting = html.index("Waiting on you")
         self.assertLess(waiting, html.index("Filters"), "what waits on him stays first")
-        self.assertLess(waiting, html.index("Open steps"))
+        self.assertLess(waiting, html.index("To Do"))
         # No filterable row, and no empty state, sits in his section.
         section = html[waiting : html.index("Filters")]
         self.assertNotIn("data-filter", section)
@@ -578,6 +586,114 @@ class FilterTest(unittest.TestCase):
         self.assertNotIn("<link", html)
         self.assertNotIn("fetch(", html)
         self.assertNotIn("XMLHttpRequest", html)
+
+
+class KanbanTest(unittest.TestCase):
+    """The three columns, labels, the Done collapse, and the filter on the cards."""
+
+    def test_the_three_columns_and_what_falls_in_each(self) -> None:
+        html = render_board(
+            data(
+                queued=[queued("q-0001")],
+                jobs=[
+                    job("j-0001"),
+                    job("j-0002", status=CLOSED, closed_at="2026-09-27T10:00:00Z"),
+                ],
+                tasks=[
+                    task("t-0001", job=None),
+                    task("t-0002", job=None, status=REPORTED, answer="done"),
+                    task("t-0003", job=None, status="abandoned"),
+                ],
+            )
+        )
+        todo = html[html.index("rows-todo") : html.index("rows-doing")]
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        done = html[html.index("rows-done") :]
+        self.assertIn("q-0001", todo, "a queued item is To Do")
+        self.assertIn("j-0001", doing, "an open job is In Progress")
+        self.assertIn("t-0001", doing, "an open step with no job is In Progress")
+        self.assertIn("j-0002", done, "a closed job is Done")
+        self.assertIn("t-0002", done, "an answered step with no job is Done")
+        self.assertIn("t-0003", done, "an abandoned step is kept in Done, never hidden")
+
+    def test_a_job_and_its_step_are_one_card(self) -> None:
+        html = render_board(data(jobs=[job("j-0001")], tasks=[task("t-0001", job="j-0001")]))
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        self.assertIn("j-0001", doing)
+        self.assertNotIn("t-0001", doing, "the step is folded into the job's card")
+
+    def test_a_done_card_shows_no_reason(self) -> None:
+        # A finished change waits on nothing, so its card carries no reason line.
+        closed = job("j-0001", status=CLOSED, closed_at="2026-09-27T10:00:00Z")
+        html = render_board(data(jobs=[closed], agents=[agent("maker", status="working")]))
+        done = html[html.index("rows-done") :]
+        self.assertNotIn("maker is working", done)
+        self.assertNotIn("checking it", done)
+
+    def test_a_failed_step_with_no_job_is_on_the_board(self) -> None:
+        # A FAILED dispatch is not open, has no answer, and is neither abandoned
+        # nor closed. It must still land somewhere, so a not-open job-less step is
+        # Done - the same exhaustive bucket the jobs loop uses - and never missing
+        # from the page.
+        failed = task("t-0001", job=None, status=FAILED)
+        html = render_board(data(tasks=[failed]))
+        done = html[html.index("rows-done") :]
+        self.assertIn("t-0001", done, "a failed job-less step must not disappear")
+        self.assertIn(">failed<", done, "a stopped step is not called in progress")
+
+    def test_the_collapsed_done_header_names_the_abandoned_count(self) -> None:
+        # Abandoned work must not sit unseen behind the collapse, so the header
+        # says how many stopped without an answer.
+        gone = task("t-0001", job=None, status="abandoned")
+        html = render_board(data(tasks=[gone]))
+        done = html[html.index("column done") :]
+        self.assertIn("count'>(1, 1 abandoned)</span>", done)
+
+    def test_the_labels_are_recorded_and_coloured(self) -> None:
+        html = render_board(
+            data(
+                queued=[queued(labels=["sev:blocker", "phase:pre-launch"])],
+                jobs=[job(labels=["sev:high"])],
+            )
+        )
+        self.assertIn("sev:blocker", html)
+        self.assertIn("sev-blocker", html, "the sev: family colours the pill")
+        self.assertIn("phase:pre-launch", html)
+        self.assertIn("phase-pre-launch", html, "the phase: family colours the pill")
+        self.assertIn("sev:high", html)
+        self.assertIn("sev-high", html)
+        # severity and phase are filter columns too, fed by the label.
+        self.assertIn('data-filter="severity"', html)
+        self.assertIn('data-filter="phase"', html)
+        self.assertIn('data-severity="blocker"', html)
+        self.assertIn('data-phase="pre-launch"', html)
+
+    def test_the_done_column_is_collapsed_with_a_count_and_a_cap(self) -> None:
+        closed = [
+            job(f"j-{n:04d}", status=CLOSED, closed_at="2026-09-27T10:00:00Z")
+            for n in range(1, 4)
+        ]
+        html = render_board(data(jobs=closed))
+        done = html[html.index("column done") :]
+        self.assertIn("<details>", done, "Done is collapsed by default")
+        self.assertIn("colhead'>Done</span>", done)
+        self.assertIn("count'>(3)</span>", done, "the count is visible with the collapse")
+        self.assertIn('data-cap="20"', done)
+        self.assertIn('data-order="newest"', done)
+        self.assertIn("the filter reaches the rest", done)
+        # Every card is on the page, so the filter can reach the rest of Done.
+        for n in range(1, 4):
+            self.assertIn(f"j-{n:04d}", done)
+
+    def test_the_filter_reaches_every_card_and_lifts_the_cap(self) -> None:
+        html = render_board(data(queued=[queued()], jobs=[job()]))
+        rows = [row for row in re.findall(r"<tr([^>]*)>", html) if "data-repo=" in row]
+        self.assertGreaterEqual(len(rows), 2, "the queued card and the job card")
+        for row in rows:
+            self.assertNotIn("data-card", row)
+        # The cap is a default only: a filter is never capped, so it reaches the rest.
+        self.assertIn("narrowed ? 0 : capOf(body)", html)
+        self.assertIn("row.hidden = !show", html)
 
 
 class ModelRollupTest(unittest.TestCase):
@@ -718,6 +834,7 @@ class PlainNameTest(unittest.TestCase):
             task(task_id="t-0002", status=REPORTED),
             task(task_id="t-0003", status="abandoned"),
             task(task_id="t-0004", status="closed"),
+            task(task_id="t-0005", status=FAILED),
         ):
             produced.add(_task_fields(step)["state"])
         self.assertEqual(
@@ -726,12 +843,12 @@ class PlainNameTest(unittest.TestCase):
             "a row can carry a state the control cannot name",
         )
 
-    def test_the_jobs_table_still_filters_on_status(self) -> None:
-        # The visible cell now carries the words; the raw status is still on the
-        # row, so the status filter still works.
+    def test_the_card_still_filters_on_status(self) -> None:
+        # The card face carries the words; the raw status is still on the row, so
+        # the status filter still works.
         html = render_board(data(jobs=[job()]))
-        jobs = html[html.index('id="rows-jobs"') :]
-        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        doing = html[html.index('id="rows-doing"') :]
+        row = re.search(r"<tr([^>]*)>", doing).group(1)
         self.assertIn('data-status="open"', row)
         self.assertIn('data-filter="status"', html)
 
@@ -781,11 +898,11 @@ class PlainNameTest(unittest.TestCase):
         self.assertIn("the page-context fix", html)
         self.assertIn("a second page opens in context", html)
         self.assertIn("passed", html)
-        # The title opens the row; the id sits in brackets after it.
-        row = html[html.index("rows-jobs") :]
+        # The title opens the card; the id follows on the identification line.
+        doing = html[html.index("rows-doing") :]
         self.assertLess(
-            row.index("the page-context fix"),
-            row.index(f"[{named.id}]"),
+            doing.index("the page-context fix"),
+            doing.index(named.id),
             "the title comes before the id",
         )
 
@@ -797,8 +914,8 @@ class PlainNameTest(unittest.TestCase):
         self.assertIn("state", names)
         named = job(title="the busy-board fix")
         html = render_board(data(jobs=[named]))
-        jobs = html[html.index('id="rows-jobs"') :]
-        row = re.search(r"<tr([^>]*)>", jobs).group(1)
+        doing = html[html.index('id="rows-doing"') :]
+        row = re.search(r"<tr([^>]*)>", doing).group(1)
         self.assertIn('data-title="the busy-board fix"', row)
         self.assertIn('data-state="in progress"', row)
         for name in ("title", "state"):

@@ -150,6 +150,10 @@ class Job:
     # changes for him. Both fall back to the label when not given.
     title: str | None = None
     effect: str | None = None
+    # Reserved tag families the board colours by prefix: `sev:` (severity) and
+    # `phase:` (lifecycle). One list, set with a repeatable flag, so a new family
+    # needs no new field.
+    labels: list[str] = field(default_factory=list)
     # The commit the branch forked from, recorded at `job open`. A history rewrite
     # replaces it; the publish gate tests that it is still in `origin/<base>`.
     base_commit: str | None = None
@@ -299,6 +303,8 @@ class Queued:
     shape: str = "ship"
     question: str | None = None
     job: str | None = None
+    # Reserved tag families the board colours by prefix: `sev:` and `phase:`.
+    labels: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
     # Fields a newer copy wrote that this code does not know; kept, never dropped.
     extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
