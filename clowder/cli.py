@@ -342,6 +342,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="one line on what it changes for him or a user (default: the branch)",
     )
+    # The job's own `--label` is the branch name, so the reserved tag families
+    # (`sev:`, `phase:`) are set with a repeatable `--tag` here.
+    j_open.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        dest="tags",
+        metavar="LABEL",
+        help="a label such as sev:high or phase:pre-launch; repeatable",
+    )
     j_open.add_argument("--role", default=DEFAULT_ROLE, choices=ROLES)
     j_open.add_argument("--name", help="use or make an agent with this name")
     j_open.add_argument("--branch", help="branch name (default: job prefix plus label)")
@@ -475,6 +485,17 @@ def build_parser() -> argparse.ArgumentParser:
     q_add.add_argument("--why", required=True, help="why it is not sent yet")
     q_add.add_argument("--question", metavar="TEXT")
     q_add.add_argument("--shape", choices=SHAPES, default="ship")
+    # `queue add` has no branch label, so both names work here; `--tag` matches
+    # `job open`, where `--label` is already the branch name.
+    q_add.add_argument(
+        "--label",
+        "--tag",
+        action="append",
+        default=[],
+        dest="labels",
+        metavar="LABEL",
+        help="a label such as sev:high or phase:pre-launch; repeatable",
+    )
     q_add.add_argument("--job", metavar="ID", help="the job it belongs to, if any")
     q_add.add_argument("--json", action="store_true")
     q_add.set_defaults(handler=cmd_queue_add, refreshes_board=True)
@@ -1510,6 +1531,7 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         # already words rather than a handle.
         title=(args.title or "").strip() or label,
         effect=(args.effect or "").strip() or None,
+        labels=list(args.tags),
     )
     store.add_job(job)
     store.save()
@@ -2142,6 +2164,7 @@ def cmd_queue_add(args: argparse.Namespace) -> int:
         why=why,
         shape=args.shape,
         job=args.job,
+        labels=list(args.labels),
     )
     store.add_queued(item)
     store.save()

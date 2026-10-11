@@ -2943,6 +2943,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(item["why"], "the space holds an open job")
         self.assertIsNotNone(item["created_at"])
 
+    def test_queue_add_records_labels(self) -> None:
+        code, _, err = self.queue_add("--agent", "maker", "--label", "sev:high")
+        self.assertEqual(code, 0, err)
+        item = json.loads(self.state.read_text(encoding="utf-8"))["queued"]["q-0001"]
+        self.assertEqual(item["labels"], ["sev:high"])
+
     def test_queue_add_needs_exactly_one_target_and_a_why(self) -> None:
         code, _, err = self.queue_add()
         self.assertNotEqual(code, 0)
@@ -3062,7 +3068,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertIn("Dropped from the queue", html)
-        worker = html.split("Waiting for a worker", 1)[1].split("Open steps", 1)[0]
+        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
         self.assertNotIn("q-0001", worker, "a dropped item is out of the waiting list")
         history = html.split("Dropped from the queue", 1)[1]
         self.assertIn("q-0001", history)
@@ -3813,6 +3819,16 @@ class CliTest(unittest.TestCase):
         job = store.get_job(job_id)
         self.assertEqual(job.title, "the page-context fix")
         self.assertEqual(job.effect, "a page opens in context")
+
+    def test_job_open_records_labels(self) -> None:
+        # `job open` has no free `--label` (it names the branch), so its reserved
+        # tag families come in with a repeatable `--tag`.
+        job_id, _ = self.open_a_job(
+            label="page-context",
+            extra=("--tag", "sev:blocker", "--tag", "phase:pre-launch"),
+        )
+        job = StateStore(self.state).get_job(job_id)
+        self.assertEqual(job.labels, ["sev:blocker", "phase:pre-launch"])
 
     def test_job_open_falls_back_to_the_label_when_no_title(self) -> None:
         job_id, _ = self.open_a_job(label="page-context")
