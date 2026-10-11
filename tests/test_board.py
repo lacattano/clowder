@@ -18,7 +18,7 @@ from clowder.board import (
     waiting_on_you,
     write_board,
 )
-from clowder.state import CLOSED, REPORTED, Job, Queued, Task
+from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
 from clowder.timeutil import now_iso
 
 
@@ -629,6 +629,16 @@ class KanbanTest(unittest.TestCase):
         done = html[html.index("rows-done") :]
         self.assertNotIn("maker is working", done)
         self.assertNotIn("checking it", done)
+
+    def test_a_failed_step_with_no_job_is_on_the_board(self) -> None:
+        # A FAILED dispatch is not open, has no answer, and is neither abandoned
+        # nor closed. It must still land somewhere, so a not-open job-less step is
+        # Done - the same exhaustive bucket the jobs loop uses - and never missing
+        # from the page.
+        failed = task("t-0001", job=None, status=FAILED)
+        html = render_board(data(tasks=[failed]))
+        done = html[html.index("rows-done") :]
+        self.assertIn("t-0001", done, "a failed job-less step must not disappear")
 
     def test_the_labels_are_recorded_and_coloured(self) -> None:
         html = render_board(

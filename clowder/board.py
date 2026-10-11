@@ -1061,7 +1061,7 @@ def _kanban(data: BoardData) -> str:
         card = _step_card(data, task, state)
         if task.is_open:
             doing.append(card)
-        elif task.answer or task.is_abandoned or task.is_closed:
+        else:
             done.append(card)
     done.sort(key=lambda pair: pair[1]["created"], reverse=True)
     return (
