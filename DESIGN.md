@@ -561,11 +561,18 @@ Two paths, in order:
   send command is, dispatch attempts the send. A send that fails is recorded as a failed step;
   it is not retyped, because a timeout does not prove non-delivery.
 - **Typing, only with a clear box.** The fallback reads the pane's input box from a screen
-  snapshot (`<mux> agent read --source visible`, the box between the last horizontal rule and
-  the working-directory line). If it holds text, dispatch waits `[dispatch] input_wait` seconds
-  for a mid-keystroke to clear, then refuses with the draft in the message and records nothing.
-  A box that cannot be read is refused too: typing blind is the collision. `--force` is the
-  explicit way past it.
+  snapshot (`<mux> agent read --source visible`). The editor is drawn between two border lines,
+  so the box is the region between the last two border lines: a bare rule, or the "Working"
+  header rule the spinner writes. The borders, not the usage arrows, are the anchor, so a fresh
+  pane with no usage line is still readable. If the box holds text, dispatch waits
+  `[dispatch] input_wait` seconds for a mid-keystroke to clear, then refuses with the draft in
+  the message and records nothing. A snapshot with fewer than two borders is refused too:
+  typing blind is the collision. `--force` is the explicit way past it.
+
+  The region was fixed on 2026-10-11 after the reviewer caught the first version reading below
+  the *bottom* border and returning "" for every box, empty or not - so the guard did nothing.
+  The parser is now pinned against raw snapshots from a real pane (`tests/fixtures`), empty and
+  holding a draft.
 
 The same guard covers `agent reset`, which types `/new` into the same box.
 

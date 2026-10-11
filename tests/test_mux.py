@@ -97,47 +97,61 @@ class BuildArgvTest(unittest.TestCase):
 
 
 class InputLineTest(unittest.TestCase):
-    """The input box is read off the screen, so the parser is pinned here."""
+    """The input box is read off the screen, against captured real snapshots.
 
-    @staticmethod
-    def snapshot(box: str) -> str:
-        rule = "-" * 40
-        return "\n".join(
-            [
-                "some earlier output",
-                rule,
-                box,
-                "~\\code\\myrepo (task/x)",
-                "\u219112k \u21933k R1k CH10% $0.01 (auto) model \u2022 high",
-                "~\\code\\myrepo relay local (8)",
-            ]
-        )
+    The fixtures are raw `herdr agent read --source visible --format text`
+    output from a real pane. `input_box_empty.txt` and `input_box_draft.txt`
+    are the same working pane with the editor empty and holding a draft;
+    `input_box_empty_idle.txt` is an idle pane, where the editor is drawn
+    between two bare rules.
+    """
 
-    def test_an_empty_box_reads_as_empty(self) -> None:
-        self.assertEqual(input_line(self.snapshot("")), "")
+    FIXTURES = Path(__file__).with_name("fixtures")
 
-    def test_owner_text_is_returned(self) -> None:
-        self.assertEqual(
-            input_line(self.snapshot("half a sentence I was writing")),
-            "half a sentence I was writing",
-        )
+    def snapshot(self, name: str) -> str:
+        return (self.FIXTURES / name).read_text(encoding="utf-8")
+
+    def test_a_real_empty_box_reads_as_empty(self) -> None:
+        self.assertEqual(input_line(self.snapshot("input_box_empty.txt")), "")
+
+    def test_a_real_draft_is_read(self) -> None:
+        self.assertEqual(input_line(self.snapshot("input_box_draft.txt")), "ownerdraftxyz")
+
+    def test_a_real_idle_box_reads_as_empty(self) -> None:
+        self.assertEqual(input_line(self.snapshot("input_box_empty_idle.txt")), "")
+
+    def test_an_idle_box_with_a_draft_is_read(self) -> None:
+        # The idle layout is two bare rules with the editor between them. A
+        # draft goes on the blank line between the rules.
+        idle = self.snapshot("input_box_empty_idle.txt")
+        with_draft = idle.replace("\n\n", "\na draft here\n", 1)
+        self.assertEqual(input_line(with_draft), "a draft here")
 
     def test_a_multiline_draft_is_joined(self) -> None:
-        self.assertEqual(
-            input_line(self.snapshot("first line\nsecond line")),
-            "first line\nsecond line",
-        )
+        idle = self.snapshot("input_box_empty_idle.txt")
+        with_draft = idle.replace("\n\n", "\nfirst line\nsecond line\n", 1)
+        self.assertEqual(input_line(with_draft), "first line\nsecond line")
 
     def test_a_draft_that_starts_with_a_slash_is_still_read(self) -> None:
-        # A slash command looks like a footer path but is really the owner's
-        # draft; anchoring the footer on the stats line keeps it in the box.
-        self.assertEqual(input_line(self.snapshot("/remote-pi join")), "/remote-pi join")
+        idle = self.snapshot("input_box_empty_idle.txt")
+        with_draft = idle.replace("\n\n", "\n/remote-pi join\n", 1)
+        self.assertEqual(input_line(with_draft), "/remote-pi join")
 
-    def test_a_snapshot_with_no_rule_cannot_be_read(self) -> None:
-        self.assertIsNone(input_line("just some output\nno rule here"))
+    def test_a_fresh_pane_with_no_usage_arrows_is_still_read(self) -> None:
+        # A pane that has not run a turn has no stats line. The borders are the
+        # anchor, so the draft is still read without it.
+        draft = self.snapshot("input_box_draft.txt")
+        without_arrows = "\n".join(
+            line for line in draft.splitlines() if "\u2191" not in line and "\u2193" not in line
+        )
+        self.assertNotIn("\u2191", without_arrows)
+        self.assertEqual(input_line(without_arrows), "ownerdraftxyz")
 
-    def test_a_snapshot_with_no_stats_line_cannot_be_read(self) -> None:
-        self.assertIsNone(input_line("-------\na draft\n~\\code"))
+    def test_a_snapshot_with_no_border_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("just some output\nno border here"))
+
+    def test_a_snapshot_with_one_border_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("-" * 40 + "\n~\\code"))
 
 
 class PeerListTest(unittest.TestCase):

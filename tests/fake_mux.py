@@ -117,16 +117,17 @@ def _emit(payload: dict[str, object], code: int = 0) -> int:
 
 
 def _snapshot(input_text: str) -> str:
-    """A Pi pane's screen: scrollback, the input box, the footer.
+    """A Pi pane's screen: scrollback, the editor between two rules, the footer.
 
-    The box is the region between the last horizontal rule and the working-
-    directory line that sits above the stats line, matching the real layout.
+    This matches the real idle layout captured in tests/fixtures: the editor is
+    the region between two bare rules, and the footer follows below it.
     """
     rule = "-" * 60
     lines = [
         "some scrollback",
         rule,
         input_text,
+        rule,
         "~\\code\\myrepo (task/x)",
         "\u219112k \u21933k R1k CH10% $0.01 (auto) model \u2022 high",
         "~\\code\\myrepo relay local (8)",

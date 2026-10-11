@@ -428,47 +428,48 @@ def _as_text(value: object) -> str:
     return str(value)
 
 
-# A horizontal rule: the line Pi draws above the input box. The box-drawing
-# characters are named by code point so this file stays ASCII.
+# The box-drawing and dash characters a Pi editor border is made of. The code
+# points are named so this file stays ASCII.
 _RULE_CHARS = set("-=_\u2500\u2501\u2550")
 
 
-def _is_rule(line: str) -> bool:
+def _is_border(line: str) -> bool:
+    """A line the Pi editor draws as a border.
+
+    Two shapes, both captured in the fixtures: a bare rule, and a header rule
+    that carries a short label between two runs of rule characters (the
+    "Working" line the spinner writes). The label is short, so most of a
+    header line is still rule characters.
+    """
     stripped = line.strip()
-    return len(stripped) >= 8 and all(ch in _RULE_CHARS for ch in stripped)
-
-
-def _is_stats(line: str) -> bool:
-    """The Pi usage footer, e.g. the line carrying the up and down arrows."""
-    return "\u2191" in line or "\u2193" in line
+    if len(stripped) < 8:
+        return False
+    if all(ch in _RULE_CHARS for ch in stripped):
+        return True
+    if stripped[0] in _RULE_CHARS and stripped[-1] in _RULE_CHARS:
+        fill = sum(1 for ch in stripped if ch in _RULE_CHARS)
+        return fill >= len(stripped) // 2
+    return False
 
 
 def input_line(snapshot: str) -> str | None:
     """The text in a Pi pane's input box, read from a screen snapshot.
 
-    The box sits between the last horizontal rule and the working-directory
-    line of the footer. The footer is anchored by its stats line, so a draft
-    that itself starts with a path-like word is still read as a draft. An empty
-    box reads as ""; a snapshot with no rule or footer reads as None, because
-    the box cannot be judged and the caller must not type blind.
+    The editor is the region between its two border lines: the last two border
+    lines in the snapshot. An empty box reads as ""; a snapshot with fewer
+    than two borders reads as None, because the box cannot be judged and the
+    caller must not type blind.
+
+    The borders are the anchor, not the usage arrows: a fresh pane with no
+    usage line still draws both borders, so it is still readable. The earlier
+    version read below the bottom border and returned "" for every box.
     """
     lines = [line.rstrip() for line in snapshot.splitlines()]
-    rule = -1
-    for index, line in enumerate(lines):
-        if _is_rule(line):
-            rule = index
-    if rule < 0:
+    borders = [index for index, line in enumerate(lines) if _is_border(line)]
+    if len(borders) < 2:
         return None
-
-    stats = -1
-    for index in range(len(lines) - 1, rule, -1):
-        if _is_stats(lines[index]):
-            stats = index
-            break
-    if stats <= rule:
-        return None
-    # The working-directory line sits directly above the stats line.
-    box = lines[rule + 1 : stats - 1]
+    top, bottom = borders[-2], borders[-1]
+    box = lines[top + 1 : bottom]
     return "\n".join(part for part in box if part.strip())
 
 
