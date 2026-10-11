@@ -41,6 +41,20 @@ path = 'C:\Users\you\.clowder\state.json'
 # typing in its pane. The line looks like:
 #   [clowder job t-0004 | ship | myrepo | from topcat]
 marker = true
+# The multiplexer writes a sent brief into the worker's input box, which is the
+# box the owner types in. If the box is not empty, dispatch waits this many
+# seconds for a mid-keystroke to clear, then refuses rather than merge two
+# writers. 0 refuses at once.
+# input_wait = 1.5
+
+[bus]
+# The agent bus, when this machine has a shell command that can send on it. A
+# bus send never touches the input box, so it cannot collide with the owner.
+# `send_argv` is a complete argv with {agent} and {brief}; `peers_argv` lists
+# the joined peers, and its output is matched to the target's folder and name.
+# Leave both out and dispatch types under the input-box guard instead.
+# send_argv = ["remote-pi", "mesh", "send", "{agent}", "{brief}"]
+# peers_argv = ["remote-pi", "peers"]
 
 [worktree]
 # A space per agent: <repo>/.worktrees/<agent>. A free space has no branch name on

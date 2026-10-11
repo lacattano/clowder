@@ -5,6 +5,9 @@ Mimics only what clowder reads, and only the commands it runs:
     agent list
     agent prompt <target> <text>
     agent send-keys <target> <key>...
+    agent read <target> --source visible ...
+    bus peers
+    bus send <target> <text>
     pane split --current --cwd <path> ...
     pane move <pane_id> [--workspace <id>] --new-tab
     pane close <pane_id>
@@ -27,6 +30,10 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_LOG          append the received argv, one JSON line per call
     CLOWDER_FAKE_RESET_FAIL   "1" makes `/new` keys leave the session unchanged
     CLOWDER_FAKE_RESET_PROVIDER / _MODEL / _THINKING  the model a reset lands on
+    CLOWDER_FAKE_INPUT        the text left in the agent's input box (default empty)
+    CLOWDER_FAKE_INPUT_FAIL   "1" makes `agent read` fail, so the box cannot be read
+    CLOWDER_FAKE_BUS          "joined" makes the bus answer peers and send; else it is off
+    CLOWDER_FAKE_BUS_SEND_FAIL  "1" makes a joined bus refuse the send
 """
 
 from __future__ import annotations
@@ -107,6 +114,29 @@ def _agents() -> list[dict[str, object]]:
 def _emit(payload: dict[str, object], code: int = 0) -> int:
     print(json.dumps(payload))
     return code
+
+
+def _snapshot(input_text: str) -> str:
+    """A Pi pane's screen: scrollback, the editor between two rules, the footer.
+
+    This matches the real idle layout captured in tests/fixtures: the editor is
+    the region between two bare rules, and the footer follows below it.
+    """
+    rule = "-" * 60
+    lines = [
+        "some scrollback",
+        rule,
+        input_text,
+        rule,
+        "~\\code\\myrepo (task/x)",
+        "\u219112k \u21933k R1k CH10% $0.01 (auto) model \u2022 high",
+        "~\\code\\myrepo relay local (8)",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _bus_joined() -> bool:
+    return os.environ.get("CLOWDER_FAKE_BUS", "").strip().lower() == "joined"
 
 
 def _fail(code: str, message: str, status: int = 4) -> int:
@@ -211,6 +241,30 @@ def main(argv: list[str]) -> int:
         closed.append(pane_id)
         _save(state)
         return _emit({"id": "cli:pane:close", "result": {"pane": {"pane_id": pane_id}}})
+
+    if argv[:2] == ["agent", "read"]:
+        if os.environ.get("CLOWDER_FAKE_INPUT_FAIL") == "1":
+            print("cannot read the pane", file=sys.stderr)
+            return 3
+        sys.stdout.write(_snapshot(os.environ.get("CLOWDER_FAKE_INPUT", "")))
+        return 0
+
+    if argv[:2] == ["bus", "peers"]:
+        if not _bus_joined():
+            print("[remote-pi] Mesh offline - no agent is running on this machine.")
+            return 0
+        for agent in _agents():
+            print(f"{agent.get('cwd')}@{agent.get('name')}")
+        return 0
+
+    if argv[:2] == ["bus", "send"]:
+        if not _bus_joined():
+            return _fail("bus_offline", "no agent bus session is active")
+        if os.environ.get("CLOWDER_FAKE_BUS_SEND_FAIL") == "1":
+            return _fail("bus_refused", "the bus refused the send")
+        target = argv[2] if len(argv) > 2 else ""
+        text = argv[3] if len(argv) > 3 else ""
+        return _emit({"ok": True, "bus": True, "target": target, "chars": len(text)})
 
     if argv[:2] == ["agent", "send-keys"]:
         if _state_path() is None:

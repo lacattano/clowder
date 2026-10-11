@@ -545,6 +545,41 @@ catches git guessing an identity, not a wrong explicit value. It is set on this 
 (`git config --global user.useConfigOnly true`) and recommended in `clowder.example.toml`; it
 never touches the owner's own identity, which is configured explicitly.
 
+### 32. A dispatch never types over text the owner left in the box
+
+Seen 2026-09: dispatch submits a brief with `<mux> agent prompt`, which writes the text into the
+worker's own input box and presses enter. That is the same box the owner types in, so when he
+had a half-written sentence there, the two writers merged and he lost both. The bus does not
+touch the box, but the tool had no bus-send path for a brief.
+
+Two paths, in order:
+
+- **The bus, when one is configured and the target is joined.** `[bus] send_argv` is a complete
+  command with `{agent}` and `{brief}`; `[bus] peers_argv` lists the joined peers, matched to the
+  target's folder and name so a repeated name in another repo cannot pass. A bus send never opens
+  the input box, so it cannot collide with the owner. If no peers command is configured but a
+  send command is, dispatch attempts the send. A send that fails is recorded as a failed step;
+  it is not retyped, because a timeout does not prove non-delivery.
+- **Typing, only with a clear box.** The fallback reads the pane's input box from a screen
+  snapshot (`<mux> agent read --source visible`). The editor is drawn between two border lines,
+  so the box is the region between the last two border lines: a bare rule, or the "Working"
+  header rule the spinner writes. The borders, not the usage arrows, are the anchor, so a fresh
+  pane with no usage line is still readable. If the box holds text, dispatch waits
+  `[dispatch] input_wait` seconds for a mid-keystroke to clear, then refuses with the draft in
+  the message and records nothing. A snapshot with fewer than two borders is refused too:
+  typing blind is the collision. `--force` is the explicit way past it.
+
+  The region was fixed on 2026-10-11 after the reviewer caught the first version reading below
+  the *bottom* border and returning "" for every box, empty or not - so the guard did nothing.
+  The parser is now pinned against raw snapshots from a real pane (`tests/fixtures`), empty and
+  holding a draft.
+
+The same guard covers `agent reset`, which types `/new` into the same box.
+
+remote-pi 0.7.0 has no shell `send`; until it does, a machine that wants the bus sets
+`[bus] send_argv` to a bridge it trusts. With no bus configured the collision is still stopped,
+by the guard.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from

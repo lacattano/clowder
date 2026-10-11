@@ -268,6 +268,12 @@ rather than let it fail quietly:
 
 > The verifier has not joined the bus. I will join it from its side and send the job.
 
+Dispatch never types over the owner. If it is configured with a bus send command and the pane
+is joined, the brief goes over the bus and the input box is not touched. Otherwise it reads the
+pane's input box first: if the owner left text there, it waits a moment, then refuses rather
+than merge the two. A refusal means the brief was not sent and nothing was recorded - ask the
+owner to send or clear what he was writing, then dispatch again. Do not work around it.
+
 A slash command sent through the agent prompt arrives as a message, not as a command: the agent
 answers it and the session stays. The front door acts on a pane from its side by typing the command
 into the pane as individual keys, so the editor holds it and the enter key submits it:

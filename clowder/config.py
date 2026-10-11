@@ -57,6 +57,16 @@ class Config:
     state_path: Path
     repos: dict[str, Path]
     dispatch_marker: bool = True
+    # What a dispatch does when the owner has left text in the worker's input box.
+    # A dispatch that types over it merges two writers into one message, so the
+    # tool waits this long for the box to clear, then refuses.
+    dispatch_input_wait: float = 1.5
+    # The agent bus, when this machine has a shell command that can send on it.
+    # `send_argv` is a complete argv with {agent} and {brief}; `peers_argv` lists
+    # the joined peers. Both are optional: with no send command the tool types,
+    # under the input-box guard.
+    bus_send_argv: tuple[str, ...] | None = None
+    bus_peers_argv: tuple[str, ...] | None = None
     front_door_name: str | None = None
     worktree_dir: str = ".worktrees"
     worktree_base: str | None = None
@@ -100,6 +110,9 @@ class Config:
             "state_path": str(self.state_path),
             "repos": {k: str(v) for k, v in sorted(self.repos.items())},
             "dispatch_marker": self.dispatch_marker,
+            "dispatch_input_wait": self.dispatch_input_wait,
+            "bus_send_argv": list(self.bus_send_argv) if self.bus_send_argv else None,
+            "bus_peers_argv": list(self.bus_peers_argv) if self.bus_peers_argv else None,
             "front_door_name": self.front_door_name,
             "worktree_dir": self.worktree_dir,
             "worktree_base": self.worktree_base,
@@ -172,6 +185,7 @@ def load_config(explicit: str | Path | None = None) -> Config:
     state = _table(raw, "state", source)
     repos = _table(raw, "repos", source)
     dispatch = _table(raw, "dispatch", source)
+    bus = _table(raw, "bus", source)
     front_door = _table(raw, "front_door", source)
     worktree = _table(raw, "worktree", source)
     git = _table(raw, "git", source)
@@ -201,6 +215,22 @@ def load_config(explicit: str | Path | None = None) -> Config:
     marker = dispatch.get("marker", True)
     if not isinstance(marker, bool):
         raise ConfigError(f"{source}: dispatch.marker must be true or false")
+
+    input_wait = dispatch.get("input_wait", 1.5)
+    if (
+        not isinstance(input_wait, (int, float))
+        or isinstance(input_wait, bool)
+        or input_wait < 0
+    ):
+        raise ConfigError(
+            f"{source}: dispatch.input_wait must be a number of seconds, 0 or more"
+        )
+
+    unknown_bus = set(bus) - {"send_argv", "peers_argv"}
+    if unknown_bus:
+        raise ConfigError(f"{source}: unknown bus keys: {sorted(unknown_bus)}")
+    bus_send_argv = _opt_argv(bus.get("send_argv"), "bus.send_argv", source)
+    bus_peers_argv = _opt_argv(bus.get("peers_argv"), "bus.peers_argv", source)
 
     front_door_name = front_door.get("name")
     if front_door_name is not None and not isinstance(front_door_name, str):
@@ -245,6 +275,9 @@ def load_config(explicit: str | Path | None = None) -> Config:
         state_path=state_path,
         repos={str(k): _opt_path(v) or Path(str(v)) for k, v in repos.items()},
         dispatch_marker=marker,
+        dispatch_input_wait=float(input_wait),
+        bus_send_argv=bus_send_argv,
+        bus_peers_argv=bus_peers_argv,
         front_door_name=front_door_name or None,
         worktree_dir=str(worktree.get("dir") or ".worktrees"),
         worktree_base=_opt_str(worktree.get("base")),
@@ -266,6 +299,17 @@ def _opt_str(value: object) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _opt_argv(value: object, label: str, source: Path | None) -> tuple[str, ...] | None:
+    """A configured command template: a list of strings, or nothing at all."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"{source}: {label} must be a list of strings")
+    if not value:
+        return None
+    return tuple(value)
 
 
 def _table(raw: dict[str, object], name: str, source: Path | None) -> dict[str, object]:

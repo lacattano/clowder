@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -8,7 +9,15 @@ import unittest
 from pathlib import Path
 
 from clowder.errors import MuxError
-from clowder.mux import Mux, MuxResult, parse_agent_list, reply_pane_id
+from clowder.mux import (
+    Mux,
+    MuxResult,
+    input_line,
+    parse_agent_list,
+    parse_peer_addresses,
+    peer_joined,
+    reply_pane_id,
+)
 from tests.support import clean_env, make_mux_launcher, write_fake_state
 
 # Captured from `herdr agent list`, trimmed to two agents.
@@ -70,6 +79,152 @@ class BuildArgvTest(unittest.TestCase):
     def test_split_argv_has_no_env_by_default(self) -> None:
         mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
         self.assertNotIn("--env", mux.build_split_argv("C:/code/myrepo"))
+
+    def test_bus_send_argv_is_a_full_command(self) -> None:
+        mux = Mux(
+            "herdr",
+            ("agent", "prompt", "{agent}", "{brief}"),
+            bus_send_argv=["remote-pi", "mesh", "send", "{agent}", "{brief}"],
+        )
+        self.assertEqual(
+            mux.build_bus_send_argv("maker", "the brief"),
+            ["remote-pi", "mesh", "send", "maker", "the brief"],
+        )
+
+    def test_bus_send_without_a_configured_command_is_an_error(self) -> None:
+        mux = Mux("herdr", ("agent", "prompt", "{agent}", "{brief}"))
+        with self.assertRaises(MuxError):
+            mux.build_bus_send_argv("maker", "the brief")
+
+
+class InputLineTest(unittest.TestCase):
+    """The input box is read off the screen, against captured real snapshots.
+
+    The snapshots are raw `herdr agent read --source visible --format text`
+    output from a real pane. They hold non-ASCII box drawing and status glyphs,
+    and the repo has to stay ASCII, so they live in `fixtures/input_boxes.json`
+    as escaped `\\uXXXX` strings. `json.loads` rebuilds the exact captured text,
+    CRLFs included, so the parser is tested on the real bytes.
+
+    `empty` and `draft` are the same working pane with the editor empty and
+    holding a draft; `empty_idle` is an idle pane, where the editor is drawn
+    between two bare rules.
+    """
+
+    FIXTURES = Path(__file__).with_name("fixtures")
+
+    @classmethod
+    def all_snapshots(cls) -> dict[str, str]:
+        raw = (cls.FIXTURES / "input_boxes.json").read_bytes()
+        raw.decode("ascii")  # the committed fixture must stay ASCII
+        return json.loads(raw.decode("ascii"))
+
+    def snapshot(self, key: str) -> str:
+        return self.all_snapshots()[key]
+
+    def with_editor(self, key: str, text: str) -> str:
+        """Put `text` on the idle editor's blank line, keeping the CRLFs."""
+        snapshot = self.snapshot(key)
+        marker = "\r\n\r\n"
+        self.assertIn(marker, snapshot)
+        return snapshot.replace(marker, "\r\n" + text + "\r\n", 1)
+
+    # sha256 of each snapshot's UTF-8 bytes as captured from the real pane. The
+    # JSON is lossy only in appearance: the escapes decode back to exactly these
+    # bytes. A changed line, glyph or CRLF moves the hash and the test fails.
+    CAPTURED_SHA256 = {
+        "empty": "51bdfff3a25e5a32abcfb60e34dc6373278ab7447e8ac743361840363d580801",
+        "draft": "4fca9fae6aa26b268ee98916b8bd2ff064a488876cca82e89ca6ac91159b71aa",
+        "empty_idle": "ee95622db4e7befead5145e9ea1eda3f1064aeea4d632031197465b8e4af1816",
+    }
+
+    def test_the_committed_fixture_is_ascii_and_keeps_the_real_bytes(self) -> None:
+        raw = (self.FIXTURES / "input_boxes.json").read_bytes()
+        raw.decode("ascii")
+        for key, digest in self.CAPTURED_SHA256.items():
+            snapshot = self.snapshot(key)
+            self.assertIn("\r\n", snapshot, f"{key}: CRLFs were lost")
+            self.assertEqual(
+                hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+                digest,
+                f"{key}: the decoded bytes are not the captured bytes",
+            )
+
+    def test_a_real_empty_box_reads_as_empty(self) -> None:
+        self.assertEqual(input_line(self.snapshot("empty")), "")
+
+    def test_a_real_draft_is_read(self) -> None:
+        self.assertEqual(input_line(self.snapshot("draft")), "ownerdraftxyz")
+
+    def test_a_real_idle_box_reads_as_empty(self) -> None:
+        self.assertEqual(input_line(self.snapshot("empty_idle")), "")
+
+    def test_an_idle_box_with_a_draft_is_read(self) -> None:
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "a draft here")), "a draft here"
+        )
+
+    def test_a_multiline_draft_is_joined(self) -> None:
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "first line\r\nsecond line")),
+            "first line\nsecond line",
+        )
+
+    def test_a_draft_that_starts_with_a_slash_is_still_read(self) -> None:
+        self.assertEqual(
+            input_line(self.with_editor("empty_idle", "/remote-pi join")), "/remote-pi join"
+        )
+
+    def test_a_fresh_pane_with_no_usage_arrows_is_still_read(self) -> None:
+        # A pane that has not run a turn has no stats line. The borders are the
+        # anchor, so the draft is still read without it.
+        draft = self.snapshot("draft")
+        without_arrows = "\r\n".join(
+            line for line in draft.splitlines() if "\u2191" not in line and "\u2193" not in line
+        )
+        self.assertNotIn("\u2191", without_arrows)
+        self.assertEqual(input_line(without_arrows), "ownerdraftxyz")
+
+    def test_a_snapshot_with_no_border_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("just some output\nno border here"))
+
+    def test_a_snapshot_with_one_border_cannot_be_read(self) -> None:
+        self.assertIsNone(input_line("-" * 40 + "\n~\\code"))
+
+
+class PeerListTest(unittest.TestCase):
+    REAL_OUTPUT = (
+        "[remote-pi] peers:\n"
+        "  local:\n"
+        "    C:\\code\\myrepo@maker\n"
+        "    C:\\code\\other@verifier\n"
+        "\n"
+        "  remote:C\n"
+        "    \\Users\\me\\code\\myrepo@maker\n"
+    )
+
+    def test_peer_addresses_are_parsed(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertIn(("C:\\code\\myrepo", "maker"), peers)
+        self.assertIn(("\\Users\\me\\code\\myrepo", "maker"), peers)
+
+    def test_a_cross_pc_path_matches_by_suffix(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertTrue(peer_joined(peers, "maker", "C:\\code\\myrepo"))
+        self.assertTrue(
+            peer_joined(
+                [("\\Users\\me\\code\\myrepo", "maker")],
+                "maker",
+                "C:\\Users\\me\\code\\myrepo",
+            )
+        )
+
+    def test_a_name_in_another_folder_does_not_count_as_joined(self) -> None:
+        peers = parse_peer_addresses(self.REAL_OUTPUT)
+        self.assertFalse(peer_joined(peers, "maker", "C:\\code\\elsewhere"))
+
+    def test_an_empty_roster_is_not_joined(self) -> None:
+        self.assertFalse(peer_joined(parse_peer_addresses("(none)"), "maker"))
 
 
 class ParseAgentListTest(unittest.TestCase):
