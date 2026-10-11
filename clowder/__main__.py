@@ -1,4 +1,4 @@
-"""`py -3.14 -m clowder ...` runs the same as the installed `clowder` command."""
+"""`py -3.15 -m clowder ...` runs the same as the installed `clowder` command."""
 
 from __future__ import annotations
 

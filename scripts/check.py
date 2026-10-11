@@ -3,9 +3,9 @@
 One command runs them, locally and in CI, so the list of gates cannot drift
 between what a human runs and what the robot runs. Rules in a tool, not in prose.
 
-    py -3.14 scripts/check.py              # every gate
-    py -3.14 scripts/check.py --list        # what they are
-    py -3.14 scripts/check.py --only lint   # one of them
+    py -3.15 scripts/check.py              # every gate
+    py -3.15 scripts/check.py --list        # what they are
+    py -3.15 scripts/check.py --only lint   # one of them
 
 Needs no dependencies. ruff and mypy are fetched with `uvx` when they are not
 already importable, so the gates work on a machine with nothing installed.

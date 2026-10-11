@@ -110,12 +110,12 @@ The tool ships a front door; what you call it is yours. (Naming it after someone
 product is worth avoiding for the same reason the multiplexer's name is kept out of the
 project name.)
 
-### 13. The CLI is Python, pinned to 3.14
+### 13. The CLI is Python, pinned to 3.15
 
 Decided before step 1, as required. Stdlib only - `tomllib`, `subprocess`, `json`, `argparse` -
 so there is no build step, no lockfile and no dependency to audit. Python 3.13 is what bare
-`python` resolves to on this machine, so the tool names its interpreter: `py -3.14`, or the
-`3.14` in `.python-version`.
+`python` resolves to on this machine, so the tool names its interpreter: `py -3.15`, or the
+`3.15` in `.python-version`.
 
 The alternatives were weighed, not skipped. Rust, Go and Zig each buy a single binary and
 speed, and this work is glue: spawn one process, read JSONL, write one file. None is
@@ -547,7 +547,7 @@ never touches the owner's own identity, which is configured explicitly.
 
 ## What step 1 built
 
-`src`-less, flat `clowder/` package. No dependencies, so `py -3.14 -m clowder ...` works from
+`src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from
 a checkout with nothing installed.
 
 | File | Holds |

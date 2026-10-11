@@ -76,7 +76,7 @@ clowder config
 clowder state repair --drop-unknown FIELD --backup PATH [--why TEXT] [--by NAME]
 ```
 
-Run `clowder`. From a checkout with nothing installed, `py -3.14 -m clowder`.
+Run `clowder`. From a checkout with nothing installed, `py -3.15 -m clowder`.
 
 - **`agent reset <agent>`** gives a pane a fresh context by typing `/new` as keys, then
   verifies the session file changed. It refuses while a step on that agent is unreported, and

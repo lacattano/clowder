@@ -7,13 +7,13 @@ name = "clowder"
 version = "0.1.0"
 description = "One front door for a crew of coding agents: dispatch and state."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 license = { file = "LICENSE" }
 keywords = ["agents", "dispatch", "worktree", "pi"]
 classifiers = [
   "Environment :: Console",
   "Operating System :: Microsoft :: Windows",
-  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development :: Build Tools",
 ]
 dependencies = []
@@ -27,11 +27,11 @@ packages = ["clowder"]
 [tool.ruff]
 # The code is written for readable lines rather than the 88-character default.
 line-length = 96
-# The owner's decision, 2026-10-05: keep the 3.14 target and leave ruff unpinned.
+# The owner's decision, 2026-10-05: keep the 3.15 target and leave ruff unpinned.
 # Under this target ruff rewrites `except (A, B):` into `except A, B:` (PEP 758).
-# That rewrite is behaviour-preserving on 3.14, and modern 3.14 code - including
+# That rewrite is behaviour-preserving on 3.15, and modern 3.15 code - including
 # t-strings - matters more than holding the formatter back to protect against it.
-target-version = "py314"
+target-version = "py315"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

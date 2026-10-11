@@ -88,21 +88,21 @@ in [DESIGN.md](DESIGN.md).
 
 ### Use it
 
-Needs Python 3.14. Nothing to install:
+Needs Python 3.15. Nothing to install:
 
 ```
-py -3.14 -m clowder --help
-py -3.14 -m clowder config          # what the tool resolved
-py -3.14 -m clowder agents          # the live roster, from the multiplexer
-py -3.14 -m clowder ensure myrepo --role verifier   # or make one there
-py -3.14 -m clowder job open myrepo --label refund --role maker
-py -3.14 -m clowder job handover j-0001 --to verifier
-py -3.14 -m clowder job list
-py -3.14 -m clowder job close j-0001
-py -3.14 -m clowder tasks           # what is queued, underway, unanswered
-py -3.14 -m clowder board --open    # the page: what is waiting on you
-py -3.14 -m clowder dispatch myrepo-maker myrepo "ship: add the refund page" --job j-0001
-py -3.14 -m clowder report t-0001
+py -3.15 -m clowder --help
+py -3.15 -m clowder config          # what the tool resolved
+py -3.15 -m clowder agents          # the live roster, from the multiplexer
+py -3.15 -m clowder ensure myrepo --role verifier   # or make one there
+py -3.15 -m clowder job open myrepo --label refund --role maker
+py -3.15 -m clowder job handover j-0001 --to verifier
+py -3.15 -m clowder job list
+py -3.15 -m clowder job close j-0001
+py -3.15 -m clowder tasks           # what is queued, underway, unanswered
+py -3.15 -m clowder board --open    # the page: what is waiting on you
+py -3.15 -m clowder dispatch myrepo-maker myrepo "ship: add the refund page" --job j-0001
+py -3.15 -m clowder report t-0001
 ```
 
 Copy [clowder.example.toml](clowder.example.toml) to `~/.clowder/clowder.config.toml` first,
@@ -111,7 +111,7 @@ and set the workspace root. The tool ships no repo name, no path and no agent na
 Tests, also nothing to install:
 
 ```
-py -3.14 -m unittest discover -s tests -t .
+py -3.15 -m unittest discover -s tests -t .
 ```
 
 ### Developing clowder
@@ -120,8 +120,8 @@ One command runs every gate, locally and in CI, so the list cannot drift between
 and what the robot runs:
 
 ```
-py -3.14 scripts/check.py          # every gate
-py -3.14 scripts/check.py --list   # what they are
+py -3.15 scripts/check.py          # every gate
+py -3.15 scripts/check.py --list   # what they are
 ```
 
 The gates are **smoke** (the CLI runs with no multiplexer), **lint** (`ruff check`), **format**
