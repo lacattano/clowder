@@ -1621,6 +1621,43 @@ def cmd_job_open(args: argparse.Namespace) -> int:
     return 0
 
 
+def _release_job_space(config: Config, job: Job, *, force: bool = False) -> str:
+    """Return a job's space to the base, keeping its install. Returns the base ref.
+
+    A space that handover already released is left alone. A space still on the
+    job's branch is detached at the base, so it is free for the next piece of
+    work. `force` skips the clean and on-branch checks; a merge uses it because
+    the pull request has already merged and the record must not be held back by
+    a folder that drifted.
+    """
+    if job.released_at is not None:
+        return gitcmd.resolve_base(job.repo_path, config.worktree_base)
+    worktree = job.worktree
+    dirty = gitcmd.status_entries(worktree)
+    if dirty and not force:
+        shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
+        more = ", and more" if len(dirty) > 5 else ""
+        raise GitError(
+            f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
+            "ready for the next one, so this is refused. Commit, stash, or pass --force."
+        )
+
+    on = gitcmd.current_branch(worktree)
+    if on != job.branch and not force:
+        raise GitError(
+            f"{worktree} is on {on or 'a detached HEAD'}, not {job.branch}. "
+            "Nothing was switched. Close the job from its own branch."
+        )
+    if on == job.branch:
+        job.commit = gitcmd.head_commit(worktree)
+
+    # Release the space: no branch name on it, sitting on the current base,
+    # clean. Its install and caches stay, the point of keeping the space.
+    base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
+    gitcmd.detach_at(worktree, base_ref)
+    return base_ref
+
+
 def cmd_job_close(args: argparse.Namespace) -> int:
     config, store = _context(args)
     job = store.get_job(args.id)
@@ -1641,32 +1678,7 @@ def cmd_job_close(args: argparse.Namespace) -> int:
             "--force."
         )
 
-    if job.released_at is None:
-        dirty = gitcmd.status_entries(worktree)
-        if dirty and not args.force:
-            shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
-            more = ", and more" if len(dirty) > 5 else ""
-            raise GitError(
-                f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
-                "ready for the next one, so this is refused. Commit, stash, or pass --force."
-            )
-
-        on = gitcmd.current_branch(worktree)
-        if on != job.branch and not args.force:
-            raise GitError(
-                f"{worktree} is on {on or 'a detached HEAD'}, not {job.branch}. "
-                "Nothing was switched. Close the job from its own branch."
-            )
-        if on == job.branch:
-            job.commit = gitcmd.head_commit(worktree)
-
-        # Release the space: no branch name on it, sitting on the current base,
-        # clean. Its install and caches stay, the point of keeping the space.
-        base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
-        gitcmd.detach_at(worktree, base_ref)
-    else:
-        # Handover already handed the space back; nothing to release.
-        base_ref = gitcmd.resolve_base(job.repo_path, config.worktree_base)
+    base_ref = _release_job_space(config, job, force=args.force)
 
     deleted = False
     if args.delete_branch:
@@ -2172,11 +2184,26 @@ def cmd_job_publish(args: argparse.Namespace) -> int:
 
 
 def cmd_job_merge(args: argparse.Namespace) -> int:
-    _, store = _context(args)
+    config, store = _context(args)
     job = store.get_job(args.id)
     _require_merge_word(job)
     _merge_pull_request(job, args.pr)
+    # The pull request merged, so the job is finished. Record that first, then
+    # close the record the way `job close` does: the branch is kept and the space
+    # goes back to the base. Left open, a merged job kept reading as in progress
+    # on the board and in `open_jobs()` until someone closed it by hand.
     job.merged_at = now_iso()
+    job.status = CLOSED
+    job.closed_at = now_iso()
+    store.save()
+    try:
+        _release_job_space(config, job, force=True)
+        if job.released_at is None:
+            job.released_at = now_iso()
+    except GitError as exc:
+        # The merge already happened. A folder that drifted must not lose the
+        # record; `job close` can still free the space later.
+        print(f"{PROGRAM}: warning: {exc}", file=sys.stderr)
     store.save()
 
     if args.json:

@@ -1567,6 +1567,43 @@ class CliTest(unittest.TestCase):
         self.assertEqual(job["merge_word"], "merge it")
         self.assertEqual(job["merge_word_by"], "lacattano")
 
+    def test_a_merged_job_leaves_the_open_list_and_reads_merged(self) -> None:
+        # `job merge` records merged_at but left the stored status open, so a
+        # merged job stayed in open_jobs() and the jobs table called it in
+        # progress. The merge finishes the job: it closes the record and frees the
+        # space like `job close`, while keeping the branch.
+        job_id, maker_folder = self.open_a_job()
+        self.assertEqual(
+            self.cli(
+                "job",
+                "word",
+                job_id,
+                "--word",
+                "merge it",
+                "--by",
+                "lacattano",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        reloaded = StateStore(self.state).get_job(job_id)
+        self.assertEqual(reloaded.status, CLOSED)
+        self.assertIsNotNone(reloaded.released_at, "the space is free")
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "the space is detached")
+        self.assertIsNotNone(
+            gitcmd.commit_of(self.repo_path, "task/refund"), "the branch is kept"
+        )
+        self.assertEqual(StateStore(self.state).open_jobs(), [], "a merged job is closed")
+
+        code, out, err = self.cli("job", "list", "--all", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn(job_id, out, "it is still in the full list")
+        self.assertIn("merged", out, "and its state word says so")
+        self.assertNotIn("in progress", out)
+
     def test_deleting_a_branch_needs_the_owner_s_word(self) -> None:
         job_id, _ = self.open_a_job()
         code, _, err = self.cli("job", "close", job_id, "--delete-branch", env=self.state_env())
