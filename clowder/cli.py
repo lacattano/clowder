@@ -17,7 +17,7 @@ from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
-from . import __version__, audit, gitcmd
+from . import __version__, audit, gitcmd, load
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
@@ -109,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="the line of work this step belongs to; sets the directory and branch",
     )
     send.add_argument("--shape", choices=SHAPES, default="ship", help="default: ship")
+    send.add_argument(
+        "--heavy",
+        action="store_true",
+        help="a step that installs, builds or runs a suite; only one runs at a time",
+    )
     send.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, metavar="SECONDS")
     send.add_argument(
         "--wait", action="store_true", help="block until the agent is idle or blocked"
@@ -704,6 +709,9 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         _refuse_cross_repo(args, agent_info, repo_path)
         if job is not None:
             _refuse_outside_job(args, agent_info, job, store)
+        if args.heavy:
+            _refuse_heavy_overlap(store)
+            _refuse_high_load(config, args)
 
     task = Task(
         id=store.next_id(),
@@ -716,6 +724,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         worktree=worktree,
         pane_id=agent_info.pane_id if agent_info else None,
         agent_session=agent_info.session_path if agent_info else None,
+        heavy=args.heavy,
     )
     if job is not None:
         task.job = job.id
@@ -943,6 +952,59 @@ def _refuse_outside_job(args: argparse.Namespace, agent, job, store: StateStore)
             "before sending another; two steps at once in one checkout is how two "
             "heavy runs start at once."
         )
+
+
+def _refuse_heavy_overlap(store: StateStore) -> None:
+    """Only one heavy step is open at a time, across the whole crew.
+
+    The one-open-step guard is per job, so a heavy step on job X and one on job Y
+    could start together - the pattern that crashed the box on 2026-09-25. This
+    is pure state, so it clears itself when the other heavy step reports or is
+    abandoned.
+    """
+    others = [task for task in store.select(open_only=True) if task.heavy]
+    if not others:
+        return
+    listed = ", ".join(f"{task.id} ({task.agent}, {task.job or 'no job'})" for task in others)
+    raise DispatchError(
+        f"a heavy step is already open: {listed}. Only one heavy step runs at a time, "
+        "so two installs or suites cannot start together. Wait for it to report, or "
+        "pass --force."
+    )
+
+
+def _refuse_high_load(config: Config, args: argparse.Namespace) -> None:
+    """Refuse a heavy step when the machine is already loaded.
+
+    The metric is opt-in through [gates]: no threshold for this platform's metric
+    means no check. A metric that cannot be read fails open with a warning, so a
+    broken probe never blocks work.
+    """
+    if config.heavy_max_memory is None and config.heavy_max_load is None:
+        return
+    reading = load.current()
+    if reading is None:
+        print(
+            f"{PROGRAM}: warning: cannot read the machine's load, so the heavy gate "
+            "did not check it",
+            file=sys.stderr,
+        )
+        return
+    name, value = reading
+    limit = config.heavy_max_memory if name == load.METRIC_MEMORY else config.heavy_max_load
+    if limit is None:
+        return
+    if value < limit:
+        return
+    shown = (
+        f"{value:.0f}% of memory in use"
+        if name == load.METRIC_MEMORY
+        else f"load {value:.2f} per CPU"
+    )
+    raise DispatchError(
+        f"{args.agent}'s step is heavy and the machine is at {shown}, at or above the "
+        f"{limit:g} limit. Let it settle, or pass --force."
+    )
 
 
 def _quote(argv: list[str]) -> str:
@@ -2508,6 +2570,7 @@ def _queued_dispatch_args(
         force=force,
         dry_run=dry_run,
         json=json,
+        heavy=False,
     )
 
 

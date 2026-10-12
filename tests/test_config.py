@@ -231,6 +231,38 @@ class LoadConfigTest(unittest.TestCase):
             load_config(path)
         self.assertIn("git.email", str(caught.exception))
 
+    def test_gates_default_to_off(self) -> None:
+        config = load_config(self.config_path)
+        self.assertIsNone(config.heavy_max_memory)
+        self.assertIsNone(config.heavy_max_load)
+
+    def test_gates_thresholds_are_read(self) -> None:
+        path = write_config(
+            self.root / "gates.toml",
+            gates={"heavy_max_memory": 80, "heavy_max_load": 1.5},
+        )
+        config = load_config(path)
+        self.assertEqual(config.heavy_max_memory, 80.0)
+        self.assertEqual(config.heavy_max_load, 1.5)
+
+    def test_an_unknown_gates_key_is_refused(self) -> None:
+        path = write_config(self.root / "gatesbad.toml", gates={"heavy_max": 80})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("unknown gates keys", str(caught.exception))
+
+    def test_a_gates_threshold_must_be_a_number(self) -> None:
+        path = write_config(self.root / "gatesstr.toml", gates={"heavy_max_memory": "high"})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("gates.heavy_max_memory", str(caught.exception))
+
+    def test_a_negative_gates_threshold_is_refused(self) -> None:
+        path = write_config(self.root / "gatesneg.toml", gates={"heavy_max_load": -1})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertIn("gates.heavy_max_load", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

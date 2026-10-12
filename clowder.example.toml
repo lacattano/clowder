@@ -81,5 +81,18 @@ email = "94532220+lacattano@users.noreply.github.com"
 #   git config --global user.useConfigOnly true
 # It complements the identity above; it does not replace it.
 
+[gates]
+# Optional checks before a heavy step starts. A heavy step is dispatched with
+# `--heavy` (an install, a build, a suite). Only one heavy step is open at a time
+# across the whole crew, always; the thresholds here add a check of the machine's
+# own load. With no [gates] table the load check is off, and a load that cannot
+# be read fails open with a warning.
+#
+# Windows reads the percent of physical memory in use; Unix reads the 1-minute
+# load average divided by the CPU count. Set the threshold for the metric this
+# machine reports.
+# heavy_max_memory = 80    # Windows: percent of physical memory in use
+# heavy_max_load = 1.0     # Unix: 1-minute load average per CPU
+
 [repos]
 my-app = 'D:\work\my-app'

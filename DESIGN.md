@@ -783,9 +783,11 @@ conversation; none is fixed by the queue work.
 - **A scout gets a full space.** Reading does not need isolation, yet a read-only scout still
   gets a checkout of its own. Seen: spaces made for investigation. Fix: give a scout the main
   checkout or a shared read-only copy, and make a space only for work that changes code.
-- **No load check.** Nothing checks machine load before a heavy step. Seen: two agents
+- **No load check.** (Fixed.) Nothing checked machine load before a heavy step. Seen: two agents
   installing or running suites at once is the pattern that crashed this box on 2026-09-25.
-  Fix: a load check before a heavy step, and one heavy step open at a time across the crew.
+  `dispatch --heavy` marks a step, only one heavy step is open at a time across the crew, and an
+  opt-in `[gates]` threshold adds a check of the machine's own load (memory on Windows, load per
+  CPU on Unix). A load that cannot be read fails open with a warning.
 
 - AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
   gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi
