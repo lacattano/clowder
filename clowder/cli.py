@@ -2951,6 +2951,21 @@ def _job_moved_past(task: Task, job: Job | None) -> bool:
     return False
 
 
+def _work_has_landed(task: Task, job: Job | None) -> bool:
+    """Is this step's work already in the job's history, so its commit is moot?
+
+    A note about a commit on no branch exists to catch work that could be lost
+    before it lands. Once the step has reported and its job is merged or closed,
+    the change is in the history the owner merged. A later rebase can leave the
+    recorded commit on no branch, but that is not a reason to keep chasing it in
+    the worker queue. The claim keys off the step's status and the job's state,
+    not the commit's reachability alone.
+    """
+    if task.is_open or job is None:
+        return False
+    return bool(job.merged_at or job.closed_at)
+
+
 def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
     """Everything the page is drawn from."""
     agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
@@ -2977,6 +2992,8 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     # superseded, not lost. When the change cannot be compared, say so instead of
     # raising a false alarm. So does a job that moved past the commit: its branch
     # or held ref holds the later work, and the old hash is a superseded version.
+    # So does a step that has reported on a job that is merged or closed: the
+    # change has landed, and the step no longer waits for a worker.
     #
     # The answer is a pure function of the commit and the refs that hold it, and
     # asking git costs a process each time, so it is memoised: one look per commit
@@ -2988,9 +3005,12 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     for task in tasks:
         if not (task.commit and task.worktree):
             continue
+        task_job = jobs_by_id.get(task.job or "")
+        if _work_has_landed(task, task_job):
+            continue  # the change is merged or closed; the commit is moot
         risk = memo.risk(task.worktree, task.commit)
         if risk == gitcmd.LOST:
-            if _job_moved_past(task, jobs_by_id.get(task.job or "")):
+            if _job_moved_past(task, task_job):
                 continue
             stranded.add(task.id)
         elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
