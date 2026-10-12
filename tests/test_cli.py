@@ -887,6 +887,85 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("needs a place", err)
 
+    def test_a_no_job_send_to_an_agent_holding_open_work_is_refused(self) -> None:
+        # A send lands in the pane and the newest message wins, so a second send
+        # to an agent with an open no-job task would drop the first turn.
+        self.dispatch("maker", "myrepo", "scout: read the terms page", "--shape", "scout")
+        code, _, err = self.dispatch(
+            "maker", "myrepo", "scout: read the privacy page", "--shape", "scout"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("already holds open work", err)
+        self.assertIn("t-0001", err)
+        self.assertIn("no job", err)
+        self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
+
+    def test_an_open_step_blocks_a_no_job_send(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("already holds open work", err)
+        self.assertIn("t-0001", err)
+        self.assertIn(job_id, err)
+
+    def test_an_open_job_holding_the_agents_space_is_refused(self) -> None:
+        # The j-0004 window: the agent's own space holds an open job, and the send
+        # does not name it, so the message would preempt the open job's turn.
+        job_id, worktree = self.open_a_job()
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("inside open job", err)
+        self.assertIn(job_id, err)
+        self.assertIn(str(worktree), err)
+
+    def test_a_closed_job_does_not_block_a_send(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+        code, out, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-maker", out)
+
+    def test_force_bypasses_the_open_work_refusal(self) -> None:
+        self.dispatch("maker", "myrepo", "scout: read the terms page", "--shape", "scout")
+        code, out, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: read the privacy page",
+            "--shape",
+            "scout",
+            "--force",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertEqual(len(self.load_state()["tasks"]), 2, "force sent the second step")
+
     def test_report_survives_a_missing_session_file(self) -> None:
         self.dispatch(
             "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
@@ -3436,11 +3515,13 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["tasks"], {})
 
     def test_a_no_job_step_records_the_agents_own_space(self) -> None:
-        # The sibling defect: a step sent to an agent whose space holds an open job
-        # was recorded with no folder, and a report then called it the main checkout.
+        # The sibling defect: a step sent to an agent whose space holds a job was
+        # recorded with no folder, and a report then called it the main checkout.
         # A ship now has to name a place, so this case is a scout - the shape that
-        # still needs no place, and still has to record where it ran.
+        # still needs no place, and still has to record where it ran. The job is
+        # closed first: an open job in the space now refuses the send (t-0742).
         job_id, worktree = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
         self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
         task = self.only_task()
         self.assertIsNone(task["job"], "the step is not part of a job")
