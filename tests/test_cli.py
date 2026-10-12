@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd
-from clowder.state import Job, StateStore, Task
+from clowder.state import CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from tests.support import (
     clean_env,
     default_usage,
@@ -2607,8 +2607,37 @@ class CliTest(unittest.TestCase):
         gitcmd.switch_branch(repo, "main")
         return old, lost
 
+    def make_orphaned_merge_commit(self) -> str:
+        """A merge commit on no branch, the shape a later rebase can leave behind.
+
+        The job branch is deleted and main never saw the merge, so the commit is
+        reachable from nothing. Its two parents give it no patch-id of its own, so
+        the board can only call it a merge.
+        """
+        repo = self.repo_path
+        gitcmd.switch_new_branch(repo, "task/merged", "main")
+        (repo / "one.txt").write_text("one\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "one.txt")
+        gitcmd.run_git(repo, "commit", "-m", "one")
+        gitcmd.switch_new_branch(repo, "task/side", "main")
+        (repo / "two.txt").write_text("two\n", encoding="utf-8")
+        gitcmd.run_git(repo, "add", "two.txt")
+        gitcmd.run_git(repo, "commit", "-m", "two")
+        gitcmd.switch_branch(repo, "task/merged")
+        gitcmd.run_git(repo, "merge", "--no-ff", "-m", "merge side", "task/side")
+        merged = gitcmd.head_commit(repo, short=False) or ""
+        gitcmd.switch_branch(repo, "main")
+        gitcmd.run_git(repo, "branch", "-D", "task/merged")
+        gitcmd.run_git(repo, "branch", "-D", "task/side")
+        return merged
+
     def write_pinned_task(
-        self, task_id: str, commit: str, worktree: str | None = None, job: str | None = None
+        self,
+        task_id: str,
+        commit: str,
+        worktree: str | None = None,
+        job: str | None = None,
+        status: str = DISPATCHED,
     ) -> None:
         store = StateStore(self.state)
         store.add(
@@ -2623,6 +2652,7 @@ class CliTest(unittest.TestCase):
                 worktree=str(worktree or self.repo_path),
                 job=job,
                 commit=commit,
+                status=status,
             )
         )
         store.save()
@@ -2636,6 +2666,9 @@ class CliTest(unittest.TestCase):
         reviewer: str | None = None,
         review_commit: str | None = None,
         handed_over_at: str | None = None,
+        merged_at: str | None = None,
+        closed_at: str | None = None,
+        status: str = OPEN,
     ) -> None:
         store = StateStore(self.state)
         store.add_job(
@@ -2653,6 +2686,9 @@ class CliTest(unittest.TestCase):
                 reviewer=reviewer,
                 review_commit=review_commit,
                 handed_over_at=handed_over_at,
+                merged_at=merged_at,
+                closed_at=closed_at,
+                status=status,
             )
         )
         store.save()
@@ -2762,6 +2798,54 @@ class CliTest(unittest.TestCase):
         owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
         self.assertNotIn("t-0001", owner, "the job's branch moved past the commit")
 
+    def test_a_reported_step_on_a_merged_job_leaves_the_worker_queue(self) -> None:
+        # t-0613 and t-0615 on job j-0124: a later rebase orphaned the recorded
+        # commit, but the step reported and the job merged long ago. The commit's
+        # reachability alone must not keep it in the worker queue.
+        merged = self.make_orphaned_merge_commit()
+        self.write_job("j-0001", branch="task/merged", merged_at="2026-09-28T10:00:00Z")
+        self.write_pinned_task("t-0001", merged, job="j-0001", status=REPORTED)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        self.assertNotIn("t-0001", worker, "a reported step on a merged job is done")
+        self.assertNotIn("merge commit", worker, "no stale merge warning either")
+        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        self.assertNotIn("t-0001", owner, "it is not work at risk for the owner")
+
+    def test_an_orphaned_merge_commit_on_an_open_job_still_waits(self) -> None:
+        # The gate is the step's status and the job's state, not blanket silence:
+        # a merge commit on no branch for a step that has not landed still warns.
+        merged = self.make_orphaned_merge_commit()
+        self.write_job("j-0001", branch="task/merged")
+        self.write_pinned_task("t-0001", merged, job="j-0001", status=REPORTED)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        self.assertIn("t-0001", worker)
+        self.assertIn("merge commit", worker)
+
+    def test_an_orphaned_commit_on_a_closed_job_still_warns(self) -> None:
+        # Closing a job can release a space whose commit never merged. Only a
+        # merge puts work in history, so a closed-but-unmerged job must not
+        # silence a commit that is on no branch.
+        merged = self.make_orphaned_merge_commit()
+        self.write_job(
+            "j-0001",
+            branch="task/merged",
+            status=CLOSED,
+            closed_at="2026-09-28T10:00:00Z",
+        )
+        self.write_pinned_task("t-0001", merged, job="j-0001", status=REPORTED)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        self.assertIn("t-0001", worker, "a closed job did not merge the work")
+        self.assertIn("merge commit", worker)
+
     def test_a_genuinely_stranded_commit_names_the_fix(self) -> None:
         _, lost = self.make_rebased_commits()
         self.write_pinned_task("t-0001", lost, worktree=str(self.repo_path))
@@ -2843,6 +2927,23 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertNotIn("on no branch", out, "the job's branch moved past the commit")
+
+    def test_report_does_not_flag_a_reported_step_on_a_merged_job(self) -> None:
+        # The report and the board must agree. A closed branch and a merged job
+        # mean the step's work has landed, so the stale warning must not print.
+        # The branch is gone, so `_job_moved_past` alone cannot clear it. Pin the
+        # step in its own detached worktree, or `report` would replace the commit
+        # with the worktree HEAD and the guard would never be asked.
+        _, lost = self.make_rebased_commits()
+        lost_wt = self.repo_path / ".worktrees" / "lost"
+        gitcmd.add_worktree_free(self.repo_path, lost_wt, lost)
+        self.write_job("j-0001", branch="task/gone", merged_at="2026-09-28T10:00:00Z")
+        self.write_pinned_task(
+            "t-0001", lost, worktree=str(lost_wt), job="j-0001", status=REPORTED
+        )
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("on no branch", out, "the merged job owns the work")
 
     def test_dispatch_refreshes_the_board_where_the_state_lives(self) -> None:
         # The page is a byproduct of the command, not a step a human remembers.

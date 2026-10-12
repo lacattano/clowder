@@ -1130,13 +1130,16 @@ def cmd_report(args: argparse.Namespace) -> int:
                 changed = True
         # The reachability gate, where a worker makes its claim. A commit that is on
         # no branch exists only in that folder, and reusing the folder destroys it.
-        # The same content-based check as the board, so both answers agree: a commit
-        # a rebase superseded is not lost.
+        # The board asks the same questions in the same order, so both answers
+        # agree: is the work already merged, did the job move past the commit, and
+        # only then is anything on no branch truly lost.
         if task.commit and task.worktree:
-            stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
-            if stranded:
-                job = store.get_job(task.job) if task.job else None
-                stranded = not _job_moved_past(task, job)
+            job = store.get_job(task.job) if task.job else None
+            stranded = False
+            if not _work_has_landed(task, job):
+                stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
+                if stranded:
+                    stranded = not _job_moved_past(task, job)
         if answer and (task.answer != answer or task.status != REPORTED) and settled:
             task.answer = answer
             task.answer_source = source or "session"
@@ -2951,6 +2954,23 @@ def _job_moved_past(task: Task, job: Job | None) -> bool:
     return False
 
 
+def _work_has_landed(task: Task, job: Job | None) -> bool:
+    """Is this step's work already in the job's history, so its commit is moot?
+
+    A note about a commit on no branch exists to catch work that could be lost
+    before it lands. Once the step has reported and its job is merged, the change
+    is in the history the owner merged. A later rebase can leave the recorded
+    commit on no branch, but that is not a reason to keep chasing it. The claim
+    keys off the step's status and the merge, not the commit's reachability alone.
+
+    A closed job is not enough. Closing can release a space whose commit never
+    merged, so a closed-but-unmerged commit stays at risk.
+    """
+    if task.is_open or job is None:
+        return False
+    return bool(job.merged_at)
+
+
 def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
     """Everything the page is drawn from."""
     agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
@@ -2977,6 +2997,8 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     # superseded, not lost. When the change cannot be compared, say so instead of
     # raising a false alarm. So does a job that moved past the commit: its branch
     # or held ref holds the later work, and the old hash is a superseded version.
+    # So does a step that has reported on a job that is merged or closed: the
+    # change has landed, and the step no longer waits for a worker.
     #
     # The answer is a pure function of the commit and the refs that hold it, and
     # asking git costs a process each time, so it is memoised: one look per commit
@@ -2988,9 +3010,12 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     for task in tasks:
         if not (task.commit and task.worktree):
             continue
+        task_job = jobs_by_id.get(task.job or "")
+        if _work_has_landed(task, task_job):
+            continue  # the change is merged or closed; the commit is moot
         risk = memo.risk(task.worktree, task.commit)
         if risk == gitcmd.LOST:
-            if _job_moved_past(task, jobs_by_id.get(task.job or "")):
+            if _job_moved_past(task, task_job):
                 continue
             stranded.add(task.id)
         elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
