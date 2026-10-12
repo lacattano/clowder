@@ -987,7 +987,10 @@ def _agents_by_name(mux: Mux) -> dict[str, AgentInfo]:
 
 
 def _session_and_answer(
-    recorded: str | None, live: str | None, since: float | None
+    recorded: str | None,
+    live: str | None,
+    since: float | None,
+    until: float | None = None,
 ) -> tuple[str | None, str | None]:
     """The session a step's answer should be read from, and the answer in it.
 
@@ -998,20 +1001,43 @@ def _session_and_answer(
     then. When neither holds an answer the recorded pointer is kept, so reading a
     step never moves the pointer to a session that has nothing to say.
 
+    The read is bounded to `[since, until)`, the step's own dispatch window, so a
+    later task in the same pane is not read as this one's answer.
+
     The answer comes back with the path so no caller reads the same file twice;
     `inbox` runs this for every open step.
     """
     if recorded and Path(recorded).exists():
-        answer = read_answer(recorded, since)
+        answer = read_answer(recorded, since, until)
         if answer:
             return recorded, answer
     # The same file twice is the common case while a step has no answer yet, and
     # `inbox` walks every open step, so it is not read twice.
     if live and live != recorded:
-        answer = read_answer(live, since)
+        answer = read_answer(live, since, until)
         if answer:
             return live, answer
     return recorded or live, None
+
+
+def _report_until(store: StateStore, task: Task, since: float | None) -> float | None:
+    """Where this step's dispatch window ends: the next task to the same agent.
+
+    A pane is one long-lived session shared by every task sent to it, so a read
+    bounded only from below would pick up the next task's answer. The earliest
+    task to the same agent whose window starts after this one's bounds the read.
+    None when this is the latest task, or the start is unknown.
+    """
+    if since is None:
+        return None
+    starts: list[float] = []
+    for other in store.all():
+        if other.agent != task.agent or other.id == task.id:
+            continue
+        moment = to_epoch(other.dispatched_at) or to_epoch(other.created_at)
+        if moment is not None and moment > since:
+            starts.append(moment)
+    return min(starts) if starts else None
 
 
 def _reported_since_look(
@@ -1029,8 +1055,9 @@ def _reported_since_look(
         if status not in (None, "idle", "done"):
             continue
         since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
+        until = _report_until(store, task, since)
         _, answer = _session_and_answer(
-            task.agent_session, agent.session_path if agent else None, since
+            task.agent_session, agent.session_path if agent else None, since, until
         )
         if answer:
             found.append((task, answer))
@@ -1088,9 +1115,10 @@ def cmd_report(args: argparse.Namespace) -> int:
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
 
     since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
-    session_path, session_answer, agent_status = _resolve_session(mux, task, since)
+    until = _report_until(store, task, since)
+    session_path, session_answer, agent_status = _resolve_session(mux, task, since, until)
 
-    usage = read_usage(session_path, since) if session_path else None
+    usage = read_usage(session_path, since, until) if session_path else None
     answer = task.answer or session_answer
     # An abandoned step keeps no answer: it died before one came, and reading the
     # session now would capture a half sentence as its result.
@@ -1356,7 +1384,7 @@ def cmd_step_close(args: argparse.Namespace) -> int:
 
 
 def _resolve_session(
-    mux: Mux, task: Task, since: float | None
+    mux: Mux, task: Task, since: float | None, until: float | None = None
 ) -> tuple[str | None, str | None, str | None]:
     """The session to read, the answer already in it, and the agent's status.
 
@@ -1364,7 +1392,8 @@ def _resolve_session(
     answer to a step is in the session the step was dispatched into while that
     session holds it; a pane that restarted before the worker answered has it in
     the live session instead. Reading the live one first is what overwrote the
-    pointer to the session that held the answer.
+    pointer to the session that held the answer. The read is bounded to the
+    step's own window `[since, until)`.
     """
     agent = None
     try:
@@ -1372,7 +1401,7 @@ def _resolve_session(
     except MuxError:
         agent = None
     live = agent.session_path if agent is not None else None
-    session, answer = _session_and_answer(task.agent_session, live, since)
+    session, answer = _session_and_answer(task.agent_session, live, since, until)
     return session, answer, agent.status if agent is not None else None
 
 

@@ -5,8 +5,10 @@ Assistant messages carry usage, cost, provider and model per turn. So usage and
 cost are read, never scraped.
 
 Because one pane is a long-lived session, a second task in the same pane shares
-a file. Every read therefore takes a `since` cut, and only turns after this
-dispatch count towards this task.
+a file. Every read therefore takes a `since` cut and an `until` cut: only turns
+in `[since, until)` count towards this task, where `until` is the start of the
+next task in the same pane. Without the upper cut a later task's answer is read
+as this one's.
 """
 
 from __future__ import annotations
@@ -97,8 +99,10 @@ def iter_records(path: str | Path) -> Iterator[dict[str, object]]:
                 yield record
 
 
-def read_usage(path: str | Path, since: float | None = None) -> Usage | None:
-    """Sum usage over assistant turns at or after `since`.
+def read_usage(
+    path: str | Path, since: float | None = None, until: float | None = None
+) -> Usage | None:
+    """Sum usage over assistant turns in `[since, until)`.
 
     Returns None when the file is unreadable or holds no assistant turn.
     A session that exists but has not answered yet is not usage.
@@ -118,6 +122,8 @@ def read_usage(path: str | Path, since: float | None = None) -> Usage | None:
 
         moment = to_epoch(message.get("timestamp")) or to_epoch(record.get("timestamp"))
         if since is not None and moment is not None and moment < since:
+            continue
+        if until is not None and moment is not None and moment >= until:
             continue
 
         turn = message.get("usage")
@@ -182,8 +188,10 @@ def read_model(path: str | Path) -> ModelInfo | None:
     return ModelInfo(provider=provider, model=model, thinking=thinking)
 
 
-def read_answer(path: str | Path, since: float | None = None) -> str | None:
-    """The last thing the agent said in prose.
+def read_answer(
+    path: str | Path, since: float | None = None, until: float | None = None
+) -> str | None:
+    """The last thing the agent said in prose, in `[since, until)`.
 
     Tool calls and thinking are not the answer. Only text parts are.
     """
@@ -196,6 +204,8 @@ def read_answer(path: str | Path, since: float | None = None) -> str | None:
             continue
         moment = to_epoch(message.get("timestamp")) or to_epoch(record.get("timestamp"))
         if since is not None and moment is not None and moment < since:
+            continue
+        if until is not None and moment is not None and moment >= until:
             continue
         text = extract_text(message.get("content"))
         if text:
