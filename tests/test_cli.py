@@ -2067,6 +2067,71 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("open", out)
 
+    def test_a_fix_step_puts_the_writers_space_back_on_the_branch(self) -> None:
+        # `job handover` releases the writer's space to the base. A later fix step
+        # must put it back on the job's branch, or the worker edits the base and
+        # the dispatch records the wrong commit.
+        job_id, maker_folder = self.open_a_job()
+        commit = self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "handed back to the base")
+
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "ship: fix the refund page",
+            "--job",
+            job_id,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(gitcmd.current_branch(maker_folder), "task/refund")
+        self.assertEqual(self.only_task()["commit"], commit[:7], "the branch tip, not the base")
+
+    def test_a_fix_step_refuses_when_the_space_cannot_take_the_branch(self) -> None:
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "handover",
+                job_id,
+                "--to",
+                "verifier",
+                "--name",
+                "myrepo-verifier",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        # An untracked file the branch tracks would be overwritten by the switch.
+        (maker_folder / "refund.py").write_text("conflict\n", encoding="utf-8")
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "ship: fix the refund page",
+            "--job",
+            job_id,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("switch task/refund", err, "the refusal names the exact command")
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "the space was not moved")
+
     def test_publish_and_merge_work_from_a_released_job(self) -> None:
         job_id, maker_folder = self.open_a_job()
         commit = self.save_something(maker_folder)
