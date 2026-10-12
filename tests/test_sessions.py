@@ -69,6 +69,27 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(answer, "this task answer")
         self.assertEqual(read_answer(self.path), "this task answer")
 
+    def test_until_excludes_a_later_task_in_the_same_pane(self) -> None:
+        write_session(
+            self.path,
+            cwd="C:/code/myrepo",
+            turns=[
+                {"at": T1, "text": "this task answer", "usage": default_usage(1000, 100)},
+                {"at": T3, "text": "next task answer", "usage": default_usage(9000, 900)},
+            ],
+        )
+        usage = read_usage(self.path, since=T0 / 1000, until=T2 / 1000)
+        assert usage is not None
+        self.assertEqual(usage.turns, 1)
+        self.assertEqual(usage.input_tokens, 1000)
+        self.assertEqual(
+            read_answer(self.path, since=T0 / 1000, until=T2 / 1000), "this task answer"
+        )
+        # The next task's window starts at T2, so its own read keeps T3.
+        self.assertEqual(
+            read_answer(self.path, since=T2 / 1000, until=None), "next task answer"
+        )
+
     def test_answer_is_prose_not_thinking_or_tool_calls(self) -> None:
         write_session(
             self.path,

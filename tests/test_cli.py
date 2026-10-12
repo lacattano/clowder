@@ -498,6 +498,25 @@ class CliTest(unittest.TestCase):
         write_session(path, cwd=str(self.workspace / "myrepo"), turns=[])
         return path
 
+    def write_window_task(self, task_id: str, agent: str, dispatched_at: str) -> None:
+        """A task with an explicit dispatch window, sharing the pane's session."""
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id=task_id,
+                question=f"question for {task_id}",
+                brief="scout: x",
+                shape="scout",
+                agent=agent,
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                agent_session=str(self.session_file),
+                status=DISPATCHED,
+                dispatched_at=dispatched_at,
+            )
+        )
+        store.save()
+
     def test_report_reads_the_session_file(self) -> None:
         self.dispatch(
             "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
@@ -518,6 +537,103 @@ class CliTest(unittest.TestCase):
         self.assertIsNotNone(task["reported_at"])
         self.assertEqual(task["usage"]["turns"], 1, "earlier turns are excluded")
         self.assertEqual(task["usage"]["total_tokens"], 1200)
+
+    def test_report_scopes_the_answer_to_the_task_window(self) -> None:
+        # t-0628: one agent, two tasks, one long-lived session file. The later
+        # task's answer must not be saved as the earlier task's answer, and its
+        # usage must not be counted. The window ends where the next task began.
+        write_session(
+            self.session_file,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": 1_790_512_810_000,
+                    "text": "first task answer",
+                    "usage": default_usage(1000, 100),
+                },
+                {
+                    "at": 1_790_512_900_000,
+                    "text": "second task answer",
+                    "usage": default_usage(2000, 200),
+                },
+            ],
+        )
+        self.write_window_task("t-0001", "maker", "2026-09-27T12:40:00Z")
+        self.write_window_task("t-0002", "maker", "2026-09-27T12:41:00Z")
+
+        code, out, err = self.cli("report", "t-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("first task answer", out)
+        self.assertNotIn("second task answer", out)
+        task = self.load_state()["tasks"]["t-0001"]
+        self.assertEqual(task["answer"], "first task answer")
+        self.assertEqual(task["usage"]["turns"], 1)
+        self.assertEqual(task["usage"]["input_tokens"], 1000)
+
+    def test_the_latest_task_still_records_with_no_upper_bound(self) -> None:
+        # The newest task has no next task, so its window is open above and the
+        # last text in the pane is its answer.
+        write_session(
+            self.session_file,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": 1_790_512_810_000,
+                    "text": "first task answer",
+                    "usage": default_usage(1000, 100),
+                },
+                {
+                    "at": 1_790_512_900_000,
+                    "text": "second task answer",
+                    "usage": default_usage(2000, 200),
+                },
+            ],
+        )
+        self.write_window_task("t-0001", "maker", "2026-09-27T12:40:00Z")
+        self.write_window_task("t-0002", "maker", "2026-09-27T12:41:00Z")
+
+        code, out, err = self.cli("report", "t-0002", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("second task answer", out)
+        task = self.load_state()["tasks"]["t-0002"]
+        self.assertEqual(task["answer"], "second task answer")
+        self.assertEqual(task["usage"]["input_tokens"], 2000)
+
+    def test_a_later_task_to_another_agent_does_not_bound_the_window(self) -> None:
+        self.write_window_task("t-0001", "maker", "2026-09-27T12:40:00Z")
+        self.write_window_task("t-0002", "verifier", "2026-09-27T12:41:00Z")
+        store = StateStore(self.state)
+        task = store.get("t-0001")
+        since = cli.to_epoch(task.dispatched_at)
+        self.assertIsNone(cli._report_until(store, task, since))
+
+    def test_inbox_scopes_each_answer_to_its_task_window(self) -> None:
+        # inbox walks every open step and shares report's read, so it must bound
+        # each step the same way: t-0001 shows its own answer, not t-0002's.
+        write_session(
+            self.session_file,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": 1_790_512_810_000,
+                    "text": "first task answer",
+                    "usage": default_usage(1000, 100),
+                },
+                {
+                    "at": 1_790_512_900_000,
+                    "text": "second task answer",
+                    "usage": default_usage(2000, 200),
+                },
+            ],
+        )
+        self.write_window_task("t-0001", "maker", "2026-09-27T12:40:00Z")
+        self.write_window_task("t-0002", "maker", "2026-09-27T12:41:00Z")
+
+        code, out, err = self.cli("inbox", "--json", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        answers = {item["id"]: item["answer"] for item in json.loads(out)["reported"]}
+        self.assertEqual(answers["t-0001"], "first task answer")
+        self.assertEqual(answers["t-0002"], "second task answer")
 
     def test_report_does_not_settle_a_working_agent(self) -> None:
         self.dispatch(

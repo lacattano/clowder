@@ -759,9 +759,11 @@ conversation; none is fixed by the queue work.
   refuses a ship item with neither a job nor a worktree - a queued item carries no worktree, so
   its job is the only place its save can go - and `queue send --job <id>` gives or corrects that
   job at send time. The queue never guesses a job from what the agent holds.
-- **One answer per agent, not per task.** `report` reads the last thing an agent said, so a
-  later task by the same agent overwrites an earlier task's answer. Seen: t-0006 showed a
-  publish task's text as its own. Fix: scope the answer to the task's dispatch window.
+- **One answer per agent, not per task.** (Fixed.) `report` read the last thing an agent
+  said, so a later task by the same agent overwrote an earlier task's answer. Seen: t-0006
+  showed a publish task's text as its own. `read_answer` and `read_usage` now take an
+  `until` cut, and `report` and `inbox` bound a task to `[dispatched_at, next task's
+  dispatched_at)`, so a later task's answer and usage are never read as this one's.
 - **A send preempts an open job.** A task sent to an agent that already has an open job takes
   the newest message and stops the older work. Seen: it happened today, and j-0004 had to be
   re-sent. Fix: refuse or queue a dispatch to an agent whose space holds an open job, unless
