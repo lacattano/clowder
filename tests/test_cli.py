@@ -1008,9 +1008,13 @@ class CliTest(unittest.TestCase):
 
     # -- ensure ------------------------------------------------------------
 
-    def seed_mux(self, agents: list[dict[str, object]]) -> str:
+    def seed_mux(
+        self,
+        agents: list[dict[str, object]],
+        panes: dict[str, str] | None = None,
+    ) -> str:
         path = self.root / "mux-state.json"
-        write_fake_state(path, agents=agents)
+        write_fake_state(path, agents=agents, panes=panes)
         return str(path)
 
     def test_ensure_reuses_the_agent_that_already_serves_the_repo(self) -> None:
@@ -3531,7 +3535,8 @@ class CliTest(unittest.TestCase):
         session = sessions / f"{name}.jsonl"
         session.write_text("", encoding="utf-8")
         self.seed_mux(
-            [{"name": name, "cwd": str(self.repo_path), "session_file": str(session)}]
+            [{"name": name, "cwd": str(self.repo_path), "session_file": str(session)}],
+            panes={"w9:p1": str(self.repo_path)},
         )
         return session
 
@@ -3614,6 +3619,94 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("agent", "reset", "ghost", env=self.state_env())
         self.assertEqual(code, 2)
         self.assertIn("no live agent named", err)
+
+    # -- agent reseed ------------------------------------------------------
+
+    def test_agent_reseed_exits_exports_and_resumes(self) -> None:
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, out, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "2",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log)),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("reseeded", out)
+        self.assertIn("clowder-bot", out)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+        quit_calls = [c for c in calls if c[:2] == ["agent", "send-keys"]]
+        self.assertEqual(quit_calls[0][3:], ["/", "q", "u", "i", "t", "enter"])
+
+        # The export runs only once Pi has left the roster, so the command cannot
+        # race into Pi's editor.
+        quit_at = next(i for i, c in enumerate(calls) if c[:2] == ["agent", "send-keys"])
+        run_at = next(i for i, c in enumerate(calls) if c[:2] == ["pane", "run"])
+        between = [tuple(c[:2]) for c in calls[quit_at:run_at]]
+        self.assertIn(("agent", "list"), between, "wait for Pi to leave before the export")
+
+        waits = [c for c in calls if c[:2] == ["pane", "wait-output"]]
+        self.assertEqual(len(waits), 1, "wait for the export marker")
+        self.assertIn("clowder-identity-seeded", waits[0])
+
+        runs = [c for c in calls if c[:2] == ["pane", "run"]]
+        self.assertEqual(len(runs), 1)
+        export = runs[0][-1]
+        for key in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            self.assertIn(key, export)
+        self.assertIn("clowder-identity-seeded", export)
+        self.assertIn("$env:GIT_AUTHOR_NAME='clowder-bot'", export)
+        self.assertIn("Write-Output 'clowder-identity-seeded'", export)
+
+        starts = [c for c in calls if c[:2] == ["agent", "start"]]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0][-2:], ["--", "--continue"])
+        self.assertEqual(len([c for c in calls if c[:2] == ["agent", "wait"]]), 1)
+
+    def test_agent_reseed_refuses_while_a_step_is_unreported(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli(
+            "agent", "reseed", "myrepo-maker", "--timeout", "2", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("unreported step", err)
+        self.assertIn("t-0001", err)
+
+    def test_agent_reseed_resumes_the_session(self) -> None:
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, _, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "2",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log)),
+        )
+        self.assertEqual(code, 0, err)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        start = next(c for c in calls if c[:2] == ["agent", "start"])
+        self.assertEqual(start[-2:], ["--", "--continue"], "Pi resumes the same session")
+
+    def test_the_reseed_export_matches_the_shell(self) -> None:
+        # The pane's shell decides the syntax: PowerShell uses $env:, POSIX uses
+        # export. Both print the marker so the wait can confirm the command ran.
+        identity = gitcmd.Identity("clowder-bot", "94532220+lacattano@users.noreply.github.com")
+        pwsh = cli._reseed_export(identity, "pwsh.exe")
+        self.assertIn("$env:GIT_AUTHOR_NAME='clowder-bot'", pwsh)
+        self.assertIn("Write-Output 'clowder-identity-seeded'", pwsh)
+        bash = cli._reseed_export(identity, "bash.exe")
+        self.assertIn("export GIT_AUTHOR_NAME=clowder-bot", bash)
+        self.assertIn("echo clowder-identity-seeded", bash)
 
     # -- job pin -----------------------------------------------------------
 

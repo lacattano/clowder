@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sys
 import time
 import webbrowser
@@ -284,6 +285,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_reset.add_argument("--json", action="store_true")
     a_reset.set_defaults(handler=cmd_agent_reset, refreshes_board=True)
+
+    a_reseed = agent_sub.add_parser(
+        "reseed",
+        help="seed the crew git identity into a live pane and resume its Pi session",
+        parents=[common],
+    )
+    a_reseed.add_argument("name", help="the agent, as the multiplexer knows it")
+    a_reseed.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="how long to wait for each step (default: 30)",
+    )
+    a_reseed.add_argument(
+        "--force", action="store_true", help="reseed even with an unreported step"
+    )
+    a_reseed.add_argument("--json", action="store_true")
+    a_reseed.set_defaults(handler=cmd_agent_reseed, refreshes_board=True)
 
     a_rename = agent_sub.add_parser(
         "rename",
@@ -2545,6 +2565,147 @@ def cmd_agents(args: argparse.Namespace) -> int:
         "\nA space is a folder on disk that keeps its install. Each agent needs one "
         "of its own; `clowder ensure` makes one."
     )
+    return 0
+
+
+# The keys that quit Pi, sent one at a time the way `agent reset` sends `/new`.
+# A slash command sent through the agent prompt is a message, not a command.
+_QUIT_KEYS = ("/", "q", "u", "i", "t", "enter")
+
+# The line the export prints, so the wait proves the command ran in the shell.
+_RESEED_MARKER = "clowder-identity-seeded"
+
+
+def _wait_for_agent_gone(mux: Mux, name: str, timeout_s: float) -> bool:
+    """Wait until the agent leaves the roster, or the wait runs out.
+
+    After Pi quits, the multiplexer clears the name and the pane is back at its
+    shell. The shell prompt text is theme-dependent, so the roster is the stable
+    signal that the shell is ready for the export.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        if mux.find_agent(name) is None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+
+
+def _reseed_export(identity: gitcmd.Identity, shell: str | None) -> str:
+    """The shell command that pins the crew identity and proves it ran.
+
+    PowerShell and POSIX shells set the environment differently, so the pane's
+    own shell decides the syntax. The marker is printed last so `pane wait-output`
+    can wait for it instead of racing.
+    """
+    env = identity.env()
+    if shell and ("pwsh" in shell.lower() or "powershell" in shell.lower()):
+        pwsh_pairs = []
+        for key, value in env.items():
+            quoted = value.replace("'", "''")
+            pwsh_pairs.append(f"$env:{key}='{quoted}'")
+        return "; ".join(pwsh_pairs) + f"; Write-Output '{_RESEED_MARKER}'"
+    posix_pairs = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+    return f"export {posix_pairs}; echo {_RESEED_MARKER}"
+
+
+def cmd_agent_reseed(args: argparse.Namespace) -> int:
+    """Seed the crew git identity into a live pane, keeping its conversation.
+
+    herdr sets a pane's environment only when the pane is made, so a pane made
+    before the identity guard carries no GIT_AUTHOR_* or GIT_COMMITTER_*. Every
+    commit it makes is authored as the owner, and the publish backstop refuses
+    the job. This quits Pi, exports the identity into the pane's shell, and
+    starts Pi again with the session resumed. No history is rewritten: the
+    owner's pass stays on the exact commit that is pushed.
+
+    Option (b), a re-author at handover, is a manual recovery only. It rewrites
+    the commits the owner passed, so `review_commit`, `commit` and `held_ref`
+    must all be re-pointed to the new hashes or the custody goes stale. It is
+    never the normal path; reseed the pane instead.
+    """
+    config, store = _context(args)
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    name = args.name.strip()
+    agent = mux.find_agent(name)
+    if agent is None:
+        live = ", ".join(sorted(a.name for a in mux.list_agents())) or "none"
+        raise DispatchError(f"no live agent named {name!r}. Live agents: {live}.")
+
+    # The same guard `agent reset` uses: the session holds the answer to an open
+    # step, and quitting Pi would wipe the copy that answer is read from.
+    pending = [task for task in store.all() if task.agent == name and task.is_open]
+    if pending and not args.force:
+        listed = ", ".join(f"{task.id} ({_clip(task.question, 40)})" for task in pending)
+        raise StateError(
+            f"{name} has an unreported step: {listed}. A reseed would wipe the session "
+            f"its answer is read from. Read it first: {PROGRAM} report {pending[0].id}, "
+            "or pass --force."
+        )
+
+    # The quit is typed into the same box the owner uses, so it takes the same
+    # guard a dispatch does.
+    _refuse_if_input_dirty(mux, name, config, args.force, "the reseed")
+
+    identity = _crew_identity(config)
+    pane_id = agent.pane_id
+    if not pane_id:
+        raise StateError(
+            f"{name} has no pane id, so its pane cannot be addressed for a reseed."
+        )
+    result = mux.send_keys(name, _QUIT_KEYS)
+    if not result.ok:
+        raise MuxError(f"could not quit Pi in {name}: {result.error_text()}")
+    if not _wait_for_agent_gone(mux, name, args.timeout):
+        raise StateError(
+            f"{name} did not leave the roster after quitting, so its shell was not "
+            "ready and the identity was not seeded. The pane needs a hand."
+        )
+
+    shell = mux.pane_foreground(pane_id)
+    seeded = mux.run_in_pane(pane_id, _reseed_export(identity, shell))
+    if not seeded.ok:
+        raise MuxError(f"could not export the identity in {name}: {seeded.error_text()}")
+    landed = mux.wait_for_output(pane_id, _RESEED_MARKER, args.timeout)
+    if not landed.ok:
+        raise StateError(
+            f"the identity export did not reach {name}'s shell, so nothing was seeded."
+        )
+
+    started = mux.start_agent(name, pane_id, kind=DEFAULT_KIND, agent_args=("--continue",))
+    if not started.ok:
+        raise MuxError(f"could not restart Pi in {name}: {started.error_text()}")
+    ready = mux.wait_for_agent(name, ("idle", "done"), args.timeout)
+    if not ready.ok:
+        raise StateError(
+            f"Pi restarted in {name} but did not become ready, so the pane needs a look."
+        )
+
+    audit.append_audit(
+        store.path,
+        {
+            "at": now_iso(),
+            "by": (config.front_door_name or "unknown").strip(),
+            "action": "agent-reseed",
+            "agent": name,
+            "pane": pane_id,
+            "identity": f"{identity.name} <{identity.email}>",
+        },
+    )
+
+    if args.json:
+        _emit_json(
+            {
+                "agent": name,
+                "pane": pane_id,
+                "identity": f"{identity.name} <{identity.email}>",
+                "resumed": True,
+            }
+        )
+        return 0
+    print(f"{name} reseeded: the crew identity is in its shell, and Pi resumed")
+    print(f"{INDENT}{identity.name} <{identity.email}>")
     return 0
 
 

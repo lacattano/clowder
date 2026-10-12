@@ -280,6 +280,61 @@ class Mux:
         """Type key presses into an agent's pane and report what happened."""
         return self._run(self.build_send_keys_argv(target, keys), timeout_s)
 
+    def run_in_pane(self, pane_id: str, command: str, timeout_s: float = 20.0) -> MuxResult:
+        """Run a shell command in a pane that is at its prompt.
+
+        `pane run` sends the command text and Enter together, so it is not typed
+        into whatever is currently in the editor the way `send-keys` would be.
+        """
+        return self._run([self.binary, "pane", "run", pane_id, command], timeout_s)
+
+    def pane_foreground(self, pane_id: str, timeout_s: float = 15.0) -> str | None:
+        """The foreground process name in a pane, or None when it cannot be read.
+
+        After Pi quits the shell is the foreground process, so this names the
+        shell that `pane run` will send a command to. PowerShell and POSIX
+        shells set the environment differently.
+        """
+        try:
+            payload = self._result(
+                [self.binary, "pane", "process-info", "--pane", pane_id], timeout_s
+            )
+        except MuxError:
+            return None
+        procs = _dig(payload, "result", "process_info", "foreground_processes")
+        if not isinstance(procs, list) or not procs:
+            return None
+        first = procs[0]
+        if not isinstance(first, dict):
+            return None
+        name = first.get("name")
+        return str(name) if name else None
+
+    def wait_for_output(
+        self,
+        pane_id: str,
+        pattern: str,
+        timeout_s: float,
+        *,
+        regex: bool = False,
+        source: str = "visible",
+        lines: int | None = None,
+    ) -> MuxResult:
+        """Wait until a pane's output matches `pattern`, or the timeout runs out.
+
+        A literal match is the default; `regex` uses the multiplexer's pattern
+        syntax. `lines` restricts the search to the last N lines of the snapshot,
+        which is how a caller matches a shell prompt on the final line.
+        """
+        argv = [self.binary, "pane", "wait-output"]
+        argv += ["--regex" if regex else "--match", pattern]
+        argv += ["--source", source]
+        if lines is not None:
+            argv += ["--lines", str(lines)]
+        argv += ["--timeout", str(int(max(0.0, timeout_s) * 1000))]
+        argv.append(pane_id)
+        return self._run(argv, timeout_s + 5.0)
+
     # -- the agent bus -----------------------------------------------------
 
     def bus_send(self, agent: str, brief: str, timeout_s: float = 60.0) -> MuxResult:
@@ -352,11 +407,13 @@ class Mux:
         pane_id: str,
         kind: str = "pi",
         timeout_s: float | None = None,
+        agent_args: Sequence[str] = (),
     ) -> MuxResult:
         """Start an agent in a pane that is sitting at a shell prompt.
 
         Returns only once the multiplexer has detected the agent and considers it
-        ready, or with a failure that names the reason.
+        ready, or with a failure that names the reason. `agent_args` are passed
+        to the agent after `--`, e.g. `--continue` to resume the last session.
         """
         argv = [
             self.binary,
@@ -368,7 +425,22 @@ class Mux:
             "--pane",
             pane_id,
         ]
+        if agent_args:
+            argv.append("--")
+            argv.extend(agent_args)
         return self._run(argv, timeout_s if timeout_s is not None else 45.0)
+
+    def wait_for_agent(self, name: str, until: Sequence[str], timeout_s: float) -> MuxResult:
+        """Wait until an agent reaches one of the named states, or the timeout.
+
+        Used after a restart to prove the agent is ready for input before the
+        command returns.
+        """
+        argv = [self.binary, "agent", "wait", name]
+        for state in until:
+            argv += ["--until", state]
+        argv += ["--timeout", str(int(max(0.0, timeout_s) * 1000))]
+        return self._run(argv, timeout_s + 5.0)
 
     def rename_agent(self, old: str, new: str, timeout_s: float = 20.0) -> MuxResult:
         """Rename a live agent. The name is the one `agent list` reports.

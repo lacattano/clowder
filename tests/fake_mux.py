@@ -6,12 +6,16 @@ Mimics only what clowder reads, and only the commands it runs:
     agent prompt <target> <text>
     agent send-keys <target> <key>...
     agent read <target> --source visible ...
+    agent wait <target> [--until <state>] ...
+    agent start <name> --kind <kind> --pane <id> [-- <arg>...]
     bus peers
     bus send <target> <text>
     pane split --current --cwd <path> ...
     pane move <pane_id> [--workspace <id>] --new-tab
     pane close <pane_id>
-    agent start <name> --kind <kind> --pane <id>
+    pane run <pane_id> <command>
+    pane wait-output [--match <text>|--regex <pattern>] <pane_id>
+    pane process-info --pane <pane_id>
 
 Without CLOWDER_FAKE_STATE the fake is stateless: `agent list` reports one agent
 built from the environment, and the creating commands fail. With a state file it
@@ -242,6 +246,60 @@ def main(argv: list[str]) -> int:
         _save(state)
         return _emit({"id": "cli:pane:close", "result": {"pane": {"pane_id": pane_id}}})
 
+    if argv[:2] == ["pane", "run"]:
+        pane_id = argv[2] if len(argv) > 2 else ""
+        command = " ".join(argv[3:])
+        state = _load() if _state_path() is not None else None
+        if state is not None:
+            runs = state.setdefault("pane_runs", [])
+            assert isinstance(runs, list)
+            runs.append({"pane_id": pane_id, "command": command})
+            _save(state)
+        return _emit({"id": "cli:pane:run", "result": {"pane_id": pane_id, "command": command}})
+
+    if argv[:2] == ["pane", "wait-output"]:
+        pane_id = argv[-1] if len(argv) > 2 else ""
+        if os.environ.get("CLOWDER_FAKE_WAIT_OUTPUT_FAIL") == "1":
+            return _fail("timeout", f"no output matched in {pane_id}")
+        return _emit(
+            {"id": "cli:pane:wait_output", "result": {"pane_id": pane_id, "matched": True}}
+        )
+
+    if argv[:2] == ["pane", "process-info"]:
+        pane_id = ""
+        for index, item in enumerate(argv):
+            if item == "--pane" and index + 1 < len(argv):
+                pane_id = argv[index + 1]
+        shell = os.environ.get("CLOWDER_FAKE_SHELL", "pwsh.exe")
+        process = {
+            "name": shell,
+            "pid": 1,
+            "argv": [shell],
+            "argv0": shell,
+            "cmdline": shell,
+            "cwd": "",
+        }
+        return _emit(
+            {
+                "id": "cli:pane:process_info",
+                "result": {
+                    "process_info": {
+                        "pane_id": pane_id,
+                        "shell_pid": 1,
+                        "foreground_processes": [process],
+                    }
+                },
+            }
+        )
+
+    if argv[:2] == ["agent", "wait"]:
+        target = argv[2] if len(argv) > 2 else ""
+        if os.environ.get("CLOWDER_FAKE_AGENT_WAIT_FAIL") == "1":
+            return _fail("timeout", f"agent {target} did not settle")
+        return _emit(
+            {"id": "cli:agent:wait", "result": {"agent": {"name": target}, "state": "idle"}}
+        )
+
     if argv[:2] == ["agent", "read"]:
         if os.environ.get("CLOWDER_FAKE_INPUT_FAIL") == "1":
             print("cannot read the pane", file=sys.stderr)
@@ -286,6 +344,11 @@ def main(argv: list[str]) -> int:
             new_session = base / f"{target}-reset-{nonce}.jsonl"
             _write_fresh_session(new_session, str(found.get("cwd") or ""))
             found["session_file"] = str(new_session)
+        # `/quit` exits Pi, and the name is cleared when the agent exits, so a
+        # later `agent start` can take it again.
+        quit_pi = keys == ["/", "q", "u", "i", "t", "enter"]
+        if quit_pi and os.environ.get("CLOWDER_FAKE_QUIT_FAIL") != "1":
+            agents.remove(found)
         _save(state)
         return _emit(
             {"id": "cli:agent:send-keys", "result": {"agent": {"name": target, "keys": keys}}}
