@@ -2931,10 +2931,16 @@ class CliTest(unittest.TestCase):
     def test_report_does_not_flag_a_reported_step_on_a_merged_job(self) -> None:
         # The report and the board must agree. A closed branch and a merged job
         # mean the step's work has landed, so the stale warning must not print.
-        # The branch is gone, so `_job_moved_past` alone cannot clear it.
+        # The branch is gone, so `_job_moved_past` alone cannot clear it. Pin the
+        # step in its own detached worktree, or `report` would replace the commit
+        # with the worktree HEAD and the guard would never be asked.
         _, lost = self.make_rebased_commits()
+        lost_wt = self.repo_path / ".worktrees" / "lost"
+        gitcmd.add_worktree_free(self.repo_path, lost_wt, lost)
         self.write_job("j-0001", branch="task/gone", merged_at="2026-09-28T10:00:00Z")
-        self.write_pinned_task("t-0001", lost, job="j-0001", status=REPORTED)
+        self.write_pinned_task(
+            "t-0001", lost, worktree=str(lost_wt), job="j-0001", status=REPORTED
+        )
         code, out, err = self.cli("report", "t-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertNotIn("on no branch", out, "the merged job owns the work")
