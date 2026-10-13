@@ -63,7 +63,7 @@ clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--wo
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
-clowder owner <id> --item TEXT | --clear
+clowder owner <id> --item TEXT [--detail TEXT|--detail-file PATH] | --clear
 clowder step abandon <id> --why TEXT
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
@@ -349,12 +349,17 @@ Re: <the question it answers>
 - `--decide TEXT` answers that question. The decision then leaves the board's owner section, and
   the record keeps what the answer was. If a `clowder owner --item` is open on the task, this
   clears it too, so the list is never longer than the open decisions.
-- `clowder owner <id> --item TEXT` records one line that waits on the owner when no other field
-  carries it, such as a report you are holding for him. Write it in his words, names first, and
-  say where he does it (this chat, a pull-request page). The board numbers every question waiting
-  on him, this kind and an open decision alike, so he can answer with a number. `--clear` removes
-  it when he answers. Record it the moment you decide to hold something for him; the board's owner
-  section can only show what a command recorded.
+- `clowder owner <id> --item TEXT [--detail TEXT|--detail-file PATH]` records one line that
+  waits on the owner when no other field carries it, such as a report you are holding for him.
+  Write it in his words, names first, and say where he does it (this chat, a pull-request page).
+  The board numbers every question waiting on him, this kind and an open decision alike, so he
+  can answer with a number. `--clear` removes it when he answers. Record it the moment you
+  decide to hold something for him; the board's owner section can only show what a command
+  recorded.
+- `--detail` (or `--detail-file` for a long one) carries the full body behind the one line: what
+  the decision is, the options, what each costs, and your recommendation. One line is for the
+  board; the detail is for him. The board renders it in full, wrapped, with nothing clipped. It
+  lives with the item and is cleared with it, so there is one source of truth.
 
 ## The queue
 

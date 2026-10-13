@@ -78,9 +78,12 @@ class Task:
     decision_answer: str | None = None
     decision_answered_at: str | None = None
     # One line the front door records when something waits on the owner and no
-    # other field carries it, e.g. a report it is holding for him.
+    # other field carries it, e.g. a report it is holding for him. `owner_detail`
+    # is the full body behind that line: the options, what each costs, and the
+    # recommendation. It lives with the item, never apart from it.
     owner_item: str | None = None
     owner_item_at: str | None = None
+    owner_detail: str | None = None
     usage: dict[str, object] | None = None
     # The model that ran this step, read from its own session when it reported.
     # Measurement, not a guard: a session that names no model records none, and
