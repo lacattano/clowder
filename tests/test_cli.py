@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -537,6 +538,37 @@ class CliTest(unittest.TestCase):
         self.assertIsNotNone(task["reported_at"])
         self.assertEqual(task["usage"]["turns"], 1, "earlier turns are excluded")
         self.assertEqual(task["usage"]["total_tokens"], 1200)
+
+    def test_report_survives_a_console_that_cannot_encode_the_answer(self) -> None:
+        # q-0026: the console on this box is cp1252 and an answer can hold any
+        # character. The report must still print (the console drops the glyph it
+        # cannot show) and the task must still be marked reported. A StringIO
+        # capture cannot show this: only a real cp1252 stream raises.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        write_session(
+            self.session_file,
+            cwd=str(self.workspace / "myrepo"),
+            turns=[
+                {
+                    "at": int(time.time() * 1000) + 1000,
+                    "text": "shipped \U0001f195 and the owner\u2018s page",
+                    "usage": default_usage(1000, 200, cost_total=0.002),
+                }
+            ],
+        )
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding="cp1252", errors="strict")
+        with clean_env(**self.fake_env()), mock.patch.object(sys, "stdout", stream):
+            code = cli.main(["--config", str(self.config), "report", "t-0001"])
+        stream.flush()
+        printed = buf.getvalue().decode("cp1252")
+
+        self.assertEqual(code, 0, "the report must not crash on an unencodable answer")
+        self.assertIn("Re: ship: add the refund page", printed)
+        self.assertIn("shipped ?", printed)
+        self.assertEqual(self.only_task()["status"], "reported")
 
     def test_report_scopes_the_answer_to_the_task_window(self) -> None:
         # t-0628: one agent, two tasks, one long-lived session file. The later
