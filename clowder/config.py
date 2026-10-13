@@ -75,6 +75,11 @@ class Config:
     delivery_mode: str = "local-only"
     git_name: str = DEFAULT_GIT_NAME
     git_email: str = DEFAULT_GIT_EMAIL
+    # The optional [gates] load thresholds. None means the metric is off. The
+    # heavy-step state gate (one at a time) is always on; these only add a check
+    # of the machine's own load before a heavy step starts.
+    heavy_max_memory: float | None = None
+    heavy_max_load: float | None = None
 
     def resolve_repo(self, name: str) -> Path:
         """Turn a repo name into a path.
@@ -121,6 +126,8 @@ class Config:
             "delivery_mode": self.delivery_mode,
             "git_name": self.git_name,
             "git_email": self.git_email,
+            "heavy_max_memory": self.heavy_max_memory,
+            "heavy_max_load": self.heavy_max_load,
         }
 
 
@@ -189,6 +196,7 @@ def load_config(explicit: str | Path | None = None) -> Config:
     front_door = _table(raw, "front_door", source)
     worktree = _table(raw, "worktree", source)
     git = _table(raw, "git", source)
+    gates = _table(raw, "gates", source)
 
     workspace_root = _opt_path(os.environ.get("CLOWDER_WORKSPACE") or workspace.get("root"))
 
@@ -265,6 +273,14 @@ def load_config(explicit: str | Path | None = None) -> Config:
         os.environ.get("CLOWDER_GIT_EMAIL") or git.get("email") or DEFAULT_GIT_EMAIL
     )
 
+    unknown_gates = set(gates) - {"heavy_max_memory", "heavy_max_load"}
+    if unknown_gates:
+        raise ConfigError(f"{source}: unknown gates keys: {sorted(unknown_gates)}")
+    heavy_max_memory = _opt_number(
+        gates.get("heavy_max_memory"), "gates.heavy_max_memory", source
+    )
+    heavy_max_load = _opt_number(gates.get("heavy_max_load"), "gates.heavy_max_load", source)
+
     return Config(
         home=home,
         source=source,
@@ -286,6 +302,8 @@ def load_config(explicit: str | Path | None = None) -> Config:
         delivery_mode=delivery,
         git_name=git_name,
         git_email=git_email,
+        heavy_max_memory=heavy_max_memory,
+        heavy_max_load=heavy_max_load,
     )
 
 
@@ -299,6 +317,17 @@ def _opt_str(value: object) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _opt_number(value: object, label: str, source: Path | None) -> float | None:
+    """An optional number for a gate threshold. Negative is refused."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{source}: {label} must be a number")
+    if value < 0:
+        raise ConfigError(f"{source}: {label} must be 0 or more")
+    return float(value)
 
 
 def _opt_argv(value: object, label: str, source: Path | None) -> tuple[str, ...] | None:

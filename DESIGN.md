@@ -764,10 +764,11 @@ conversation; none is fixed by the queue work.
   showed a publish task's text as its own. `read_answer` and `read_usage` now take an
   `until` cut, and `report` and `inbox` bound a task to `[dispatched_at, next task's
   dispatched_at)`, so a later task's answer and usage are never read as this one's.
-- **A send preempts an open job.** A task sent to an agent that already has an open job takes
-  the newest message and stops the older work. Seen: it happened today, and j-0004 had to be
-  re-sent. Fix: refuse or queue a dispatch to an agent whose space holds an open job, unless
-  it is that job.
+- **A send preempts an open job.** (Fixed.) A task sent to an agent that already has an open
+  job took the newest message and stopped the older work. Seen: it happened today, and j-0004
+  had to be re-sent. `dispatch` now refuses a send to an agent that holds open work on another
+  job (or no job), or whose space holds an open job the send does not name; `--force` bypasses
+  it. The same-job open-step case stays with the existing guard.
 - **Last-write-wins state.** (Fixed - decision 23.) The state file had no lock, and concurrent
   commands are normal. Seen: t-0005 was recorded reported, then read back dispatched; a second
   read fixed it. Later two `report` runs at once left the file as JSON plus a fragment. Now a
@@ -783,9 +784,11 @@ conversation; none is fixed by the queue work.
 - **A scout gets a full space.** Reading does not need isolation, yet a read-only scout still
   gets a checkout of its own. Seen: spaces made for investigation. Fix: give a scout the main
   checkout or a shared read-only copy, and make a space only for work that changes code.
-- **No load check.** Nothing checks machine load before a heavy step. Seen: two agents
+- **No load check.** (Fixed.) Nothing checked machine load before a heavy step. Seen: two agents
   installing or running suites at once is the pattern that crashed this box on 2026-09-25.
-  Fix: a load check before a heavy step, and one heavy step open at a time across the crew.
+  `dispatch --heavy` marks a step, only one heavy step is open at a time across the crew, and an
+  opt-in `[gates]` threshold adds a check of the machine's own load (memory on Windows, load per
+  CPU on Unix). A load that cannot be read fails open with a warning.
 
 - AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
   gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi

@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from clowder import cli, gitcmd
-from clowder.state import CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
+from clowder import cli, gitcmd, load
+from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from tests.support import (
     clean_env,
     default_usage,
@@ -887,6 +887,287 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("needs a place", err)
 
+    def test_a_heavy_dispatch_is_refused_while_another_heavy_is_open(self) -> None:
+        # The one-open-step guard is per job, so only this state gate stops a
+        # heavy step on job X and one on job Y from starting together.
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: build the image",
+            "--shape",
+            "scout",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-verifier",
+            "myrepo",
+            "scout: run the suite",
+            "--shape",
+            "scout",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("heavy step is already open", err)
+        self.assertIn("t-0001", err)
+        self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
+
+    def test_a_reported_or_abandoned_heavy_step_does_not_block(self) -> None:
+        # The gate is state, so it clears itself the moment the heavy step stops.
+        store = StateStore(self.state)
+        for task_id, status in (("t-0001", REPORTED), ("t-0002", ABANDONED)):
+            store.add(
+                Task(
+                    id=task_id,
+                    question="q",
+                    brief="b",
+                    shape="scout",
+                    agent="maker",
+                    repo="myrepo",
+                    repo_path=str(self.repo_path),
+                    heavy=True,
+                    status=status,
+                )
+            )
+        store.save()
+        cli._refuse_heavy_overlap(store)  # no raise: neither is open
+
+    def test_a_light_dispatch_is_not_blocked_by_a_heavy_step(self) -> None:
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: build the image",
+            "--shape",
+            "scout",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli(
+            "dispatch",
+            "myrepo-verifier",
+            "myrepo",
+            "scout: read the docs",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-verifier", out)
+
+    def test_a_heavy_step_is_refused_when_the_machine_is_loaded(self) -> None:
+        # The load metric is opt-in through [gates]. The probe is patched so the
+        # test does not depend on the machine it runs on.
+        self.config = write_config(
+            self.root / "gates.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            state={"path": str(self.state)},
+            gates={"heavy_max_memory": 50, "heavy_max_load": 0.5},
+        )
+        with mock.patch.object(load, "current", return_value=("load", 2.0)):
+            code, _, err = self.cli(
+                "dispatch",
+                "maker",
+                "myrepo",
+                "scout: build the image",
+                "--shape",
+                "scout",
+                "--heavy",
+                env=self.fake_env(),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("heavy", err)
+        self.assertIn("load 2.00 per CPU", err)
+
+    def test_a_heavy_step_fails_open_when_the_load_cannot_be_read(self) -> None:
+        self.config = write_config(
+            self.root / "gates.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            state={"path": str(self.state)},
+            gates={"heavy_max_memory": 50, "heavy_max_load": 0.5},
+        )
+        with mock.patch.object(load, "current", return_value=None):
+            code, out, err = self.cli(
+                "dispatch",
+                "maker",
+                "myrepo",
+                "scout: build the image",
+                "--shape",
+                "scout",
+                "--heavy",
+                env=self.fake_env(),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertIn("cannot read the machine's load", err)
+
+    def test_force_bypasses_the_heavy_refusal(self) -> None:
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: build the image",
+            "--shape",
+            "scout",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli(
+            "dispatch",
+            "myrepo-verifier",
+            "myrepo",
+            "scout: run the suite",
+            "--shape",
+            "scout",
+            "--heavy",
+            "--force",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-verifier", out)
+
+    def test_two_heavy_jobs_on_two_agents_are_refused(self) -> None:
+        # The case the DESIGN claim misses: the one-open-step guard is per job.
+        repo = self.repo_path
+        store = StateStore(self.state)
+        for job_id, agent in (("j-0001", "maker"), ("j-0002", "verifier")):
+            store.add_job(
+                Job(
+                    id=job_id,
+                    label=job_id,
+                    repo="myrepo",
+                    repo_path=str(repo),
+                    worktree=str(repo / ".worktrees" / agent),
+                    branch=f"task/{agent}",
+                    base="main",
+                    agent=agent,
+                )
+            )
+        store.add(
+            Task(
+                id="t-0001",
+                question="q",
+                brief="ship: one",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(repo),
+                job="j-0001",
+                worktree=str(repo / ".worktrees" / "maker"),
+                heavy=True,
+            )
+        )
+        store.save()
+        self.seed_mux(
+            [
+                {"name": "maker", "cwd": str(repo / ".worktrees" / "maker")},
+                {"name": "verifier", "cwd": str(repo / ".worktrees" / "verifier")},
+            ]
+        )
+        code, _, err = self.cli(
+            "dispatch",
+            "verifier",
+            "myrepo",
+            "ship: two",
+            "--job",
+            "j-0002",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("heavy step is already open", err)
+        self.assertIn("t-0001", err)
+
+    def test_a_no_job_send_to_an_agent_holding_open_work_is_refused(self) -> None:
+        # A send lands in the pane and the newest message wins, so a second send
+        # to an agent with an open no-job task would drop the first turn.
+        self.dispatch("maker", "myrepo", "scout: read the terms page", "--shape", "scout")
+        code, _, err = self.dispatch(
+            "maker", "myrepo", "scout: read the privacy page", "--shape", "scout"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("already holds open work", err)
+        self.assertIn("t-0001", err)
+        self.assertIn("no job", err)
+        self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
+
+    def test_an_open_step_blocks_a_no_job_send(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("already holds open work", err)
+        self.assertIn("t-0001", err)
+        self.assertIn(job_id, err)
+
+    def test_an_open_job_holding_the_agents_space_is_refused(self) -> None:
+        # The j-0004 window: the agent's own space holds an open job, and the send
+        # does not name it, so the message would preempt the open job's turn.
+        job_id, worktree = self.open_a_job()
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("inside open job", err)
+        self.assertIn(job_id, err)
+        self.assertIn(str(worktree), err)
+
+    def test_a_closed_job_does_not_block_a_send(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+        code, out, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: look around",
+            "--shape",
+            "scout",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-maker", out)
+
+    def test_force_bypasses_the_open_work_refusal(self) -> None:
+        self.dispatch("maker", "myrepo", "scout: read the terms page", "--shape", "scout")
+        code, out, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: read the privacy page",
+            "--shape",
+            "scout",
+            "--force",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertEqual(len(self.load_state()["tasks"]), 2, "force sent the second step")
+
     def test_report_survives_a_missing_session_file(self) -> None:
         self.dispatch(
             "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
@@ -1016,6 +1297,19 @@ class CliTest(unittest.TestCase):
         path = self.root / "mux-state.json"
         write_fake_state(path, agents=agents, panes=panes)
         return str(path)
+
+    def seed_agents(self, *names: str, cwd: str | None = None) -> None:
+        """A stateful fake with the named agents, each with a session file."""
+        sessions = self.root / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        agents = []
+        for name in names:
+            session = sessions / f"{name}.jsonl"
+            session.write_text("", encoding="utf-8")
+            agents.append(
+                {"name": name, "cwd": cwd or str(self.repo_path), "session_file": str(session)}
+            )
+        self.seed_mux(agents)
 
     def test_ensure_reuses_the_agent_that_already_serves_the_repo(self) -> None:
         self.seed_mux([{"name": "verifier", "cwd": str(self.workspace / "myrepo")}])
