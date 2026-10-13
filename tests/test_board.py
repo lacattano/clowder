@@ -291,6 +291,34 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("x" * 600, waiting[0], "the owner item is not clipped")
 
+    def test_an_owner_item_with_a_detail_renders_both_in_full(self) -> None:
+        detail = "A: 14 days, costs X.\nB: 30 days, costs Y.\n" + "Recommend A. " * 60
+        waiting = waiting_on_you(
+            data(
+                tasks=[
+                    task(
+                        owner_item="choose A or B",
+                        owner_item_at=now_iso(),
+                        owner_detail=detail,
+                    )
+                ]
+            )
+        )
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("choose A or B", waiting[0], "the one line is still first")
+        self.assertIn("owner-detail", waiting[0])
+        self.assertIn("A: 14 days, costs X.", waiting[0])
+        self.assertIn("costs Y.", waiting[0])
+        self.assertIn("Recommend A. " * 60, waiting[0], "the full detail, not a clip")
+
+    def test_an_owner_item_without_a_detail_has_no_detail_body(self) -> None:
+        waiting = waiting_on_you(
+            data(tasks=[task(owner_item="choose A or B", owner_item_at=now_iso())])
+        )
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("choose A or B", waiting[0])
+        self.assertNotIn("owner-detail", waiting[0])
+
     def test_a_long_open_decision_is_shown_in_full(self) -> None:
         decision = "choose one: " + "y" * 600
         waiting = waiting_on_you(data(tasks=[task(open_decision=decision)]))

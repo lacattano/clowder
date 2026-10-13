@@ -94,6 +94,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .pill.bad { color: var(--warn); border-color: var(--warn); }
 .nothing { color: var(--muted); margin: 0; }
 .why { display: block; color: var(--muted); font-size: .85rem; }
+.owner-detail { white-space: pre-wrap; margin: .35rem 0 0; color: var(--ink); }
 ul { margin: 0; padding-left: 1.1rem; }
 li { margin: .25rem 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
@@ -532,11 +533,16 @@ def waiting_on_you(data: BoardData) -> list[str]:
     questions: list[tuple[str, str]] = []
     for task in data.tasks:
         if task.owner_item and task.status != CLOSED:
+            detail = (
+                f"<div class='owner-detail'>{_e(task.owner_detail)}</div>"
+                if task.owner_detail
+                else ""
+            )
             questions.append(
                 (
                     task.owner_item_at or task.created_at,
                     f"{_full(task.owner_item or '')} "
-                    f"<span class='why'>your move, [{_e(task.id)}]</span>",
+                    f"<span class='why'>your move, [{_e(task.id)}]</span>{detail}",
                 )
             )
     for task in data.tasks:

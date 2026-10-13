@@ -3130,6 +3130,84 @@ class CliTest(unittest.TestCase):
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertNotIn("choose A or B", html, "the answered item leaves his section")
 
+    def test_an_owner_item_records_a_detail(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        detail = "A: 14 days, costs X.\nB: 30 days, costs Y.\nRecommend A."
+        code, _, err = self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B",
+            "--detail",
+            detail,
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertEqual(task["owner_item"], "choose A or B")
+        self.assertEqual(task["owner_detail"], detail)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("choose A or B", html)
+        self.assertIn("Recommend A.", html)
+
+    def test_an_owner_detail_can_come_from_a_file(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        path = self.root / "detail.md"
+        path.write_text("A: 14 days.\nB: 30 days.\nRecommend B.", encoding="utf-8")
+        code, _, err = self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B",
+            "--detail-file",
+            str(path),
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            self.only_task()["owner_detail"], "A: 14 days.\nB: 30 days.\nRecommend B."
+        )
+
+    def test_owner_clear_removes_the_item_and_its_detail(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B",
+            "--detail",
+            "A costs X.",
+            env=self.fake_env(),
+        )
+        code, _, err = self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertIsNone(task["owner_item"])
+        self.assertIsNone(task["owner_detail"])
+
+    def test_an_owner_item_alone_records_no_detail(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.cli("owner", "t-0001", "--item", "choose A or B", env=self.fake_env())
+        self.assertIsNone(self.only_task()["owner_detail"])
+
+    def test_an_owner_detail_needs_an_item(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, _, err = self.cli(
+            "owner", "t-0001", "--detail", "A costs X.", env=self.fake_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--detail needs --item", err)
+
     def make_rebased_commits(self) -> tuple[str, str]:
         """One commit a rebase replaced, and one that is genuinely lost."""
         repo = self.repo_path

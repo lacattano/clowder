@@ -207,6 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="one line, in his words: what it is and where he does it",
     )
+    owner.add_argument(
+        "--detail",
+        metavar="TEXT",
+        help="the full body: the options, what each costs, and the recommendation",
+    )
+    owner.add_argument(
+        "--detail-file",
+        metavar="PATH",
+        help="read the detail body from a file, for a long one",
+    )
     owner.add_argument("--clear", action="store_true", help="he has answered it; remove it")
     owner.add_argument("--json", action="store_true")
     owner.set_defaults(handler=cmd_owner, refreshes_board=True)
@@ -1351,6 +1361,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             if task.owner_item is not None:
                 task.owner_item = None
                 task.owner_item_at = None
+                task.owner_detail = None
             changed = True
         if changed:
             store.save()
@@ -1408,10 +1419,29 @@ def _report_next(task: Task) -> str:
     return f"\nNext: see the other steps with: {PROGRAM} tasks"
 
 
+def _owner_detail(args: argparse.Namespace) -> str | None:
+    """The detail body from --detail or --detail-file, stripped, or None."""
+    if args.detail_file:
+        path = Path(args.detail_file).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise UsageError(f"cannot read --detail-file {path}: {exc}") from exc
+    elif args.detail:
+        text = args.detail
+    else:
+        return None
+    return text.strip() or None
+
+
 def cmd_owner(args: argparse.Namespace) -> int:
     """Record or clear one thing that waits on the owner, against a task."""
     _, store = _context(args)
     task = store.get(args.id)
+    if args.detail and args.detail_file:
+        raise UsageError("pass --detail or --detail-file, not both")
+    if (args.detail or args.detail_file) and not args.item:
+        raise UsageError("--detail needs --item: the one line the board shows first")
     if bool(args.item) == bool(args.clear):
         raise UsageError("pass exactly one of --item TEXT or --clear")
     if args.item:
@@ -1420,10 +1450,12 @@ def cmd_owner(args: argparse.Namespace) -> int:
             raise UsageError("--item needs a line of text")
         task.owner_item = text
         task.owner_item_at = now_iso()
+        task.owner_detail = _owner_detail(args)
         note = f"{task.id}: recorded as waiting on the owner"
     else:
         task.owner_item = None
         task.owner_item_at = None
+        task.owner_detail = None
         note = f"{task.id}: cleared from what waits on the owner"
     store.save()
 
