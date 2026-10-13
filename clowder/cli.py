@@ -510,6 +510,11 @@ def build_parser() -> argparse.ArgumentParser:
     q_add.add_argument("--why", required=True, help="why it is not sent yet")
     q_add.add_argument("--question", metavar="TEXT")
     q_add.add_argument("--shape", choices=SHAPES, default="ship")
+    q_add.add_argument(
+        "--heavy",
+        action="store_true",
+        help="a step that installs, builds or runs a suite; only one runs at a time",
+    )
     # `queue add` has no branch label, so both names work here; `--tag` matches
     # `job open`, where `--label` is already the branch name.
     q_add.add_argument(
@@ -2453,6 +2458,7 @@ def cmd_queue_add(args: argparse.Namespace) -> int:
         why=why,
         shape=args.shape,
         job=args.job,
+        heavy=args.heavy,
         labels=list(args.labels),
     )
     store.add_queued(item)
@@ -2645,7 +2651,7 @@ def _queued_dispatch_args(
         force=force,
         dry_run=dry_run,
         json=json,
-        heavy=False,
+        heavy=item.heavy,
     )
 
 

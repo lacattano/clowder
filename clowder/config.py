@@ -7,6 +7,7 @@ a missing workspace root is an error, not a guess.
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -320,14 +321,21 @@ def _opt_str(value: object) -> str | None:
 
 
 def _opt_number(value: object, label: str, source: Path | None) -> float | None:
-    """An optional number for a gate threshold. Negative is refused."""
+    """An optional number for a gate threshold. Negative and non-finite are refused.
+
+    A `nan` would compare false against every load and refuse every heavy step, so
+    it is a config error, not a threshold.
+    """
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{source}: {label} must be a number")
-    if value < 0:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"{source}: {label} must be finite")
+    if number < 0:
         raise ConfigError(f"{source}: {label} must be 0 or more")
-    return float(value)
+    return number
 
 
 def _opt_argv(value: object, label: str, source: Path | None) -> tuple[str, ...] | None:
