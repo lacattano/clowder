@@ -113,6 +113,19 @@ class StateStoreTest(unittest.TestCase):
         self.assertEqual(reloaded.usage, {"turns": 3, "total_tokens": 8200})
         self.assertEqual(reloaded.mux_argv[-1], "brief")
 
+    def test_a_heavy_step_round_trips_and_defaults_to_light(self) -> None:
+        store = StateStore(self.path)
+        store.add(make_task("t-0001", heavy=True))
+        store.save()
+        self.assertTrue(StateStore(self.path).get("t-0001").heavy)
+
+        # A record written before the field existed is light, not malformed: the
+        # dataclass default fills it, so the schema needs no bump.
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        payload["tasks"]["t-0001"].pop("heavy")
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertFalse(StateStore(self.path).get("t-0001").heavy)
+
     def test_a_decision_answer_survives_a_reload(self) -> None:
         store = StateStore(self.path)
         store.add(

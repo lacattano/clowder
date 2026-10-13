@@ -87,6 +87,9 @@ class Task:
     # nothing here can refuse a dispatch or block a pass.
     model: str | None = None
     provider: str | None = None
+    # A step that installs, builds or runs a suite. Only one runs at a time across
+    # the crew, and the optional [gates] load check runs before it starts.
+    heavy: bool = False
     # Fields a newer copy wrote that this code does not know. Kept, never dropped,
     # so a newer copy can still read them.
     extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
