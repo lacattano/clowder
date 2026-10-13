@@ -263,6 +263,16 @@ class LoadConfigTest(unittest.TestCase):
             load_config(path)
         self.assertIn("gates.heavy_max_load", str(caught.exception))
 
+    def test_a_non_finite_gates_threshold_is_refused(self) -> None:
+        # `nan` compares false against every load, so it would refuse every heavy
+        # step; `inf` is not a threshold. Both are config errors, not numbers.
+        for key, literal in (("heavy_max_memory", "nan"), ("heavy_max_load", "inf")):
+            path = self.root / f"gates-{literal}.toml"
+            path.write_text(f"[gates]\n{key} = {literal}\n", encoding="utf-8")
+            with self.assertRaises(ConfigError) as caught:
+                load_config(path)
+            self.assertIn(f"gates.{key}", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

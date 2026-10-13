@@ -306,6 +306,9 @@ class Queued:
     shape: str = "ship"
     question: str | None = None
     job: str | None = None
+    # A step that installs, builds or runs a suite. It travels to the task on send,
+    # so the heavy gate applies to a queued step too.
+    heavy: bool = False
     # Reserved tag families the board colours by prefix: `sev:` and `phase:`.
     labels: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)

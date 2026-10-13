@@ -3566,6 +3566,42 @@ class CliTest(unittest.TestCase):
         item = json.loads(self.state.read_text(encoding="utf-8"))["queued"]["q-0001"]
         self.assertEqual(item["labels"], ["sev:high"])
 
+    def test_queue_add_records_a_heavy_step(self) -> None:
+        code, _, err = self.queue_add("--agent", "maker", "--heavy")
+        self.assertEqual(code, 0, err)
+        item = json.loads(self.state.read_text(encoding="utf-8"))["queued"]["q-0001"]
+        self.assertTrue(item["heavy"])
+
+    def test_a_heavy_queued_step_sends_heavy(self) -> None:
+        # The mark travels with the item, so the task it becomes is heavy too.
+        self.queue_scout("--agent", "maker", "--heavy")
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        task = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]["t-0001"]
+        self.assertTrue(task["heavy"])
+
+    def test_a_heavy_queued_send_is_gated_like_a_dispatch(self) -> None:
+        # The hole the gate exists to close: a heavy step sent through the queue
+        # must not overlap another heavy step.
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-maker",
+            "myrepo",
+            "scout: build the image",
+            "--shape",
+            "scout",
+            "--heavy",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.queue_scout("--agent", "myrepo-verifier", "--heavy", env=self.state_env())
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.state_env())
+        self.assertEqual(code, 2)
+        self.assertIn("heavy step is already open", err)
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("q-0001", payload["queued"], "a refused send stays queued")
+
     def test_queue_add_needs_exactly_one_target_and_a_why(self) -> None:
         code, _, err = self.queue_add()
         self.assertNotEqual(code, 0)
