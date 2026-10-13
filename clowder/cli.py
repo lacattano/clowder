@@ -714,6 +714,12 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         if job is not None:
             _refuse_outside_job(args, agent_info, job, store)
 
+    # A fix step on a handed-over job must run on the branch, not the base the
+    # writer's space was released to. This is a fix, not a guard, so --force does
+    # not skip it; --dry-run must not move the space.
+    if job is not None and not args.dry_run:
+        _restore_writer_branch(job, agent_info, args)
+
     task = Task(
         id=store.next_id(),
         question=question,
@@ -953,6 +959,33 @@ def _refuse_outside_job(args: argparse.Namespace, agent, job, store: StateStore)
             "before sending another; two steps at once in one checkout is how two "
             "heavy runs start at once."
         )
+
+
+def _restore_writer_branch(job, agent, args: argparse.Namespace) -> None:
+    """Put the writer's space back on the job's branch before a fix step.
+
+    `job handover` releases the writer's space to the base so the reviewer can
+    work, and the job stays open. A later fix step sent to the writer would then
+    read the base commit and edit the wrong code. Switching the space back to the
+    job's branch first is the fix; a space that cannot be switched is refused with
+    the exact command. The reviewer path is untouched: it holds the pinned save.
+    """
+    if args.shape.lower() != "ship" or args.agent != job.agent:
+        return
+    if job.released_at is None:
+        return  # the space was never handed back; it is still on the branch
+    folder = agent.cwd if agent is not None and agent.cwd else job.worktree
+    if not folder or not inside(folder, job.worktree) or not gitcmd.is_repo(folder):
+        return  # not the job's own space; do not move someone else's checkout
+    if gitcmd.current_branch(folder) == job.branch:
+        return
+    try:
+        gitcmd.switch_branch(folder, job.branch)
+    except GitError as exc:
+        raise GitError(
+            f"could not put {folder} back on {job.branch}: {exc}. Switch it by hand: "
+            f'git -C "{folder}" switch {job.branch}'
+        ) from exc
 
 
 def _refuse_heavy_overlap(store: StateStore) -> None:
