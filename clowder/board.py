@@ -126,8 +126,6 @@ details.more .full { margin-top: .25rem; }
 .column.done details > summary { list-style: none; cursor: pointer; }
 .column.done details > summary::-webkit-details-marker { display: none; }
 .column.done details > summary::marker { content: ""; }
-.column.done details > summary .colhead::before { content: "\25b8 "; }
-.column.done details[open] > summary .colhead::before { content: "\25be "; }
 .cards { border-collapse: separate; border-spacing: 0; }
 .cards td.card-cell { padding: 0; border: 0; }
 .card {
