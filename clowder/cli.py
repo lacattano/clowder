@@ -707,11 +707,12 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
     if not args.force and not args.dry_run:
         agent_info = _lookup_agent(mux, args.agent)
         _refuse_cross_repo(args, agent_info, repo_path)
-        if job is not None:
-            _refuse_outside_job(args, agent_info, job, store)
+        _refuse_open_work(args, agent_info, store, job)
         if args.heavy:
             _refuse_heavy_overlap(store)
             _refuse_high_load(config, args)
+        if job is not None:
+            _refuse_outside_job(args, agent_info, job, store)
 
     task = Task(
         id=store.next_id(),
@@ -1005,6 +1006,47 @@ def _refuse_high_load(config: Config, args: argparse.Namespace) -> None:
         f"{args.agent}'s step is heavy and the machine is at {shown}, at or above the "
         f"{limit:g} limit. Let it settle, or pass --force."
     )
+
+
+def _refuse_open_work(args: argparse.Namespace, agent, store: StateStore, job) -> None:
+    """A send lands in the pane, and the newest message wins.
+
+    A dispatch preempts whatever turn is open in the agent's pane: the newer
+    message is typed in and the older turn is dropped. `_refuse_outside_job`
+    covers a second step on the same job; this covers the rest - an open step on
+    a different job, a no-job step, and an open job whose worktree is the agent's
+    own space when the dispatch does not name it. `--force` bypasses it, like the
+    other guards.
+    """
+    name = args.agent
+    dispatched = args.job
+    open_tasks = [
+        task
+        for task in store.select(open_only=True)
+        if task.agent == name and (dispatched is None or task.job != dispatched)
+    ]
+    if open_tasks:
+        listed = ", ".join(f"{task.id} ({task.job or 'no job'})" for task in open_tasks)
+        raise DispatchError(
+            f"{name} already holds open work: {listed}. A send lands in the same pane "
+            "and the newest message wins, so it would drop that turn. Read it first: "
+            f"`{PROGRAM} report {open_tasks[0].id}`, or pass --force."
+        )
+
+    if agent is None or not agent.cwd:
+        return
+    holding = [
+        open_job
+        for open_job in store.open_jobs()
+        if open_job.id != dispatched and inside(agent.cwd, open_job.worktree)
+    ]
+    if holding:
+        listed = ", ".join(f"{open_job.id} ({open_job.name_in_words})" for open_job in holding)
+        raise DispatchError(
+            f"{name} is in {agent.cwd}, inside open job {listed}. A send lands in the "
+            "same pane and the newest message wins, so it would drop that turn. Close "
+            f"it first: `{PROGRAM} job close {holding[0].id}`, or pass --force."
+        )
 
 
 def _quote(argv: list[str]) -> str:
