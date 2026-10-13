@@ -3616,6 +3616,15 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The console may not encode what an answer holds (cp1252 on this box). Relax
+    # only the error mode, once, so a report prints with a replacement character
+    # instead of raising UnicodeEncodeError out of the command. The getattr guard
+    # is needed: io.StringIO (tests, embedders) has no reconfigure, and the
+    # streams can be None.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
     code = 1
