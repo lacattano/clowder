@@ -121,6 +121,22 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("http://", html.split("<body>")[0], "no external assets")
         self.assertNotIn("src=", html)
 
+    def test_the_page_carries_no_control_characters(self) -> None:
+        # A broken CSS escape in the Done header ("\25b8 ") was read by Python as
+        # an octal control byte, so the browser showed a stray "b8"/"be". The page
+        # must carry no control byte other than tab, newline or carriage return.
+        html = render_board(data(jobs=[job()], tasks=[task()]))
+        bad = sorted(
+            {hex(ord(char)) for char in html if ord(char) < 32 and char not in "\t\n\r"}
+        )
+        self.assertEqual(bad, [], f"control characters in the page: {bad}")
+
+    def test_the_done_header_reads_done_cleanly(self) -> None:
+        html = render_board(data())
+        self.assertIn("<span class='colhead'>Done</span>", html)
+        self.assertNotIn("25b8", html, "no collapsed marker escape")
+        self.assertNotIn("25be", html, "no open marker escape")
+
     def test_the_page_reloads_itself(self) -> None:
         html = render_board(data())
         self.assertIn('<meta http-equiv="refresh" content="30">', html)
