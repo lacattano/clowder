@@ -30,6 +30,7 @@ from .state import (
     CLOSED,
     DISPATCHED,
     FAILED,
+    OWNER_GATE_WORDS,
     REPORTED,
     SHAPES,
     STATUSES,
@@ -37,6 +38,7 @@ from .state import (
     Queued,
     StateStore,
     Task,
+    step_in_flight,
 )
 from .timeutil import human_age, now_iso, to_epoch
 from .topology import (
@@ -2416,12 +2418,13 @@ def cmd_job_list(args: argparse.Namespace) -> int:
         print("no jobs" if args.all else "no open jobs")
         return 0
 
+    tasks = store.all()
     rows = [["CHANGE", "STATE", "REPO", "BRANCH", "AGENT", "AGE", "PASS", "WORD", "ID"]]
     for job in jobs:
         rows.append(
             [
                 _clip(job.name_in_words, 30),
-                _job_state_word(job),
+                _job_state_word(job, tasks),
                 _clip(job.repo, 20),
                 _clip(job.branch, 28),
                 job.agent,
@@ -3281,16 +3284,23 @@ def _job_review_state(job: Job) -> tuple[str, str | None]:
     return "unknown", None
 
 
-def _job_state_word(job: Job) -> str:
-    """The job's state word, with a re-review state when the work moved past review.
+def _job_state_word(job: Job, tasks: list[Task]) -> str:
+    """The job's state word, with the re-review states from the tip check.
 
-    Only a held candidate is looked up in git: every other job keeps its derived
-    state with no process spent on a question that cannot change it.
+    While a step on the job is still running, an owner-facing gate word is
+    premature: the reviewer or writer has not finished, so the row says "under
+    review" instead. Only a held candidate is looked up in git: every other job
+    keeps its derived state with no process spent on a question that cannot change
+    it.
     """
     if job.is_open and job.reviewer and job.review_commit and not job.has_pass:
         state, tip = _job_review_state(job)
-        return job.state_in_words_at(tip, unreadable=(state == "unknown"))
-    return job.state_in_words
+        state = job.state_in_words_at(tip, unreadable=(state == "unknown"))
+    else:
+        state = job.state_in_words
+    if state in OWNER_GATE_WORDS and step_in_flight(job, tasks):
+        return "under review"
+    return state
 
 
 def _job_moved_past(task: Task, job: Job | None) -> bool:
