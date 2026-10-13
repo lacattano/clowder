@@ -18,7 +18,16 @@ from html import escape
 from pathlib import Path
 
 from .report import format_cost, format_tokens
-from .state import CLOSED, FAILED, REPORTED, Job, Queued, Task
+from .state import (
+    CLOSED,
+    FAILED,
+    OWNER_GATE_WORDS,
+    REPORTED,
+    Job,
+    Queued,
+    Task,
+    step_in_flight,
+)
 from .timeutil import elapsed_seconds, human_age, human_duration
 
 # An open step whose agent is idle for longer than this is worth a second look:
@@ -295,6 +304,7 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
             "in progress",
             "failed",
             "waiting on a walkthrough",
+            "under review",
             "needs re-review",
             "review unconfirmed",
             "passed",
@@ -694,12 +704,17 @@ def _state_of(data: BoardData, job: Job) -> str:
     """The job's state word, with the re-review states from the tip check.
 
     One source for both the pill the owner reads and the row's data-state, so the
-    state filter can never name a value the row does not carry.
+    state filter can never name a value the row does not carry. While a step on the
+    job is still running, an owner-facing gate word is premature: the reviewer or
+    writer has not finished, so the row says "under review" instead.
     """
-    return job.state_in_words_at(
+    state = job.state_in_words_at(
         data.rereview.get(job.id),
         unreadable=job.id in data.review_unconfirmed,
     )
+    if state in OWNER_GATE_WORDS and step_in_flight(job, data.tasks):
+        return "under review"
+    return state
 
 
 def _job_fields(job: Job, state: str) -> dict[str, str]:

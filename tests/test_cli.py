@@ -2957,6 +2957,38 @@ class CliTest(unittest.TestCase):
         self.assertEqual(task["branch"], "task/refund")
         self.assertEqual(task["commit"], commit[:7], "the save it was told to check")
 
+    def test_job_list_reads_under_review_while_the_review_runs(self) -> None:
+        # The owner is not invited to walk while the review step is still open.
+        job_id, maker_folder = self.open_a_job()
+        self.save_something(maker_folder)
+        self.handover(job_id)
+
+        code, out, err = self.cli("job", "list", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on a walkthrough", out, "no review step yet")
+
+        code, _, err = self.cli(
+            "dispatch",
+            "myrepo-verifier",
+            "myrepo",
+            "scout: check the save",
+            "--job",
+            job_id,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("job", "list", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("under review", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+        self.answer_the_step("myrepo-verifier")
+        self.assertEqual(self.cli("report", "t-0001", env=self.state_env())[0], 0)
+        code, out, err = self.cli("job", "list", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on a walkthrough", out, "the step reported")
+        self.assertNotIn("under review", out)
+
     def test_a_step_sent_to_a_copy_holding_the_wrong_code_is_refused(self) -> None:
         self.two_agents()
         job_id, maker_folder = self.open_a_job()
