@@ -3102,6 +3102,10 @@ class CliTest(unittest.TestCase):
     def test_owner_items_are_numbered_on_the_board(self) -> None:
         self.dispatch("maker", "myrepo", "ship: first thing", "--worktree", str(self.repo_path))
         self.cli("owner", "t-0001", "--item", "choose A or B", env=self.fake_env())
+        # Report the first step first: a second send to the same agent while it is
+        # open is refused by the preempt guard, so t-0002 would never exist.
+        self.session_turns()
+        self.assertEqual(self.cli("report", "t-0001", env=self.fake_env())[0], 0)
         self.dispatch(
             "maker", "myrepo", "ship: second thing", "--worktree", str(self.repo_path)
         )
@@ -3945,11 +3949,13 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["tasks"], {})
 
     def test_a_no_job_step_records_the_agents_own_space(self) -> None:
-        # The sibling defect: a step sent to an agent whose space holds an open job
-        # was recorded with no folder, and a report then called it the main checkout.
+        # The sibling defect: a step sent to an agent whose space holds a job was
+        # recorded with no folder, and a report then called it the main checkout.
         # A ship now has to name a place, so this case is a scout - the shape that
-        # still needs no place, and still has to record where it ran.
+        # still needs no place, and still has to record where it ran. The job is
+        # closed first: an open job in the space now refuses the send (t-0742).
         job_id, worktree = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
         self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
         task = self.only_task()
         self.assertIsNone(task["job"], "the step is not part of a job")
@@ -4708,9 +4714,10 @@ class CliTest(unittest.TestCase):
         job_id, _ = self.open_a_job()
         # A step with no job of its own: the other half of the stale record, and
         # the case where the step alone is what blocks the agent. A scout, since a
-        # ship now has to name a place.
-        self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
+        # ship now has to name a place. The job is closed first: an open job in the
+        # space refuses the send.
         self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+        self.assertEqual(self.step("--shape", "scout", "scout: add the refund page")[0], 0)
 
         # While the step reads as open, both are refused for that agent.
         code, _, err = self.cli(
