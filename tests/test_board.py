@@ -435,6 +435,34 @@ class WaitingTest(unittest.TestCase):
         self.assertIn('data-state="review unconfirmed"', row)
         self.assertIn(">review unconfirmed<", doing)
 
+    def test_an_open_review_step_reads_under_review(self) -> None:
+        # The owner must not be invited to walk while the reviewer is still going.
+        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        html = render_board(data(jobs=[held], tasks=[task()]))
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        self.assertIn("under review", doing)
+        self.assertNotIn("waiting on a walkthrough", doing)
+
+    def test_a_reported_review_step_returns_the_owner_word(self) -> None:
+        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        html = render_board(data(jobs=[held], tasks=[task(status=REPORTED)]))
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        self.assertIn("waiting on a walkthrough", doing)
+        self.assertNotIn("under review", doing)
+
+    def test_an_open_rereview_reads_under_review_not_the_merge_word(self) -> None:
+        # j-0095: it showed waiting-on-your-merge-word while its re-review was open.
+        passed = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            pass_at=now_iso(),
+            published_at=now_iso(),
+        )
+        html = render_board(data(jobs=[passed], tasks=[task()]))
+        doing = html[html.index("rows-doing") : html.index("rows-done")]
+        self.assertIn("under review", doing)
+        self.assertNotIn("waiting on your merge word", doing)
+
     def test_a_job_the_owner_has_waved_through_does_not_wait(self) -> None:
         reviewed = job(
             reviewer="verifier",

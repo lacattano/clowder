@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -286,6 +286,28 @@ class Job:
 
     def to_dict(self) -> dict[str, object]:
         return _with_extra(self)
+
+
+# The state words that invite the owner to walk or merge. While a step on the job
+# is still open, the work is not settled and these are premature; the board says
+# "under review" instead.
+OWNER_GATE_WORDS = (
+    "waiting on a walkthrough",
+    "needs re-review",
+    "review unconfirmed",
+    "waiting on your merge word",
+)
+
+
+def step_in_flight(job: Job, tasks: Sequence[Task]) -> bool:
+    """Is a step on this job still running, so the owner is not invited yet?
+
+    A review or walkthrough step sent to the reviewer is the usual case, but a
+    writer's fix step counts too: either way the work is not settled, so the
+    owner-facing gate word is premature. The caller applies this only to the
+    words in `OWNER_GATE_WORDS`.
+    """
+    return any(task.job == job.id and task.is_open for task in tasks)
 
 
 @dataclass
