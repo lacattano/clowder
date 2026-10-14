@@ -123,13 +123,14 @@ cannot drift from the pass and merge word the owner actually gave.
 6. `clowder/board.py`, `clowder/audit.py` - the two views of the record.
 7. `clowder/cli.py` - the spine that ties them together.
 
-## Known source defect
+## Python version the docs assume
 
-`clowder/load.py` does not compile. Lines 51 and 64 use the invalid Python syntax
-`except OSError, AttributeError, ValueError:`; multiple exception types must be
-parenthesized. This was found while documenting and is recorded in
-`.sweep_errors.log` and in `clowder/load.py.md`. The source was not changed,
-because the brief makes the sweep read-only.
+The docs describe clowder's declared target, Python 3.15 (see `.python-version`
+and `pyproject.toml`). A tool run under an older interpreter can misread valid
+3.14+ syntax. `clowder/load.py` uses the PEP 758 paren-less
+`except OSError, AttributeError, ValueError:` form, which Python 3.13 rejects but
+3.15 accepts (`py -3.15 -c "import clowder.load"` succeeds). An earlier revision of
+the README called that a source defect; that claim was wrong and has been removed.
 
 ## Doc conventions
 

@@ -18,11 +18,11 @@ The metric differs by platform:
 - **Unix**: the reading is the 1-minute load average divided by the CPU count, so
   one number means the same thing on a 4-core box and a 16-core box.
 
-> **Known source defect (documentation only; the sweep does not modify source):**
-> lines 51 and 64 use the invalid Python syntax `except OSError, AttributeError,
-> ValueError:`. Multiple exception types must be parenthesized, so this file does
-> not compile (`python -m py_compile clowder/load.py` fails). The doc below
-> describes the intended behaviour.
+> **Python version:** these docs assume clowder's declared target, Python 3.15.
+> The `except OSError, AttributeError, ValueError:` form at lines 51 and 64 is
+> PEP 758 paren-less syntax, which is valid on Python 3.14 and later. An earlier
+> revision of this page called it a syntax error; that was measured under Python
+> 3.13, which predates PEP 758, and is wrong for this project.
 
 ## Public API
 
