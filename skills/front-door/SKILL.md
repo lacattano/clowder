@@ -233,6 +233,38 @@ branch name on it. The writer keeps its branch and can carry on.
 4. **What to report** - and what to ignore.
 5. **What not to do** - in particular: do not start a heavy run without an explicit go-ahead.
 
+### Bounds on a search
+
+A brief that asks for a search must state its bounds. A search with no bounds means read
+everything, and a worker cannot tell a narrow question from a wide one: "what else holds a copy"
+is a file question if you write it that way, and a read of the whole home directory if you do
+not.
+
+Every search brief names four things:
+
+1. **Which directory** - one path, or a short list. Not "the machine".
+2. **Which file names or patterns** - the names that count, or the pattern that matches them.
+3. **Whether hidden and ignored files are in scope** - say yes or no. Say .git, node_modules and
+   temp folders by name when they are out.
+4. **A time cap** - a minute count the worker stops at.
+
+Where a filename is enough, say so, and say that file contents are out of scope. Never leave a
+content search to the worker's judgement: asked to find a copy, it may decide the copy could be
+inside another file, and then it reads every file there is.
+
+The worked pair, for the same question:
+
+- **Bad:** "say what else holds a copy of the key". No directory, no names, no cap. A worker
+  reads that as "search the readable machine for the text", which is what happened on
+  2026-09-29
+- **Good:** "list files under C:\Users\l_a_c whose name is signing.pem or
+  license_signing_private_key.pem, skipping .git, node_modules and AppData\Local\Temp; do not
+  search file contents. Stop after two minutes." One directory, the two names, the skipped
+  folders, no content read, and a cap
+
+The second brief asks a smaller question and answers the same one. If the answer needs contents,
+say so in the brief, with the directory and the cap, and let it be a heavy step.
+
 The tool adds a marker line to every brief, so the worker can tell a peer job from the user
 typing:
 
