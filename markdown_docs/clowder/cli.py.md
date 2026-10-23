@@ -194,6 +194,18 @@ plumbing reached by almost every handler.
   leaves the roster, or the wait runs out.
 - `_reseed_export(identity, shell) -> str` - the shell command that pins the crew
   identity and proves it ran.
+- `_pane_not_a_shell(result) -> bool` - whether a start failed only because the
+  multiplexer does not see the pane as a shell yet. That is the one refusal the
+  restart waits out; every other failure is reported at once.
+- `_start_agent_when_ready(mux, name, pane_id, timeout_s) -> MuxResult` - starts Pi
+  again after a reseed, retrying while that refusal comes back. `timeout_s` is the
+  whole restart budget, not one attempt: the first attempt may spend all of it, so
+  a slow but working start (22 to 45s on this box) is not cut short by a cap of
+  the helper's own. A retry spends only the backoff between attempts, and each
+  later attempt is clipped to what is left of the budget.
+- `_start_agent_by_hand(mux, name, pane_id) -> str` - the exact `agent start`
+  command the owner can run when the restart timed out. Its argv comes from
+  `Mux.build_start_agent_argv`, so it cannot drift from the command the tool runs.
 - `_wait_for_session_change(mux, name, before, timeout_s) -> str | None` - polls the
   live session until it differs from `before`, or the wait runs out.
 - `_space_rename(cwd, old, new, worktree_dir) -> tuple[Path, Path] | None` - the

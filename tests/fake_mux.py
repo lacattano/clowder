@@ -33,6 +33,8 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_START_FAIL   "1" makes agent start fail
     CLOWDER_FAKE_START_BUSY   how many starts refuse with "not an available
                               shell" before one lands; "always" never clears
+    CLOWDER_FAKE_START_DELAY  seconds a start takes before it answers, so a slow
+                              start can be made to outlast a small budget
     CLOWDER_FAKE_LOG          append the received argv, one JSON line per call
     CLOWDER_FAKE_RESET_FAIL   "1" makes `/new` keys leave the session unchanged
     CLOWDER_FAKE_RESET_PROVIDER / _MODEL / _THINKING  the model a reset lands on
@@ -47,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -376,6 +379,11 @@ def main(argv: list[str]) -> int:
     if argv[:2] == ["agent", "start"]:
         if os.environ.get("CLOWDER_FAKE_START_FAIL") == "1":
             return _fail("agent_not_ready", "the agent blocked during startup")
+        # A real start can be slow: herdr waits up to 45s for the agent to come
+        # up. Sleeping here lets a test outlast a small budget.
+        delay = os.environ.get("CLOWDER_FAKE_START_DELAY", "").strip()
+        if delay:
+            time.sleep(float(delay))
         if _state_path() is None:
             return _fail("no_state", "the fake has no state file to record an agent in", 6)
         name = argv[2] if len(argv) > 2 else ""

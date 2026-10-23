@@ -312,9 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
     a_reseed.add_argument(
         "--timeout",
         type=float,
-        default=30.0,
+        default=60.0,
         metavar="SECONDS",
-        help="how long to wait for each step (default: 30)",
+        help=(
+            "the whole restart budget, not one attempt; the quit and export "
+            "waits use it too (default: 60, because a slow start alone can take 45s)"
+        ),
     )
     a_reseed.add_argument(
         "--force", action="store_true", help="reseed even with an unreported step"
@@ -2760,10 +2763,6 @@ _RESEED_MARKER = "clowder-identity-seeded"
 # rather than the exit code, because the same refusal is what a start reports.
 _PANE_NOT_A_SHELL = ("not an available shell", "not a shell")
 
-# How long one start attempt may take. The retry loop is already bounded by the
-# command's --timeout; this only stops one stalled attempt from eating all of it.
-_START_ATTEMPT_CAP_S = 20.0
-
 
 def _wait_for_agent_gone(mux: Mux, name: str, timeout_s: float) -> bool:
     """Wait until the agent leaves the roster, or the wait runs out.
@@ -2812,8 +2811,13 @@ def _start_agent_when_ready(mux: Mux, name: str, pane_id: str, timeout_s: float)
     multiplexer can take a moment to see that the pane is a shell again. A start
     sent in that gap is refused with "not an available shell", and one attempt
     would leave the pane down. Only that refusal is retried: any other failure is
-    reported at once. The whole loop stops at the caller's --timeout, so a pane
-    that never settles fails in bounded time instead of hanging.
+    reported at once.
+
+    `timeout_s` is the whole restart budget, not one attempt. The first attempt
+    may spend all of it, because a slow pane that is still starting must be
+    allowed to land; a fixed per-attempt cap would cut exactly that start short.
+    A retry spends only the backoff between attempts, and every attempt after
+    the first gets what is left, so the last one is clipped to the budget.
     """
     deadline = time.monotonic() + max(0.0, timeout_s)
     delay = 0.25
@@ -2823,7 +2827,7 @@ def _start_agent_when_ready(mux: Mux, name: str, pane_id: str, timeout_s: float)
             name,
             pane_id,
             kind=DEFAULT_KIND,
-            timeout_s=max(1.0, min(_START_ATTEMPT_CAP_S, remaining)),
+            timeout_s=remaining,
             agent_args=("--continue",),
         )
         if started.ok or not _pane_not_a_shell(started):
