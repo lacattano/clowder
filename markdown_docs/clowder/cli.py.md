@@ -197,12 +197,22 @@ plumbing reached by almost every handler.
 - `_pane_not_a_shell(result) -> bool` - whether a start failed only because the
   multiplexer does not see the pane as a shell yet. That is the one refusal the
   restart waits out; every other failure is reported at once.
-- `_start_agent_when_ready(mux, name, pane_id, timeout_s) -> MuxResult` - starts Pi
-  again after a reseed, retrying while that refusal comes back. `timeout_s` is the
-  whole restart budget, not one attempt: the first attempt may spend all of it, so
-  a slow but working start (22 to 45s on this box) is not cut short by a cap of
-  the helper's own. A retry spends only the backoff between attempts, and each
-  later attempt is clipped to what is left of the budget.
+- `_start_agent_when_ready(mux, name, pane_id, timeout_s) -> RestartResult` - starts
+  Pi again after a reseed, retrying while that refusal comes back. `timeout_s` is
+  the budget for the start step, not one attempt: the first attempt may spend all
+  of it, so a slow but working start (22 to 45s on this box) is not cut short by a
+  cap of the helper's own. A retry spends only the backoff between attempts, and
+  each later attempt is clipped to what is left of the budget. It returns the last
+  attempt, how many were made, and the budget.
+- `RestartResult(result, attempts, budget_s)` - the last start attempt, plus the
+  count and the budget. `clipped` is true when more than one attempt was made, so
+  the last one did not get the whole budget; `ok` mirrors the attempt's result.
+- `_restart_reason(restart) -> str` - the reason shown to the owner. A clipped
+  attempt's own duration is a sliver of the budget and says nothing about the
+  pane, so the reason is the budget that ran out, named in full; an unclipped
+  attempt is quoted as the multiplexer answered it.
+- `_seconds(value) -> str` - a number of seconds as the owner would say it (60s,
+  2.5s), used by the failure message and by nothing else.
 - `_start_agent_by_hand(mux, name, pane_id) -> str` - the exact `agent start`
   command the owner can run when the restart timed out. Its argv comes from
   `Mux.build_start_agent_argv`, so it cannot drift from the command the tool runs.
