@@ -2754,6 +2754,16 @@ _QUIT_KEYS = ("/", "q", "u", "i", "t", "enter")
 # The line the export prints, so the wait proves the command ran in the shell.
 _RESEED_MARKER = "clowder-identity-seeded"
 
+# What the multiplexer says while it still believes a pane holds the agent that
+# just quit. Pi has gone and the pane is at its shell, but the multiplexer has not
+# noticed yet, so a start sent now is refused until it does. Matched on the words
+# rather than the exit code, because the same refusal is what a start reports.
+_PANE_NOT_A_SHELL = ("not an available shell", "not a shell")
+
+# How long one start attempt may take. The retry loop is already bounded by the
+# command's --timeout; this only stops one stalled attempt from eating all of it.
+_START_ATTEMPT_CAP_S = 20.0
+
 
 def _wait_for_agent_gone(mux: Mux, name: str, timeout_s: float) -> bool:
     """Wait until the agent leaves the roster, or the wait runs out.
@@ -2787,6 +2797,49 @@ def _reseed_export(identity: gitcmd.Identity, shell: str | None) -> str:
         return "; ".join(pwsh_pairs) + f"; Write-Output '{_RESEED_MARKER}'"
     posix_pairs = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
     return f"export {posix_pairs}; echo {_RESEED_MARKER}"
+
+
+def _pane_not_a_shell(result: MuxResult) -> bool:
+    """True when a start failed only because the pane is not seen as a shell yet."""
+    text = result.error_text().lower()
+    return any(marker in text for marker in _PANE_NOT_A_SHELL)
+
+
+def _start_agent_when_ready(mux: Mux, name: str, pane_id: str, timeout_s: float) -> MuxResult:
+    """Start Pi again, retrying while the multiplexer still calls the pane busy.
+
+    The quit and the identity export both finish before this runs, but the
+    multiplexer can take a moment to see that the pane is a shell again. A start
+    sent in that gap is refused with "not an available shell", and one attempt
+    would leave the pane down. Only that refusal is retried: any other failure is
+    reported at once. The whole loop stops at the caller's --timeout, so a pane
+    that never settles fails in bounded time instead of hanging.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    delay = 0.25
+    while True:
+        remaining = max(0.0, deadline - time.monotonic())
+        started = mux.start_agent(
+            name,
+            pane_id,
+            kind=DEFAULT_KIND,
+            timeout_s=max(1.0, min(_START_ATTEMPT_CAP_S, remaining)),
+            agent_args=("--continue",),
+        )
+        if started.ok or not _pane_not_a_shell(started):
+            return started
+        if time.monotonic() >= deadline:
+            return started
+        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+        delay = min(delay * 2, 2.0)
+
+
+def _start_agent_by_hand(mux: Mux, name: str, pane_id: str) -> str:
+    """The exact command the owner can run to start the agent in its pane."""
+    argv = mux.build_start_agent_argv(
+        name, pane_id, kind=DEFAULT_KIND, agent_args=("--continue",)
+    )
+    return shlex.join(argv)
 
 
 def cmd_agent_reseed(args: argparse.Namespace) -> int:
@@ -2852,9 +2905,17 @@ def cmd_agent_reseed(args: argparse.Namespace) -> int:
             f"the identity export did not reach {name}'s shell, so nothing was seeded."
         )
 
-    started = mux.start_agent(name, pane_id, kind=DEFAULT_KIND, agent_args=("--continue",))
+    started = _start_agent_when_ready(mux, name, pane_id, args.timeout)
     if not started.ok:
-        raise MuxError(f"could not restart Pi in {name}: {started.error_text()}")
+        # The quit and the export already ran, so the pane is at its shell with
+        # the identity seeded. It is left that way: nothing here closes it or
+        # quits again. The owner gets the exact command to bring Pi back.
+        manual = _start_agent_by_hand(mux, name, pane_id)
+        raise MuxError(
+            f"could not restart Pi in {name} after the identity export: "
+            f"{started.error_text()}. The pane is left at its shell with the "
+            f"identity seeded, so it is usable. Start it by hand:\n{INDENT}{manual}"
+        )
     ready = mux.wait_for_agent(name, ("idle", "done"), args.timeout)
     if not ready.ok:
         raise StateError(

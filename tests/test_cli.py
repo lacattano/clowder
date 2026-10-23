@@ -4240,6 +4240,66 @@ class CliTest(unittest.TestCase):
         start = next(c for c in calls if c[:2] == ["agent", "start"])
         self.assertEqual(start[-2:], ["--", "--continue"], "Pi resumes the same session")
 
+    def test_agent_reseed_retries_while_the_pane_is_not_yet_a_shell(self) -> None:
+        # The quit and the export have both worked, but the multiplexer has not
+        # yet seen the pane as a shell. A single start would fail and leave the
+        # pane down, so the start is retried until one lands.
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, out, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "10",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log), CLOWDER_FAKE_START_BUSY="2"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("reseeded", out)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        starts = [c for c in calls if c[:2] == ["agent", "start"]]
+        self.assertEqual(len(starts), 3, "two refusals, then the start that lands")
+        for start in starts:
+            self.assertEqual(start[-2:], ["--", "--continue"], "Pi resumes the session")
+        self.assertEqual(len([c for c in calls if c[:2] == ["agent", "wait"]]), 1)
+
+    def test_agent_reseed_names_the_manual_start_when_the_pane_never_settles(self) -> None:
+        # A genuine timeout must say where the pane stands and print the exact
+        # command that brings Pi back. The pane is left alone: no second quit.
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, out, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "0.5",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log), CLOWDER_FAKE_START_BUSY="always"),
+        )
+        self.assertEqual(code, 2, err)
+        self.assertIn("not an available shell", err)
+        self.assertIn("left at its shell", err)
+        self.assertIn(
+            "agent start myrepo-maker --kind pi --pane w9:p1 -- --continue",
+            err,
+            "the message names the manual start command",
+        )
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertGreaterEqual(
+            len([c for c in calls if c[:2] == ["agent", "start"]]),
+            2,
+            "the start was retried, not sent once",
+        )
+        self.assertEqual([c for c in calls if c[:2] == ["agent", "wait"]], [])
+        self.assertEqual(
+            len([c for c in calls if c[:2] == ["agent", "send-keys"]]),
+            1,
+            "the pane is not quit a second time",
+        )
+        self.assertEqual(
+            len([c for c in calls if c[:2] == ["pane", "close"]]), 0, "the pane stays open"
+        )
+
     def test_the_reseed_export_matches_the_shell(self) -> None:
         # The pane's shell decides the syntax: PowerShell uses $env:, POSIX uses
         # export. Both print the marker so the wait can confirm the command ran.

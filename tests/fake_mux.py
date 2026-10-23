@@ -31,6 +31,8 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_LIST_FAIL    "1" makes the agent list fail
     CLOWDER_FAKE_PROMPT_FAIL  "1" makes prompt submission fail
     CLOWDER_FAKE_START_FAIL   "1" makes agent start fail
+    CLOWDER_FAKE_START_BUSY   how many starts refuse with "not an available
+                              shell" before one lands; "always" never clears
     CLOWDER_FAKE_LOG          append the received argv, one JSON line per call
     CLOWDER_FAKE_RESET_FAIL   "1" makes `/new` keys leave the session unchanged
     CLOWDER_FAKE_RESET_PROVIDER / _MODEL / _THINKING  the model a reset lands on
@@ -385,6 +387,25 @@ def main(argv: list[str]) -> int:
             if item == "--pane" and index + 1 < len(argv):
                 pane_id = argv[index + 1]
         state = _load()
+        # The real thing can still believe the pane holds the agent that just
+        # quit, and refuse the start until it notices the shell. Tests use this
+        # to prove the retry, and that a pane that never settles is reported.
+        budget = state.get("start_busy_remaining")
+        if budget is None:
+            setting = os.environ.get("CLOWDER_FAKE_START_BUSY", "").strip()
+            if setting == "always":
+                budget = "always"
+            else:
+                budget = int(setting) if setting.isdigit() else 0
+        if budget == "always" or (isinstance(budget, int) and budget > 0):
+            if isinstance(budget, int):
+                state["start_busy_remaining"] = budget - 1
+                _save(state)
+            return _fail(
+                "pane_not_shell",
+                f"agent target pane {pane_id} is not an available shell",
+                5,
+            )
         panes = state.get("panes") or {}
         assert isinstance(panes, dict)
         if pane_id not in panes:
