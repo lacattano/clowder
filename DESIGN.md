@@ -750,8 +750,8 @@ scraped.
   whether re-running is cheap enough there, or whether that repo wants fewer spaces, more
   sharing, or a cleanup step between jobs.
 
-Nine defects found while using the tool, on 2026-09-28 and 2026-09-29. Recorded here so they
-outlive the conversation; none is fixed by the queue work.
+Nine defects found while using the tool, between 2026-09-25 and 2026-09-29. Recorded here so
+they outlive the conversation; none is fixed by the queue work.
 
 - **A task with no place.** (Fixed.) A step with no job now records the agent's live
   directory at dispatch, so a report names the folder the work actually ran in rather than the
@@ -796,10 +796,9 @@ outlive the conversation; none is fixed by the queue work.
   about 24 minutes of CPU. On this machine that is felt as a display fault, not as a slow command:
   the owner saw dropped pixels and killed it by hand. The lesson is about the brief, not about that
   worker: a search with no bounds means read everything, and a worker cannot tell a narrow
-  question from a wide one. Fix: the front-door skill's "Bounds on a search" section requires
-  every search brief to name the directory, the file names or patterns, whether hidden and
-  ignored files are in scope, and a time cap, and says to state where a filename is enough and
-  contents are out of scope. It carries the worked pair, bad and good, for the same question.
+  question from a wide one. Fix: the front-door skill states the rule, in "Bounds on a search" -
+  the bounds a search brief must name, the worked pair, and how to declare the step heavy. It is
+  not repeated here, because the skill is the copy a front door reads before it dispatches.
   Nothing forbids a search: a bounded one is the normal way to answer this kind of question, and
   the worker still runs it, not the front door. Why it is here: a heavy read on this machine is
   felt by the owner as a display fault, and one worker's unbounded scan is felt by everyone - the

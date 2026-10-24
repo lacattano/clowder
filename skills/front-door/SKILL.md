@@ -59,7 +59,7 @@ clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
 clowder job close <job-id> [--delete-branch]
-clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--from NAME]
+clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--heavy] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
@@ -254,9 +254,9 @@ inside another file, and then it reads every file there is.
 
 The worked pair, for the same question:
 
-- **Bad:** "say what else holds a copy of the key". No directory, no names, no cap. A worker
-  reads that as "search the readable machine for the text", which is what happened on
-  2026-09-29
+- **Bad:** "say what else on this machine still holds a copy of the public half". No
+  directory, no names, no cap. A worker reads that as "search the readable machine for the
+  text", which is what happened on 2026-09-29
 - **Good:** "list files under C:\Users\l_a_c whose name is signing.pem or
   license_signing_private_key.pem, skipping .git, node_modules and AppData\Local\Temp; do not
   search file contents. Stop after two minutes." One directory, the two names, the skipped
@@ -264,6 +264,17 @@ The worked pair, for the same question:
 
 The second brief asks a smaller question and answers the same one. If the answer needs contents,
 say so in the brief, with the directory and the cap, and let it be a heavy step.
+
+A heavy step is declared, not left to the worker to notice:
+
+```
+clowder dispatch <agent> <repo> "<the brief>" --job <job-id> --heavy
+```
+
+`--heavy` says the step installs, builds or runs a suite. Only one heavy step is open at a time
+across the whole crew, so a second one is refused and names the step that holds it. The optional
+`[gates] heavy_max_memory` and `heavy_max_load` thresholds add a check of the machine's own load
+before a heavy step starts, and a load that cannot be read fails open with a warning.
 
 The tool adds a marker line to every brief, so the worker can tell a peer job from the user
 typing:
