@@ -207,10 +207,12 @@ plumbing reached by almost every handler.
 - `RestartResult(result, attempts, budget_s)` - the last start attempt, plus the
   count and the budget. `clipped` is true when more than one attempt was made, so
   the last one did not get the whole budget; `ok` mirrors the attempt's result.
-- `_restart_reason(restart) -> str` - the reason shown to the owner. A clipped
-  attempt's own duration is a sliver of the budget and says nothing about the
-  pane, so the reason is the budget that ran out, named in full; an unclipped
-  attempt is quoted as the multiplexer answered it.
+- `_restart_reason(restart) -> str` - the reason shown to the owner. The budget
+  is named only when the budget is what stopped the start: a clipped final attempt
+  that was killed by it had no time to answer, so its own duration is a sliver and
+  says nothing about the pane. Every attempt that answered is quoted as it
+  answered - a refusal, a named failure such as `agent_not_ready`, or a timeout
+  given its whole allowance - whatever the attempt number.
 - `_seconds(value) -> str` - a number of seconds as the owner would say it (60s,
   2.5s), used by the failure message and by nothing else.
 - `_start_agent_by_hand(mux, name, pane_id) -> str` - the exact `agent start`

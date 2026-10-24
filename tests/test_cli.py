@@ -25,21 +25,21 @@ from tests.support import (
 )
 
 
-def _start_refusal(pane_id: str) -> MuxResult:
-    """The refusal the multiplexer gives while a pane is still not a shell."""
+def _start_error(code: str, message: str) -> MuxResult:
+    """A failed start as the multiplexer reports one: a named code and a reason."""
     return MuxResult(
-        argv=("mux", "agent", "start", "--pane", pane_id),
+        argv=("mux", "agent", "start"),
         returncode=5,
-        stdout=json.dumps(
-            {
-                "error": {
-                    "code": "pane_not_shell",
-                    "message": f"agent target pane {pane_id} is not an available shell",
-                }
-            }
-        ),
+        stdout=json.dumps({"error": {"code": code, "message": message}}),
         stderr="",
         duration_ms=1,
+    )
+
+
+def _start_refusal(pane_id: str) -> MuxResult:
+    """The refusal the multiplexer gives while a pane is still not a shell."""
+    return _start_error(
+        "pane_not_shell", f"agent target pane {pane_id} is not an available shell"
     )
 
 
@@ -145,6 +145,34 @@ class _RefuseThenTimeoutMux:
             duration_ms=9,
             timed_out=True,
         )
+
+
+class _ThenFailsMux:
+    """Refuses the first attempt, then answers with a different, named failure.
+
+    This is the reviewer's probe: a retry that fails for its own reason. The
+    budget did not stop that start, so the reason must be the failure and not the
+    budget, whatever the attempt number.
+    """
+
+    def __init__(self, failure: MuxResult) -> None:
+        self.failure = failure
+        self.calls = 0
+        self.timeouts: list[float] = []
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: tuple[str, ...] = (),
+    ) -> MuxResult:
+        self.calls += 1
+        self.timeouts.append(float(timeout_s or 0.0))
+        if self.calls == 1:
+            return _start_refusal(pane_id)
+        return self.failure
 
 
 class CliTest(unittest.TestCase):
@@ -4553,6 +4581,34 @@ class CliTest(unittest.TestCase):
             mux.timeouts[1], mux.timeouts[0], "the second attempt got what was left"
         )
         self.assertEqual(cli._restart_reason(restart), "the restart ran out of its 0.6s budget")
+
+    def test_a_different_failure_after_a_refusal_keeps_its_own_reason(self) -> None:
+        # The reviewer's probe: the first attempt is refused, the retry fails with
+        # agent_not_ready. The budget did not stop that start - the agent blocked
+        # during startup did - so the message must name that failure and must not
+        # claim the budget ran out.
+        self.seed_agent()
+        blocked = _start_error("agent_not_ready", "the agent blocked during startup")
+        mux = _ThenFailsMux(blocked)
+        restart = cli._start_agent_when_ready(mux, "myrepo-maker", "w9:p1", 30.0)
+        self.assertFalse(restart.ok)
+        self.assertTrue(restart.clipped, "a second attempt did not get the whole budget")
+        self.assertEqual(restart.attempts, 2)
+        reason = cli._restart_reason(restart)
+        self.assertIn("agent_not_ready: the agent blocked during startup", reason)
+        self.assertNotIn("ran out of its", reason, "the budget is not what stopped it")
+
+        # And through the real command path, so the owner-facing sentence is the
+        # one asserted, not just the reason fragment.
+        with mock.patch.object(cli, "_start_agent_when_ready", return_value=restart):
+            code, _, err = self.cli(
+                "agent", "reseed", "myrepo-maker", "--timeout", "30", env=self.state_env()
+            )
+        self.assertEqual(code, 2, err)
+        self.assertIn("agent_not_ready: the agent blocked during startup", err)
+        self.assertNotIn("ran out of its", err)
+        self.assertIn("left at its shell", err)
+        self.assertIn("agent start myrepo-maker --kind pi --pane w9:p1 -- --continue", err)
 
     def test_a_different_start_failure_is_not_retried(self) -> None:
         # Only the not-yet-a-shell refusal is worth waiting out. A start that

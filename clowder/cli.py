@@ -2837,12 +2837,14 @@ def _seconds(value: float) -> str:
 def _restart_reason(restart: RestartResult) -> str:
     """Why the start did not land, in words that describe the real wait.
 
-    An attempt that was clipped to the last sliver of the budget did not have
-    time to answer, so its own duration (often a few milliseconds) is noise. In
-    that case the fact is the budget that ran out, named in full. An attempt that
-    got its whole allowance is quoted as the multiplexer answered it.
+    The budget is named only when the budget is what stopped the start: a clipped
+    final attempt that was killed by it had no time to answer, so its own duration
+    (often a few milliseconds) is noise. Every attempt that answered is quoted as
+    it answered - a refusal, a named failure such as agent_not_ready, or a timeout
+    that was given its whole allowance. A different failure on a retry is still
+    that failure's own reason: the budget did not stop it.
     """
-    if restart.clipped:
+    if restart.clipped and restart.result.timed_out:
         return f"the restart ran out of its {_seconds(restart.budget_s)} budget"
     return restart.result.error_text()
 
