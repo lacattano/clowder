@@ -82,7 +82,7 @@ you stays at the top and is never filtered away.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 269
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 698
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
@@ -126,7 +126,10 @@ py -3.15 scripts/check.py --list   # what they are
 
 The gates are **smoke** (the CLI runs with no multiplexer), **lint** (`ruff check`), **format**
 (`ruff format --check`), **type** (`mypy clowder`) and **tests** (the whole suite). `ruff` and
-`mypy` are fetched with `uvx`, so nothing needs installing first.
+`mypy` are fetched with `uvx`, so nothing needs installing first. Both are pinned to exact
+versions in `scripts/check.py`, so the formatter and the type checker are the same on a
+developer's machine and on the runner; bumping a pin means running the gate and committing what
+it then asks for, in the same commit.
 
 The flow for a change: run the gates, commit, push to `main`. CI runs the same five gates as
 separate checks (`.github/workflows/ci.yml`), so a red one names itself. The tool never commits,

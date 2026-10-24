@@ -24,8 +24,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
 
-# ruff and mypy are development tools, not dependencies of the tool.
-LINT_TOOLS = ("ruff", "mypy")
+# ruff and mypy are development tools, not dependencies of the tool. Both are
+# pinned: a pin is a fact about this repo, not about the machine that runs it.
+# An unpinned formatter passes on a developer's older ruff and fails on the
+# runner's newer one, which is how four markdown code blocks drifted; an
+# unpinned type checker changes its mind the same way. Bumping a pin means
+# running the gate and committing what it asks for, in the same commit.
+TOOL_PINS = {"ruff": "0.17.2", "mypy": "2.4.0"}
+LINT_TOOLS = tuple(TOOL_PINS)
 
 
 @dataclass(frozen=True)
@@ -43,7 +49,9 @@ def tool_command(tool: str, *args: str) -> list[str]:
     cannot run has not passed.
     """
     if shutil.which("uvx"):
-        return ["uvx", tool, *args]
+        pinned = TOOL_PINS.get(tool)
+        spec = f"{tool}@{pinned}" if pinned else tool
+        return ["uvx", spec, *args]
     probe = subprocess.run(
         [PYTHON, "-c", f"import {tool}"],
         capture_output=True,
