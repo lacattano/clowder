@@ -18,6 +18,11 @@ class LoadTest(unittest.TestCase):
             self.assertGreaterEqual(value, 0.0)
             self.assertLessEqual(value, 100.0)
 
+    def test_memory_percent_is_none_off_windows(self) -> None:
+        """The memory probe is Windows-only, and must fail open, not raise."""
+        with mock.patch.object(load.sys, "platform", "linux"):
+            self.assertIsNone(load.memory_percent())
+
     def test_load_per_cpu_is_a_value_or_none(self) -> None:
         value = load.load_per_cpu()
         if value is not None:

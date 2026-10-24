@@ -19,7 +19,7 @@ The metric differs by platform:
   one number means the same thing on a 4-core box and a 16-core box.
 
 > **Python version:** these docs assume clowder's declared target, Python 3.15.
-> The `except OSError, AttributeError, ValueError:` form at lines 51 and 64 is
+> The `except OSError, AttributeError, ValueError:` form at lines 69 and 82 is
 > PEP 758 paren-less syntax, which is valid on Python 3.14 and later. An earlier
 > revision of this page called it a syntax error; that was measured under Python
 > 3.13, which predates PEP 758, and is wrong for this project.
@@ -51,24 +51,30 @@ Module constants:
 
 ## How It Works (internals)
 
-The only private name is a class, not a function:
-
-### `_MemoryStatusEx` - the Windows memory probe
+### `_MemoryStatusEx` - the Windows memory probe structure
 
 - `class _MemoryStatusEx(ctypes.Structure)` - a `ctypes` structure matching the
   fields that Windows' `GlobalMemoryStatusEx` function fills. Its `_fields_` list
   declares names and C types (`wintypes.DWORD`, `ctypes.c_ulonglong`, ...). The
   field of interest is `dwMemoryLoad`, the percentage of physical memory in use.
 
+### `_kernel32()` - the Windows library, looked up by name
+
+- `def _kernel32() -> Any` - returns `ctypes.windll.kernel32`. `ctypes.windll`
+  exists only on Windows, so it is fetched with `getattr(ctypes, "windll", None)`
+  and raises `AttributeError` when it is absent. A direct reference would be an
+  `attr-defined` error on the Linux CI runner; the lookup fixes that, instead of
+  silencing it with a `type: ignore` at the call site. The return is typed `Any`
+  because the ctypes library object has no usable static type here.
+
 Call relationships:
 
 - `current()` calls `metric_name()`, then `memory_percent()` (when the metric is
   memory) or `load_per_cpu()` (otherwise), and returns either the pair or `None`.
-- `memory_percent()` builds a `_MemoryStatusEx`, sets `dwLength` to its own size,
-  calls `ctypes.windll.kernel32.GlobalMemoryStatusEx(...)`, and reads back
-  `dwMemoryLoad`.
+- `memory_percent()` returns `None` at once when `sys.platform != "win32"`, so the
+  Windows call is never reached elsewhere. On Windows it builds a
+  `_MemoryStatusEx`, sets `dwLength` to its own size, calls
+  `_kernel32().GlobalMemoryStatusEx(...)`, and reads back `dwMemoryLoad`.
 - `load_per_cpu()` looks up `os.getloadavg` with `getattr(..., None)` (the
   attribute is Unix-only), divides the first value by `os.cpu_count() or 1`, and
   returns a float.
-
-There are no other `_`-helpers.

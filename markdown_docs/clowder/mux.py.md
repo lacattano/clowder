@@ -29,6 +29,7 @@ class AgentInfo:
     session_path: str | None = None
     focused: bool = False
 
+
 @dataclass
 class MuxResult:
     argv: tuple[str, ...]

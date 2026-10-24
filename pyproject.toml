@@ -27,10 +27,15 @@ packages = ["clowder"]
 [tool.ruff]
 # The code is written for readable lines rather than the 88-character default.
 line-length = 96
-# The owner's decision, 2026-10-05: keep the 3.15 target and leave ruff unpinned.
-# Under this target ruff rewrites `except (A, B):` into `except A, B:` (PEP 758).
-# That rewrite is behaviour-preserving on 3.15, and modern 3.15 code - including
-# t-strings - matters more than holding the formatter back to protect against it.
+# The owner's decision, 2026-10-05: keep the 3.15 target. Under this target ruff
+# rewrites `except (A, B):` into `except A, B:` (PEP 758). That rewrite is
+# behaviour-preserving on 3.15, and modern 3.15 code - including t-strings -
+# matters more than holding the formatter back to protect against it.
+#
+# The ruff version itself is pinned in scripts/check.py (TOOL_PINS). It has to
+# be: an unpinned formatter passes on a developer's older ruff and fails on the
+# runner's newer one, which is how four markdown code blocks drifted out of
+# format while the gate stayed green locally and red in CI.
 target-version = "py315"
 
 [tool.ruff.lint]
