@@ -580,5 +580,22 @@ class AsciiTest(unittest.TestCase):
         self.assertEqual(offenders, [], "non-ASCII characters found")
 
 
+class ReadmeTest(unittest.TestCase):
+    def test_the_test_count_matches_the_suite(self) -> None:
+        """A counted fact in the README is counted here, not remembered.
+
+        The same number went stale once already (269 claimed, 696 real), so the
+        README states the figure and this test counts the suite the way the
+        tests gate does.
+        """
+        text = (REPO / "README.md").read_text(encoding="utf-8")
+        match = re.search(r"(\d+)\s+tests, no dependencies", text)
+        self.assertIsNotNone(match, "the README must state the suite size")
+        counted = unittest.defaultTestLoader.discover(
+            str(REPO / "tests"), top_level_dir=str(REPO)
+        ).countTestCases()
+        self.assertEqual(int(match.group(1)), counted, "the README test count is stale")
+
+
 if __name__ == "__main__":
     unittest.main()

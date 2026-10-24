@@ -1,9 +1,10 @@
 """A checked-in Python file must parse.
 
-Nothing here guards formatting. The repo's ruff target is 3.15 and ruff is
-deliberately unpinned; under that target ruff rewrites `except (A, B):` into
-`except A, B:` (PEP 758), which is legal and behaviour-preserving on 3.15. This
-test only proves that every committed `.py` file is parseable.
+Nothing here guards code formatting. The repo's ruff target is 3.15 and the ruff
+version is pinned in `scripts/check.py`; under that target ruff rewrites
+`except (A, B):` into `except A, B:` (PEP 758), which is legal and
+behaviour-preserving on 3.15. This test only proves that every committed `.py`
+file is parseable. Formatting is the format gate's job.
 """
 
 from __future__ import annotations

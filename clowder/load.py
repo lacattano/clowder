@@ -11,6 +11,7 @@ import ctypes
 import os
 import sys
 from ctypes import wintypes
+from typing import Any
 
 # Windows has no load average, so the reading is the percent of physical memory
 # in use. Unix reports the 1-minute load average, divided by the CPU count so one
@@ -40,12 +41,29 @@ class _MemoryStatusEx(ctypes.Structure):
     ]
 
 
+def _kernel32() -> Any:
+    """The Windows kernel32 library.
+
+    `ctypes.windll` exists only on Windows. It is looked up by name rather than
+    referenced directly, because a direct reference is an attr-defined error on
+    the Linux runner; that error is real, so it is fixed here rather than
+    silenced at the call site. Off Windows this raises, and the caller turns
+    that into None.
+    """
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        raise AttributeError("ctypes.windll exists only on Windows")
+    return windll.kernel32
+
+
 def memory_percent() -> float | None:
     """Percent of physical memory in use, or None when it cannot be read."""
+    if sys.platform != "win32":
+        return None
     try:
         status = _MemoryStatusEx()
         status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        if not _kernel32().GlobalMemoryStatusEx(ctypes.byref(status)):
             return None
         return float(status.dwMemoryLoad)
     except OSError, AttributeError, ValueError:

@@ -15,6 +15,10 @@ py -3.15 scripts/check.py --only lint
 
 It needs no dependencies: `ruff` and `mypy` are fetched with `uvx` when they are
 not already importable, so the gates work on a machine with only Python installed.
+Both are **pinned** in `TOOL_PINS`, and the pin is what the gate runs. A pin is a
+fact about this repo, not about the machine: an unpinned formatter passed on a
+developer's older ruff and failed on the runner's newer one, which is how four
+markdown code blocks drifted while the gate stayed green locally and red in CI.
 
 The gates are `smoke` (the CLI runs on a machine with no multiplexer), `lint`,
 `format`, `type` (mypy over `clowder`) and `tests` (the whole test suite).
@@ -45,8 +49,8 @@ def main(argv: list[str] | None = None) -> int
 ```
 
 - `tool_command(tool, *args)` - returns the command to run a development tool the
-  way this machine can: `uvx <tool>` if `uvx` exists, else `python -m <tool>` when
-  it imports, else the binary on `PATH`. Exits with a message when none is
+  way this machine can: `uvx <tool>@<pin>` if `uvx` exists, else `python -m <tool>`
+  when it imports, else the binary on `PATH`. Exits with a message when none is
   available, because a gate that cannot run has not passed.
 - `clowder(*args)` - returns `[python, "-m", "clowder", *args]`, so the CLI is
   always run from the source checkout.
@@ -62,7 +66,9 @@ def main(argv: list[str] | None = None) -> int
   (bad selection).
 
 Module constants: `REPO` (the repo root), `PYTHON` (`sys.executable`),
-`LINT_TOOLS = ("ruff", "mypy")`.
+`TOOL_PINS = {"ruff": "0.17.2", "mypy": "2.4.0"}` (the exact versions the gates
+run) and `LINT_TOOLS = tuple(TOOL_PINS)`. Bumping a pin means running the gate
+and committing what it then asks for, in the same commit.
 
 ## How It Works (internals)
 
