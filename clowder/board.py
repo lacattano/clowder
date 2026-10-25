@@ -425,6 +425,10 @@ class BoardData:
     # Defects seen twice or more with no open job. They wait for the front door, not
     # for the owner: opening the job is its act. One line and an id; never restated.
     repeated_defects: list[Defect] = field(default_factory=list)
+    # Why the defects record could not be read, when it could not. The page still
+    # draws: one malformed file must not take away what tells the owner what is
+    # happening. The line in the worker section names the file and the fault.
+    defects_note: str | None = None
 
 
 def _e(value: object) -> str:
@@ -680,6 +684,14 @@ def waiting_for_worker(data: BoardData) -> list[str]:
     judged, and a defect seen twice with no job. None of these needs the owner.
     """
     lines: list[str] = []
+
+    if data.defects_note:
+        lines.append(
+            "<b>defects record unreadable</b> "
+            f"<span class='why'>{_e(data.defects_note)}. The repeated list is not "
+            "shown until it is fixed; `clowder defects list` prints the error, and the "
+            "rest of this page is drawn from everything else.</span>"
+        )
 
     # A second sighting of a defect is not cleared by its count going up. Opening the
     # job is the front door's act, so this list is here and not in the owner's

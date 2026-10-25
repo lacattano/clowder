@@ -16,7 +16,11 @@ from clowder.defects import (
     DefectStore,
     defects_path,
     describe,
+    matches_line,
     normalise_line,
+    read_defects,
+    recently_seen,
+    words,
 )
 from clowder.errors import StateError
 from clowder.timeutil import to_epoch
@@ -147,6 +151,65 @@ class StoreTest(unittest.TestCase):
             normalise_line("a step does not close"),
             normalise_line("a step does not report"),
         )
+
+
+class WordSearchTest(unittest.TestCase):
+    def test_the_same_words_in_another_order_are_found(self) -> None:
+        # The reviewer's case: the same defect written in different words. Word
+        # search finds it when the words are the same, whatever the phrasing.
+        line = "a step does not close when it reports"
+        self.assertTrue(matches_line(line, "reports close step"))
+        self.assertTrue(matches_line(line, "step reports"))
+
+    def test_a_total_rephrase_is_missed_and_that_is_pinned(self) -> None:
+        # Pinned on purpose: the limit is real, and a later change must not pretend
+        # it is solved. Fuzzy matching would merge two real defects, which is worse.
+        line = "a step does not close when it reports"
+        self.assertFalse(matches_line(line, "finished work stays in flight"))
+
+    def test_one_missing_word_is_a_miss(self) -> None:
+        self.assertFalse(matches_line("the board clips a long answer", "board answer text"))
+
+    def test_words_ignore_case_and_punctuation(self) -> None:
+        self.assertEqual(words("A step does NOT close."), ["a", "step", "does", "not", "close"])
+
+    def test_an_empty_query_matches_nothing(self) -> None:
+        self.assertFalse(matches_line("a step does not close", "   "))
+
+
+class SafeReadTest(unittest.TestCase):
+    def test_a_corrupt_record_is_reported_not_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "defects.json"
+            path.write_text("{not json", encoding="utf-8")
+            entries, error = read_defects(DefectStore(path))
+            self.assertEqual(entries, [])
+            self.assertIsNotNone(error)
+            self.assertIn(str(path), error or "", "the error names the file")
+            self.assertIn("JSON", error or "", "and the fault")
+
+    def test_a_good_record_reads_with_no_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DefectStore(Path(tmp) / "defects.json")
+            store.sighting("one line")
+            entries, error = read_defects(store)
+            self.assertEqual(len(entries), 1)
+            self.assertIsNone(error)
+
+    def test_recently_seen_keeps_the_last_seven_days(self) -> None:
+        from datetime import timedelta
+
+        from clowder.timeutil import now, to_iso
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DefectStore(Path(tmp) / "defects.json")
+            store.sighting("today")
+            old, _ = store.sighting("long ago")
+            old.first_seen = to_iso(now() - timedelta(days=8))
+            entries, error = read_defects(store)
+            self.assertIsNone(error)
+            recent = recently_seen(entries, 7)
+            self.assertEqual([defect.line for defect in recent], ["today"])
 
 
 class DescribeTest(unittest.TestCase):

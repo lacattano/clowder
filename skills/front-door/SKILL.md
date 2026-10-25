@@ -23,10 +23,14 @@ clowder start
 ```
 
 It prints: the handover file and its age, and says plainly when it is STALE and why; the
-decisions that wait on the owner; the steps in flight; the queue count; and the defects seen
-twice with no job. Read the handover it names. If it says stale, work happened after that
-handover was written, so treat its "in flight" and "landed" sections as out of date and write
-the next one before the session ends.
+decisions that wait on the owner; the steps in flight; the queue count; the defects seen twice
+with no job; and the defects added in the last seven days. Read the handover it names. If it says
+stale, work happened after that handover was written, so treat its "in flight" and "landed"
+sections as out of date and write the next one before the session ends.
+
+If the defects record cannot be read, `start` still prints everything else, warns loudly with the
+file and the error, and exits 4. The board does the same. `clowder defects list` is the command
+that refuses, with the error. Do not treat a broken record as "no defects".
 
 Run `clowder inbox` first when `start` shows a step you expected to be finished: a report can
 land between the two, and `inbox` closes the step it finds.
@@ -66,6 +70,11 @@ Two more mechanisms, so one fact lives in one place:
   fixed` when the fix lands, or `--status accepted-workaround --reason TEXT` when the owner
   accepts the cost. If it is not in that record it is not known, and nothing else - not the
   handover, not DESIGN.md, not your own words - stores one.
+- **Before adding, look.** `clowder defects list --like "<the words you would use>"` finds a
+  defect that holds every one of those words, in any order. It cannot find a total rephrase - no
+  search can, and fuzzy matching would merge two real defects - so also read the lines added in
+  the last seven days that `clowder start` prints. If yours is one of them, add it with the same
+  words so the count rises; a different line is a new defect.
 - **A second sighting is not a count.** When a defect is seen twice with no open job, the tool
   lists it in `clowder defects list --repeated`, in `clowder start`, and on the board in the
   section that waits for you. Open a job for it or record the accepted workaround with its
@@ -93,7 +102,7 @@ clowder queue list
 clowder queue send <q-id> [--job ID]
 clowder start [--json]
 clowder defects add --line TEXT [--job ID] [--status open|has-job|fixed|accepted-workaround] [--reason TEXT]
-clowder defects list [--repeated]
+clowder defects list [--repeated] [--like WORDS]
 clowder defects show <id>
 clowder handover write
 clowder agents

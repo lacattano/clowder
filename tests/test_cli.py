@@ -5744,6 +5744,106 @@ class CliTest(unittest.TestCase):
         self.assertIn("d-0001", worker)
         self.assertNotIn("seen twice, no job", needs, "not the owner's act")
 
+    # -- the reviewer's fixes on the learning loop ---------------------------
+
+    def test_defects_like_finds_the_same_words_and_misses_a_rephrase(self) -> None:
+        # A reworded defect is a new id by design. Word search is the human-scale
+        # mitigation: the same words in another order are found, a total rephrase is
+        # not - and that miss is pinned so it is never silently lost.
+        line = "a step does not close when it reports"
+        self.cli("defects", "add", "--line", line, env=self.fake_env())
+
+        code, out, err = self.cli(
+            "defects", "list", "--like", "reports close step", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn(line, out)
+        self.assertIn("reworded defect shares no word", out)
+
+        code, out, err = self.cli(
+            "defects", "list", "--like", "finished work stays in flight", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("no defect holds every word", out)
+        self.assertIn("a total rephrase is not found", out)
+        self.assertNotIn("d-0001", out)
+
+    def test_start_lists_the_defects_added_in_the_last_seven_days(self) -> None:
+        # The near-duplicate defence is a person reading the recent lines, so start
+        # has to show them.
+        moment = datetime.now(UTC)
+        (self.root / "defects.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "next": 2,
+                    "defects": {
+                        "d-0001": {
+                            "id": "d-0001",
+                            "line": "a defect recorded two days ago",
+                            "first_seen": to_iso(moment - timedelta(days=2)),
+                            "last_seen": to_iso(moment - timedelta(days=2)),
+                        },
+                        "d-0002": {
+                            "id": "d-0002",
+                            "line": "a defect recorded nine days ago",
+                            "first_seen": to_iso(moment - timedelta(days=9)),
+                            "last_seen": to_iso(moment - timedelta(days=9)),
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects added in the last 7 days: 1", out)
+        self.assertIn("d-0001 a defect recorded two days ago", out)
+        self.assertNotIn("d-0002", out.split("defects added in the last 7 days")[1])
+
+    def test_a_corrupt_defects_record_fails_open_on_start_and_the_board(self) -> None:
+        # One malformed file must not take away the page that says what is happening.
+        # `start` and `board` draw from everything else, name the file and the fault,
+        # and say with their exit code that the record was unreadable. The command
+        # whose job is to read the record is the one that refuses.
+        record = self.root / "defects.json"
+        record.write_text("{not json", encoding="utf-8")
+
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        self.assertIn("handover:", out, "the rest of the start output still prints")
+        self.assertIn("queue:", out)
+        self.assertIn("defects: unreadable", out)
+        self.assertIn(str(record), err, "the warning names the file")
+        self.assertIn("not valid JSON", err, "and the parse error")
+
+        code, out, err = self.cli("start", "--json", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        self.assertIn("not valid JSON", json.loads(out)["defects_error"])
+
+        code, out, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        page = self.root / "board.html"
+        self.assertTrue(page.is_file(), "the page is still written")
+        html = page.read_text(encoding="utf-8")
+        self.assertIn("defects record unreadable", html)
+        self.assertIn("defects.json", html)
+        self.assertIn(str(record), err)
+
+        code, _, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 1, "the reading command refuses")
+        self.assertIn("not valid JSON", err)
+
+    def test_a_corrupt_record_does_not_break_a_command_that_refreshes_the_board(self) -> None:
+        # Every state-changing command rewrites the board. A broken record must not
+        # make that refresh fail, or the page goes stale and says nothing about why.
+        record = self.root / "defects.json"
+        record.write_text("{not json", encoding="utf-8")
+        code, out, err = self.cli("defects", "add", "--line", "x", env=self.fake_env())
+        self.assertEqual(code, 1, "adding still refuses, because it must read the record")
+        self.assertIn("not valid JSON", err)
+
 
 if __name__ == "__main__":
     unittest.main()

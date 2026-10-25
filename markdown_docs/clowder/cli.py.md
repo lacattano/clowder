@@ -66,9 +66,9 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `queue list` | `cmd_queue_list` | Show what is decided and still waiting to go. |
 | `queue send` | `cmd_queue_send` | Send one queued item, once its block has cleared. |
 | `queue drop` | `cmd_queue_drop` | Drop a queued item, with a reason and a name that stay on the record. |
-| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), the owner's decisions, steps in flight, the queue, repeated defects. |
+| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), the owner's decisions, steps in flight, the queue, repeated defects, and the defects added in the last seven days. Fails open on an unreadable record, with exit code 4. |
 | `defects add` | `cmd_defects_add` | Record one sighting of a defect, or the same one again. |
-| `defects list` | `cmd_defects_list` | Every known defect, or `--repeated`: seen twice with no open job. |
+| `defects list` | `cmd_defects_list` | Every known defect, `--repeated` (seen twice with no open job), or `--like WORDS` (an exact-word search). Refuses on an unreadable record. |
 | `defects show` | `cmd_defects_show` | One defect in full; the only place its detail lives. |
 | `handover write` | `cmd_handover_write` | Compose today's handover from the record and name the file it wrote. |
 | `checkouts` | `cmd_checkouts` | How far behind its remote each checkout is, in one line each. |
@@ -80,8 +80,8 @@ All handlers take `args: argparse.Namespace` and return `int`.
 with `set_defaults`.
 
 Module constants: `PROGRAM = "clowder"`, `NEEDS_HUMAN = 3`, `DEFAULT_TIMEOUT_S =
-60.0`, `BOARD_REFRESH_MUX_TIMEOUT_S = 3.0`, `OWNER_ITEM_LIMIT = 120`, `_QUIT_KEYS`,
-`_RESEED_MARKER`.
+60.0`, `BOARD_REFRESH_MUX_TIMEOUT_S = 3.0`, `OWNER_ITEM_LIMIT = 120`,
+`RECORD_UNREADABLE = 4`, `RECENT_DEFECT_DAYS = 7`, `_QUIT_KEYS`, `_RESEED_MARKER`.
 
 ## How It Works (internals)
 
@@ -107,6 +107,8 @@ plumbing reached by almost every handler.
   command. Called from `main`; never fails the command.
 - `_defect_store(config) -> DefectStore` - the one defects record for this config,
   beside the state file.
+- `_warn_unreadable_record(error) -> None` - the loud stderr warning both drawing
+  commands print: the file, the parse error, and the command that shows it.
 - `_open_job_ids(store) -> list[str]` - the ids a repetition check needs, so a job
   that is open counts and a closed one does not.
 - `_read_brief(args) -> str` - returns the brief from words or `--brief-file`

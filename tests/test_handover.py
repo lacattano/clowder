@@ -16,6 +16,9 @@ from clowder.errors import StateError
 from clowder.state import DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from clowder.timeutil import now, now_iso, to_iso
 
+REPO = Path(__file__).resolve().parent.parent
+TEXT_SUFFIXES = {".md", ".py", ".toml", ".json", ".cfg", ".txt", ".mjs", ".yml", ".yaml"}
+
 SECTIONS = [
     "## What waits on the owner",
     "## In Flight",
@@ -267,6 +270,45 @@ class HandoverTest(unittest.TestCase):
             path,
             "the generated one is the newest, so it sorts after",
         )
+
+    def test_a_defect_reason_appears_exactly_once_in_the_working_tree(self) -> None:
+        # The owner's constraint: no fact in two places. A reason lives in the record
+        # and nowhere else - not in the handover, not in DESIGN.md, not in a doc. The
+        # repo is scanned, so a future copy of this sentence in any file fails here.
+        reason = "accepted because the owner quotes active time instead of wall clock"
+        self.defects.sighting(
+            "elapsed time is wall clock, not work",
+            state="accepted-workaround",
+            reason=reason,
+        )
+        self.store.save()
+        handover_path, _ = handover.write(self.store, self.defects)
+
+        self.assertEqual(self.defects.path.read_text(encoding="utf-8").count(reason), 1)
+        self.assertNotIn(reason, handover_path.read_text(encoding="utf-8"))
+
+        offenders = []
+        for path in REPO.rglob("*"):
+            if ".git" in path.parts or ".worktrees" in path.parts:
+                continue
+            if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if reason in text:
+                offenders.append(str(path.relative_to(REPO)))
+        self.assertEqual(offenders, [], "a defect reason lives in the record only")
+
+    def test_design_names_a_defect_by_its_id_and_never_by_its_reason(self) -> None:
+        # Decision 36 used to quote two defect lines from the handovers. A quoted
+        # defect is a second copy: the doc now points at the record instead.
+        design = (REPO / "DESIGN.md").read_text(encoding="utf-8")
+        self.assertNotIn("A reset drops the pane to the default model", design)
+        self.assertNotIn("A publish refused for a foreign identity", design)
+        self.assertIn("by its one line and its id", design)
+        self.assertIn("clowder defects show <id>", design)
 
     def test_last_activity_counts_a_defect_sighting(self) -> None:
         self.store.save()

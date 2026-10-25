@@ -666,12 +666,13 @@ checkout can move it, and the merge check above catches that.
 
 Seen 2026-10-25, measured from the files rather than felt: 28 days of carried work had five
 handover documents and 13 working days with none, including days of 54, 50, 58, 66, 28 and 44
-steps. "A reset drops the pane to the default model" was written in three handovers in a row and
-still bit. "A publish refused for a foreign identity" was in one, absent from the next two, and
-back in the last. Five items in the latest handover appear in no earlier one, and whether they
-were older and never written down cannot be known. The front door did not read the latest
-handover at session start; its own start order named a list of files, so reading it depended on
-memory.
+steps. One known defect was written in three handovers in a row and still bit; another was in one
+handover, absent from the next two, and back in the last. Both are in the handover files of
+2026-10-18, 2026-10-22 and 2026-10-25 and reach the defects record when it is seeded; they are not
+quoted here, because a defect has one home and this is not it. Five items in the latest handover
+appear in no earlier one, and whether they were older and never written down cannot be known. The
+front door did not read the latest handover at session start; its own start order named a list of
+files, so reading it depended on memory.
 
 Writing a thing down is not the mechanism that stops it. So the fact moves into the tool, and the
 document becomes a view of the tool:
@@ -706,6 +707,18 @@ document becomes a view of the tool:
   when the count moves, and keeps saying it where it is read: `clowder defects list --repeated`,
   `clowder start`, and the board's section that waits for the front door - not the section that
   waits for the owner, because opening the job is the front door's act.
+- **A reworded defect is a new one, by design.** Matching is on the exact words, so the same
+  defect written differently gets a new id and the count never rises. Do not fix that with fuzzy
+  matching: it would merge two real defects, which is worse than a miss. Fix it with what a person
+  can act on: `clowder defects list --like "<words>"` finds a line holding every one of those
+  words in any order, and `clowder start` prints the defects added in the last seven days so a
+  near-duplicate is visible before a new one is added. A total rephrase is still missed, and a
+  test pins that miss so the limit cannot be quietly forgotten.
+- **A broken record fails open.** `clowder start` and the board are drawn from the state, so a
+  malformed `defects.json` prints everything else, warns with the file and the parse error, and
+  exits 4 (`RECORD_UNREADABLE`); the board shows the warning in the front door's section. One
+  malformed file must not take away the page that says what is happening. `clowder defects list`
+  is the command that refuses, because reading the record is its job.
 - **No second copy.** The handover and DESIGN's Open section name a defect by its one line and its
   id; neither restates it. The test of the rule is mechanical: if a defect's text is found in two
   of the three places, one of them is wrong by construction. So DESIGN's Open section stopped
@@ -757,9 +770,11 @@ board (step 4), `/calm` (step 5).
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
 shape, a pointer to the reviewer's walkthrough, and the rules the front door runs by - say when
 you dispatch, ask for exactly one decision. The owner gate and the always-rules are not repeated
-here; the skill carries one pointer at the shipped `crew` skill. It opens with a reading order for
-a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh is cheap
-and the front door holds no state in its head.
+here; the skill carries one pointer at the shipped `crew` skill. It opens with one command for a
+fresh context - `clowder start`, which prints the handover and its age (stale said plainly), the
+owner's decisions, the steps in flight, the queue and the repeated defects - so a refresh is cheap
+and the front door holds no state in its head. (Decision 36 replaced an earlier list of files
+with that one command.)
 
 `skills/crew/SKILL.md` is the other half: the generic rules that hold for any crew, shipped so a
 fresh install has them. `code/AGENTS.md` is now the instance overlay beside the workspace - the

@@ -23,7 +23,11 @@ SETTLED = (FIXED, ACCEPTED)
 
 def defects_path(state_path: str | Path) -> Path
 def normalise_line(text: str) -> str
+def words(text: str) -> list[str]
+def matches_line(defect_line: str, query: str) -> bool
 def short_date(value: str | None) -> str
+def recently_seen(defects, days, *, at=None) -> list[Defect]
+def read_defects(store: DefectStore) -> tuple[list[Defect], str | None]
 
 @dataclass
 class Defect: ...
@@ -39,9 +43,21 @@ def describe(defect: Defect, *, open_jobs: Sequence[str] = ()) -> str
 - `normalise_line(text)` - the matching key: case and whitespace runs collapse, and
   punctuation at either end is dropped. The words in the middle count, so a
   different sentence is a different defect.
+- `words(text)` - lowercase runs of letters and digits, used by the word search.
+- `matches_line(defect_line, query)` - the `--like` search: every word of the query,
+  in any order. Exact words only, so a total rephrase is not found; a test pins that
+  miss. It is deliberately not fuzzy: merging two real defects is worse than a miss a
+  person can see.
 - `short_date(value)` - the `YYYY-MM-DD` part of a recorded moment, or `-`. The
   record keeps the whole moment so handovers can window it precisely; people read
   the date.
+- `recently_seen(defects, days)` - those first seen in the last `days` days, newest
+  first. `clowder start` prints these so a near-duplicate is visible before it is
+  added.
+- `read_defects(store)` - every defect, or no defects and the reason the file could
+  not be read. The drawing commands (`start`, the board) use it to fail open; a
+  malformed file must not take away the page. `clowder defects list` stays strict and
+  refuses, because reading the record is its job.
 - `merge_warning(defect)` - the line that says a repetition is now the front door's
   job: seen twice, not settled, no job. `None` when there is nothing to say.
 - `describe(defect, open_jobs=())` - one line for a list: id, count, last seen,
@@ -67,6 +83,8 @@ and `extra` (unknown fields from a newer copy, kept).
 - `get(id)` - one defect, or `StateError` naming the list command.
 - `find_by_line(line)` - the defect whose normalised line matches.
 - `repeated(open_jobs)` - the defects a second sighting obliges someone to act on.
+- `recent(days)` - the defects first seen in the last `days` days (seeded from the
+  strict loader; the drawing commands use the module-level safe reader).
 - `broken()` - `(key, why)` for entries that cannot be named: no id, an id that is
   not the key, or no line. The handover write refuses while one exists.
 - `sighting(line, *, job, state, reason)` - one read-modify-write under the lock.

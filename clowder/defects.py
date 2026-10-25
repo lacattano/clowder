@@ -22,14 +22,16 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from .errors import StateError
 from .state import file_lock
-from .timeutil import now_iso
+from .timeutil import now, now_iso, to_epoch
 
 SCHEMA_VERSION = 1
 
@@ -51,6 +53,29 @@ SETTLED = (FIXED, ACCEPTED)
 def defects_path(state_path: str | Path) -> Path:
     """The defects file that belongs to a state file: `defects.json` beside it."""
     return Path(state_path).with_name("defects.json")
+
+
+def words(text: str) -> list[str]:
+    """The words a defect line is searched by: lowercase runs of letters and digits.
+
+    Punctuation is a separator, not a character, so "doesn't" and "doesnt" split the
+    same way and a comma never hides a word.
+    """
+    return re.findall(r"[a-z0-9]+", normalise_line(text))
+
+
+def matches_line(defect_line: str, query: str) -> bool:
+    """Does the defect contain every word of the query? The `--like` search.
+
+    Exact words only, all of them, in any order: "reports close step" finds "a step
+    does not close when it reports". It cannot find a total rephrase that shares no
+    word, and it must not try: aggressive matching would merge two real defects, which
+    is worse than a miss a person can see. The miss is pinned by a test.
+    """
+    wanted = set(words(query))
+    if not wanted:
+        return False
+    return wanted <= set(words(defect_line))
 
 
 def normalise_line(text: str) -> str:
@@ -241,6 +266,16 @@ class DefectStore:
         self.load()
         return [d for d in self.all() if d.needs_action(open_jobs)]
 
+    def recent(self, days: int, *, at: datetime | None = None) -> list[Defect]:
+        """Defects first seen in the last `days` days, newest first.
+
+        `clowder start` shows these so a person adding a defect can see the shape of
+        what is already recorded - the only defence exact matching has against a
+        reworded duplicate.
+        """
+        self.load()
+        return recently_seen(self.all(), days, at=at)
+
     def broken(self) -> list[tuple[str, str]]:
         """Entries that cannot be a defect: no id, an id that is not its key, no line.
 
@@ -321,6 +356,29 @@ class DefectStore:
                 current.state = OPEN
             self._save()
         return current, created
+
+
+def recently_seen(
+    defects: Sequence[Defect], days: int, *, at: datetime | None = None
+) -> list[Defect]:
+    """Those first seen in the last `days` days, newest first."""
+    cutoff = (at or now()).timestamp() - days * 86400
+    kept = [defect for defect in defects if (to_epoch(defect.first_seen) or 0) >= cutoff]
+    return sorted(kept, key=lambda defect: defect.first_seen, reverse=True)
+
+
+def read_defects(store: DefectStore) -> tuple[list[Defect], str | None]:
+    """Every defect, or no defects and the reason the file could not be read.
+
+    The readers that draw a page - `clowder start` and the board - use this. A
+    malformed file must not take away the page that says what is happening in the
+    crew; `clowder defects list` is the command that refuses, because that command
+    exists to read the record.
+    """
+    try:
+        return store.all(), None
+    except (StateError, OSError) as exc:
+        return [], str(exc)
 
 
 def merge_warning(defect: Defect) -> str | None:

@@ -22,7 +22,16 @@ from . import __version__, audit, gitcmd, load
 from . import handover as handover_doc
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
-from .defects import ACCEPTED, HAS_JOB, DefectStore, merge_warning, short_date
+from .defects import (
+    ACCEPTED,
+    HAS_JOB,
+    DefectStore,
+    matches_line,
+    merge_warning,
+    read_defects,
+    recently_seen,
+    short_date,
+)
 from .defects import STATES as DEFECT_STATES
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
 from .marker import DEFAULT_SENDER, apply_marker
@@ -77,6 +86,16 @@ BOARD_REFRESH_MUX_TIMEOUT_S = 3.0
 # carries the body. A line longer than this is refused with the advice to use it,
 # so the board cannot fill with walls of text one item at a time.
 OWNER_ITEM_LIMIT = 120
+
+# Exit code for "the page is drawn, but the defects record could not be read". The
+# commands that draw - `start` and the board - fail open, because one malformed file
+# must not take away the page that says what is happening. `defects list` is the
+# command that refuses, with the error itself. This code says which happened.
+RECORD_UNREADABLE = 4
+
+# How far back `clowder start` shows defects a person has just added. A near-duplicate
+# is caught by eye, not by matching: a reworded line is a new id by design.
+RECENT_DEFECT_DAYS = 7
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -664,6 +683,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--repeated",
         action="store_true",
         help="only defects seen twice or more with no open job",
+    )
+    d_list.add_argument(
+        "--like",
+        metavar="WORDS",
+        help="only defects whose line holds every one of these words (exact words; "
+        "a total rephrase is not found, so read the list too)",
     )
     d_list.add_argument("--json", action="store_true")
     d_list.set_defaults(handler=cmd_defects_list)
@@ -3937,6 +3962,11 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     tasks = store.all()
     jobs = store.all_jobs()
     jobs_by_id = {job.id: job for job in jobs}
+    # The defects record fails open here: the page is drawn from state, and a note in
+    # the worker section names the file and the fault. `defects list` is the refusing
+    # command, so a broken record never hides the page that says what is happening.
+    defect_entries, defects_note = read_defects(_defect_store(config))
+    open_job_ids = [job.id for job in jobs if job.is_open]
     # A held change whose branch or held ref has moved past the reviewed commit is
     # not ready for the owner's walk: the reviewer checked an older commit. Record
     # the current tip so the board asks for a re-review, with both commits named.
@@ -3996,9 +4026,10 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         rereview=rereview,
         review_unconfirmed=review_unconfirmed,
         dropped=audit.read_actions(store.path, "queue-drop"),
-        repeated_defects=_defect_store(config).repeated(
-            [job.id for job in jobs if job.is_open]
-        ),
+        repeated_defects=[
+            defect for defect in defect_entries if defect.needs_action(open_job_ids)
+        ],
+        defects_note=defects_note,
     )
 
 
@@ -4009,28 +4040,32 @@ def cmd_board(args: argparse.Namespace) -> int:
     target = Path(args.out).expanduser() if args.out else _board_path(store)
     written = write_board(data, target)
 
+    if data.defects_note:
+        _warn_unreadable_record(data.defects_note)
+
     if args.json:
         _emit_json(
             {
                 "board": str(written),
                 "tasks": len(data.tasks),
                 "open": len(open_tasks(data.tasks)),
-                "jobs": len(data.jobs),
                 "agents": len(data.agents),
+                "jobs": len(data.jobs),
                 "queued": len(data.queued),
                 "live_ok": data.live_ok,
                 "stranded": sorted(data.stranded),
                 "risk_notes": data.risk_notes,
+                "defects_error": data.defects_note,
             }
         )
-        return 0
+        return RECORD_UNREADABLE if data.defects_note else 0
 
     print(written)
     if not data.live_ok and data.note:
         print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
-    return 0
+    return RECORD_UNREADABLE if data.defects_note else 0
 
 
 def _board_agents(config: Config, timeout_s: float = 15.0):
@@ -4218,6 +4253,8 @@ def cmd_defects_list(args: argparse.Namespace) -> int:
     defects = _defect_store(config)
     open_jobs = _open_job_ids(store)
     entries = defects.repeated(open_jobs) if args.repeated else defects.all()
+    if args.like:
+        entries = [defect for defect in entries if matches_line(defect.line, args.like)]
 
     if args.json:
         _emit_json(
@@ -4226,11 +4263,18 @@ def cmd_defects_list(args: argparse.Namespace) -> int:
                 "count": len(entries),
                 "path": str(defects.path),
                 "open_jobs": open_jobs,
+                "like": args.like,
             }
         )
         return 0
     if not entries:
-        if args.repeated:
+        if args.like:
+            print(
+                f"no defect holds every word of {args.like!r}. This is an exact-word "
+                "search: a total rephrase is not found, so read the list before adding a "
+                "new one."
+            )
+        elif args.repeated:
             print(
                 "no defect has been seen twice with no open job. A second sighting opens "
                 "a job or records an accepted workaround with the reason."
@@ -4259,6 +4303,11 @@ def cmd_defects_list(args: argparse.Namespace) -> int:
         f"\n{len(entries)} defect(s) in {defects.path}. "
         f"Read one in full with: {PROGRAM} defects show <id>"
     )
+    if args.like:
+        print(
+            f"Matched on words {args.like!r} only. A reworded defect shares no word and "
+            "will not be found; read the list before adding a new one."
+        )
     return 0
 
 
@@ -4322,17 +4371,26 @@ def cmd_start(args: argparse.Namespace) -> int:
     """What a fresh front door reads first, in one command.
 
     The handover and its age, with stale said plainly; the decisions that wait on
-    the owner; the steps in flight; the queue; and the defects seen twice with no
-    job. The order is the order to read them in, so a start order is one command
-    instead of a list of files a new session has to remember.
+    the owner; the steps in flight; the queue; the defects seen twice with no job;
+    and the defects added in the last week, so a reworded duplicate is visible to the
+    person who is about to add one. The order is the order to read them in, so a start
+    order is one command instead of a list of files a new session has to remember.
+
+    A malformed defects record fails open: everything else still prints, a loud
+    warning names the file and the parse error, and the exit code says the page was
+    drawn with the record unreadable. `clowder defects list` is the command that
+    refuses, because reading the record is its job.
     """
     config, store = _context(args)
     defects = _defect_store(config)
-    latest = handover_doc.latest(store, defects)
+    entries, defect_error = read_defects(defects)
+    # Staleness counts a defect sighting as work, but only if the record can be read.
+    latest = handover_doc.latest(store, defects if defect_error is None else None)
     decisions = handover_doc.owner_lines(store)
     in_flight = store.select(open_only=True)
     queued = len(store.all_queued())
-    repeated = defects.repeated(_open_job_ids(store))
+    repeated = [defect for defect in entries if defect.needs_action(_open_job_ids(store))]
+    recent = recently_seen(entries, RECENT_DEFECT_DAYS)
 
     if args.json:
         _emit_json(
@@ -4345,9 +4403,11 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "in_flight": [task.id for task in in_flight],
                 "queue": queued,
                 "repeated_defects": [defect.id for defect in repeated],
+                "recent_defects": [defect.id for defect in recent],
+                "defects_error": defect_error,
             }
         )
-        return 0
+        return RECORD_UNREADABLE if defect_error is not None else 0
 
     if latest.path is None:
         print(f"handover: none - {latest.why}")
@@ -4373,12 +4433,34 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     print(f"\nqueue: {queued} item(s) waiting to be sent")
 
+    if defect_error is not None:
+        _warn_unreadable_record(defect_error)
+        print("\ndefects: unreadable, so neither list is shown")
+        print(f"{INDENT}read the error with: {PROGRAM} defects list")
+        return RECORD_UNREADABLE
+
     print(f"\ndefects seen twice with no open job: {len(repeated)}")
     for defect in repeated:
         print(f"{INDENT}- {defect.id} {_clip(defect.line, 70)} ({defect.count} times)")
     if not repeated:
         print(f"{INDENT}(none)")
+
+    print(f"\ndefects added in the last {RECENT_DEFECT_DAYS} days: {len(recent)}")
+    for defect in recent:
+        print(f"{INDENT}- {defect.id} {_clip(defect.line, 70)}")
+    if not recent:
+        print(f"{INDENT}(none)")
     return 0
+
+
+def _warn_unreadable_record(error: str) -> None:
+    """The loud warning both drawing commands print, naming the file and the fault."""
+    print(
+        f"{PROGRAM}: warning: the defects record could not be read: {error}. "
+        "The page is drawn from everything else; "
+        f"`{PROGRAM} defects list` shows the error until it is fixed.",
+        file=sys.stderr,
+    )
 
 
 def cmd_config(args: argparse.Namespace) -> int:
