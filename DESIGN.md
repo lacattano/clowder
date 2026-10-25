@@ -750,8 +750,8 @@ scraped.
   whether re-running is cheap enough there, or whether that repo wants fewer spaces, more
   sharing, or a cleanup step between jobs.
 
-Eight defects found while using the tool on 2026-09-28. Recorded here so they outlive the
-conversation; none is fixed by the queue work.
+Nine defects found while using the tool, between 2026-09-25 and 2026-09-29. Recorded here so
+they outlive the conversation; none is fixed by the queue work.
 
 - **A task with no place.** (Fixed.) A step with no job now records the agent's live
   directory at dispatch, so a report names the folder the work actually ran in rather than the
@@ -789,6 +789,20 @@ conversation; none is fixed by the queue work.
   `dispatch --heavy` marks a step, only one heavy step is open at a time across the crew, and an
   opt-in `[gates]` threshold adds a check of the machine's own load (memory on Windows, load per
   CPU on Unix). A load that cannot be read fails open with a warning.
+- **A brief with no bounds on its search.** (Recorded in the front-door skill.) Seen on
+  2026-09-29: a brief asked a worker to "say what else on this machine still holds a copy of the
+  public half". The worker read that as a content search, and ran one over the whole home
+  directory - hidden files, ignore file off, every file's text, a thirty-minute cap. It burned
+  about 24 minutes of CPU. On this machine that is felt as a display fault, not as a slow command:
+  the owner saw dropped pixels and killed it by hand. The lesson is about the brief, not about that
+  worker: a search with no bounds means read everything, and a worker cannot tell a narrow
+  question from a wide one. Fix: the front-door skill states the rule, in "Bounds on a search" -
+  the bounds a search brief must name, the worked pair, and how to declare the step heavy. It is
+  not repeated here, because the skill is the copy a front door reads before it dispatches.
+  Nothing forbids a search: a bounded one is the normal way to answer this kind of question, and
+  the worker still runs it, not the front door. Why it is here: a heavy read on this machine is
+  felt by the owner as a display fault, and one worker's unbounded scan is felt by everyone - the
+  owner and every pane slow down together, so the cost does not land on the worker that spent it.
 
 - AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
   gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi
