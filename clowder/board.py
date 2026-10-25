@@ -17,6 +17,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+from .defects import Defect, short_date
 from .report import format_cost, format_tokens
 from .state import (
     CLOSED,
@@ -421,6 +422,9 @@ class BoardData:
     # Queue items a command dropped, oldest first, read from the audit file. This is
     # the page's history of leaving the queue: what was dropped, why, and by whom.
     dropped: list[dict[str, object]] = field(default_factory=list)
+    # Defects seen twice or more with no open job. They wait for the front door, not
+    # for the owner: opening the job is its act. One line and an id; never restated.
+    repeated_defects: list[Defect] = field(default_factory=list)
 
 
 def _e(value: object) -> str:
@@ -667,14 +671,28 @@ def waiting_on_you(data: BoardData) -> list[str]:
 
 
 def waiting_for_worker(data: BoardData) -> list[str]:
-    """Warnings for the front door: a step gone quiet, or a commit on no branch.
+    """Warnings for the front door: a defect that needs a job, a step gone quiet,
+    or a commit on no branch.
 
     The queued pile is not here any more - it is the To Do column, and the live
     status of a running step is on its In Progress card. What stays is the warning
-    a card cannot carry: an agent that vanished, and a commit whose change cannot
-    be judged. None of these needs the owner.
+    a card cannot carry: an agent that vanished, a commit whose change cannot be
+    judged, and a defect seen twice with no job. None of these needs the owner.
     """
     lines: list[str] = []
+
+    # A second sighting of a defect is not cleared by its count going up. Opening the
+    # job is the front door's act, so this list is here and not in the owner's
+    # section. One line and an id: the detail stays in `clowder defects show`.
+    for defect in data.repeated_defects:
+        lines.append(
+            f"<b>seen twice, no job</b> <span class='id'>{_e(defect.id)}</span> "
+            f"{_e(defect.line)} "
+            f"<span class='why'>seen {_e(str(defect.count))} times, last "
+            f"{_e(short_date(defect.last_seen))}. A second sighting opens a job or "
+            "records an accepted workaround with the reason; bumping the count is "
+            "not enough.</span>"
+        )
 
     for task in open_tasks(data.tasks):
         if task.age_seconds < QUIET_AFTER_SECONDS:

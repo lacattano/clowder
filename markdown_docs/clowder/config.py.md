@@ -66,8 +66,11 @@ Methods:
   `repos` wins. A string that looks like a path (absolute, starts with `.`, or
   contains `/` or `\`) is used as-is. Otherwise it is resolved under
   `workspace_root`; with no root set this raises `ConfigError`.
+- `defects_path` (property) -> `Path` - the one defects record, `defects.json`
+  beside the state file. The record travels with the state file, so a test or a
+  second machine that points at one state path gets both.
 - `as_dict() -> dict[str, object]` - the settings as plain data, ready to print or
-  serialize.
+  serialize. It includes `defects_path`.
 
 Module constants: `DEFAULT_MUX_BIN`, `DEFAULT_MUX_PROMPT_ARGV`, `STATE_FILENAME`,
 `DEFAULT_DELIVERY`, `DELIVERY_MODES`, `BUILT_DELIVERY_MODES`, `DEFAULT_GIT_NAME`,

@@ -15,19 +15,21 @@ If you find yourself writing code or reading a repo to answer the user, you have
 
 ## Starting after a refresh
 
-A fresh context is normal, not a failure. The tool holds the state, so read it in this order, then
-tell the owner what it says.
+A fresh context is normal, not a failure. The state is in the tool, and one command shows what a
+fresh you needs, in the order to read it:
 
-1. `clowder inbox` - what workers have reported and nobody has read. First, because a finished
-   step is the one thing already waiting.
-2. `clowder queue list` - decisions you made but could not send yet.
-3. `clowder tasks --open` - the steps still in flight, and which are waiting on a worker.
-4. `clowder job list` - each line of work, its branch, and whether the owner's pass and merge
-   word are recorded.
-5. `clowder agents` - the live roster. Read it before every dispatch; never carry names from
-   earlier.
-6. The Open section of `DESIGN.md` - the known defects and open questions, so you do not
-   re-decide them.
+```
+clowder start
+```
+
+It prints: the handover file and its age, and says plainly when it is STALE and why; the
+decisions that wait on the owner; the steps in flight; the queue count; and the defects seen
+twice with no job. Read the handover it names. If it says stale, work happened after that
+handover was written, so treat its "in flight" and "landed" sections as out of date and write
+the next one before the session ends.
+
+Run `clowder inbox` first when `start` shows a step you expected to be finished: a report can
+land between the two, and `inbox` closes the step it finds.
 
 Then one message to the owner, in his terms: what waits on him, what is in flight, and what
 reported while nobody was looking.
@@ -50,6 +52,25 @@ The newer pieces, so a fresh you does not have to discover them:
 What a refresh cannot recover: anything you kept only in your own words. If it is not on a job, a
 task or a queue item, a fresh you will not know it.
 
+### The handover and the defects record
+
+Two more mechanisms, so one fact lives in one place:
+
+- **The handover is generated.** `clowder handover write` composes it from the record and names
+  the file it wrote, dated. Do not write one by hand, and do not restate a defect in it. Its only
+  hand-written part is `handover-notes.md` beside the state file, capped at ten lines: quirks of
+  the machine or the person that no command can derive. Write the handover before a reset, not
+  after one.
+- **A defect has one home.** Record what cost time with `clowder defects add --line "..."`, in
+  the owner's words, at the moment you see it. Add `--job <id>` when a job fixes it, `--status
+  fixed` when the fix lands, or `--status accepted-workaround --reason TEXT` when the owner
+  accepts the cost. If it is not in that record it is not known, and nothing else - not the
+  handover, not DESIGN.md, not your own words - stores one.
+- **A second sighting is not a count.** When a defect is seen twice with no open job, the tool
+  lists it in `clowder defects list --repeated`, in `clowder start`, and on the board in the
+  section that waits for you. Open a job for it or record the accepted workaround with its
+  reason. Bumping the count is not enough.
+
 ## The commands
 
 ```
@@ -70,6 +91,11 @@ clowder step report <id> --headline TEXT [--answer-file PATH] [--by NAME]
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id> [--job ID]
+clowder start [--json]
+clowder defects add --line TEXT [--job ID] [--status open|has-job|fixed|accepted-workaround] [--reason TEXT]
+clowder defects list [--repeated]
+clowder defects show <id>
+clowder handover write
 clowder agents
 clowder agent reset <agent>
 clowder checkouts [repo...] [--fetch]

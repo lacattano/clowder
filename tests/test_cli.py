@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -16,7 +17,7 @@ from clowder import cli, gitcmd, load
 from clowder.board import BoardData, waiting_on_you
 from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
-from clowder.timeutil import now_iso
+from clowder.timeutil import now_iso, to_iso
 from tests.support import (
     clean_env,
     default_usage,
@@ -5553,6 +5554,195 @@ class CliTest(unittest.TestCase):
         self.assertIn(parked.park_commit[:7], err)
         merge.assert_not_called()
         self.assertIsNone(StateStore(self.state).get_job(job_id).merged_at)
+
+    # -- the learning loop: one record, a generated handover, one start command --
+
+    def test_start_names_the_handover_and_its_age_and_marks_it_stale(self) -> None:
+        # A handover that is stale must read as stale. Before this, a handover that
+        # was never written was silently absent, and nobody noticed.
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("handover: none", out)
+        self.assertIn("no handover exists", out)
+
+        days = 3
+        moment = datetime.now(UTC) - timedelta(days=days)
+        path = self.root / f"HANDOVER-{moment.date().isoformat()}.md"
+        path.write_text(
+            f"# Handover - {moment.date().isoformat()}\n\n"
+            f"generated: {to_iso(moment)}\n\nno work recorded since.\n",
+            encoding="utf-8",
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn(str(path), out)
+        self.assertIn(f"{days} day(s) old", out)
+        self.assertIn("current", out)
+
+        # A session ran after it (a dispatch is recorded), and no new handover came.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("STALE", out)
+        self.assertIn("no handover has been written since", out)
+        self.assertIn("clowder handover write", out)
+
+        # And what waits on the front door is named, from the record.
+        self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a step does not close when it reports",
+            env=self.fake_env(),
+        )
+        self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a step does not close when it reports",
+            env=self.fake_env(),
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects seen twice with no open job: 1", out)
+        self.assertIn("d-0001", out)
+        self.assertIn("steps in flight: 1", out)
+        self.assertIn("t-0001", out)
+
+    def test_the_defects_commands_write_and_read_one_record(self) -> None:
+        code, out, err = self.cli(
+            "defects", "add", "--line", "one line only", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001 recorded", out)
+        # The next sighting of the same words is the same defect, punctuation and
+        # case included; a second sighting with no job is the front door's to act on.
+        code, out, err = self.cli(
+            "defects", "add", "--line", "One line only.", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("seen again: 2 times", out)
+        self.assertIn("opens a job or records an accepted workaround", out)
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn("one line only", out)
+
+        code, out, err = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+
+        code, out, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("one line only", out)
+        self.assertIn("2", out)
+
+        code, _, err = self.cli("defects", "show", "d-9999", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("no defect", err)
+
+        # One record, beside the state file. Nothing else stores a defect.
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        self.assertEqual(list(stored["defects"]), ["d-0001"])
+
+    def test_a_defect_needs_one_line_a_reason_for_an_acceptance_and_a_real_job(self) -> None:
+        code, _, err = self.cli("defects", "add", "--line", "one\ntwo", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("one line", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--status",
+            "accepted-workaround",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--reason", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--status",
+            "has-job",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--job", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--job",
+            "j-9999",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("j-9999", err)
+
+    def test_handover_write_names_the_file_and_refuses_a_defect_with_no_id(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.cli("defects", "add", "--line", "a quirk found today", env=self.fake_env())
+        code, out, err = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        today = datetime.now(UTC).date().isoformat()
+        path = self.root / f"HANDOVER-{today}.md"
+        self.assertIn(str(path), out, "the command names the file it wrote")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(today, text)
+        self.assertIn("d-0001", text)
+        self.assertIn("a quirk found today", text)
+        self.assertNotIn("## Tool quirks", text, "the old hand-written shape is gone")
+
+        # A hand-edited entry with no id stops it, and the file already there stays.
+        broken = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        broken["defects"]["d-0002"] = {
+            "line": "an entry with no id",
+            "first_seen": "2026-10-25T09:00:00Z",
+            "last_seen": "2026-10-25T09:00:00Z",
+        }
+        (self.root / "defects.json").write_text(json.dumps(broken), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+        code, _, err = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("d-0002", err)
+        self.assertIn("no id", err)
+        self.assertEqual(path.read_text(encoding="utf-8"), before, "nothing was written")
+
+    def test_handover_write_twice_for_one_session_does_not_duplicate(self) -> None:
+        self.cli("defects", "add", "--line", "a quirk found today", env=self.fake_env())
+        first = self.cli("handover", "write", env=self.fake_env())
+        second = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(first[0], 0, first[2])
+        self.assertEqual(second[0], 0, second[2])
+        self.assertIn("replaced the handover already written today", second[1])
+        files = sorted(self.root.glob("HANDOVER-*.md"))
+        self.assertEqual(len(files), 1)
+        text = files[0].read_text(encoding="utf-8")
+        self.assertEqual(text.count("d-0001"), 1)
+        self.assertEqual(text.count("## What waits on the owner"), 1)
+
+    def test_the_board_shows_a_repeated_defect_for_the_front_door(self) -> None:
+        self.cli("defects", "add", "--line", "a quirk with no job", env=self.fake_env())
+        self.cli("defects", "add", "--line", "a quirk with no job", env=self.fake_env())
+        self.cli("board", env=self.fake_env())
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = html.split("Waiting for a worker", 1)[1].split("</section>", 1)[0]
+        needs = html.split("Waiting on you", 1)[1].split("</section>", 1)[0]
+        self.assertIn("seen twice, no job", worker)
+        self.assertIn("d-0001", worker)
+        self.assertNotIn("seen twice, no job", needs, "not the owner's act")
 
 
 if __name__ == "__main__":

@@ -108,8 +108,9 @@ def write_board(data: BoardData, path: str | Path) -> Path
 - `names_the_merge(text) -> bool` - does an owner item name the merge, so it stands in
   for the derived "your word" line on its job? The literal word only: a miss shows
   the same decision twice, a false hit would hide one.
-- `waiting_for_worker(data)` - warnings for the front door: a step gone quiet, or a
-  commit on no branch.
+- `waiting_for_worker(data)` - warnings for the front door: a defect seen twice with
+  no job, a step gone quiet, or a commit on no branch. The defect list is here and
+  not in the owner's section because opening the job is the front door's act.
 - `render_board(data)` - the whole page as one self-contained HTML string.
 - `write_board(data, path)` - writes `render_board(data)` to `path` (creating
   parents) and returns the `Path`.
