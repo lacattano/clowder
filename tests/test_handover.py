@@ -18,6 +18,30 @@ from clowder.timeutil import now, now_iso, to_iso
 
 REPO = Path(__file__).resolve().parent.parent
 TEXT_SUFFIXES = {".md", ".py", ".toml", ".json", ".cfg", ".txt", ".mjs", ".yml", ".yaml"}
+# Directories a scan of the tree skips. Matched on the path *relative to the root*,
+# so a checkout that itself lives under a .worktrees/ folder is scanned normally:
+# matching any part of the absolute path skipped every file in such a checkout, which
+# is how this scan passed here and failed on CI.
+SKIP_PARTS = {".git", ".worktrees", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
+
+
+def files_holding(root: Path, needle: str) -> list[str]:
+    """Every text file under `root` whose contents hold `needle`, as relative names."""
+    found: list[str] = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if SKIP_PARTS.intersection(relative.parts):
+            continue
+        if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if needle in text:
+            found.append(relative.as_posix())
+    return found
+
 
 SECTIONS = [
     "## What waits on the owner",
@@ -273,9 +297,12 @@ class HandoverTest(unittest.TestCase):
 
     def test_a_defect_reason_appears_exactly_once_in_the_working_tree(self) -> None:
         # The owner's constraint: no fact in two places. A reason lives in the record
-        # and nowhere else - not in the handover, not in DESIGN.md, not in a doc. The
-        # repo is scanned, so a future copy of this sentence in any file fails here.
-        reason = "accepted because the owner quotes active time instead of wall clock"
+        # and nowhere else - not in the handover, not in DESIGN.md, not in a doc.
+        #
+        # Assembled from parts, not written as a literal: a literal in this file is a
+        # second copy, and the scan below would (rightly) find this test itself. That
+        # is the shape that went red on CI while passing on the machine that wrote it.
+        reason = "accepted " + "because the owner quotes " + "active time instead of wall clock"
         self.defects.sighting(
             "elapsed time is wall clock, not work",
             state="accepted-workaround",
@@ -286,20 +313,26 @@ class HandoverTest(unittest.TestCase):
 
         self.assertEqual(self.defects.path.read_text(encoding="utf-8").count(reason), 1)
         self.assertNotIn(reason, handover_path.read_text(encoding="utf-8"))
+        # The scan must reach this very file, or it proves nothing: skipping the
+        # checkout because its path holds .worktrees/ is how it passed here and failed
+        # on CI. This assertion fails if the scan goes blind again.
+        self.assertIn(
+            "tests/test_handover.py",
+            files_holding(REPO, "test_a_defect_reason_appears_exactly_once"),
+        )
+        self.assertEqual(
+            files_holding(REPO, reason), [], "a defect reason lives in the record only"
+        )
 
-        offenders = []
-        for path in REPO.rglob("*"):
-            if ".git" in path.parts or ".worktrees" in path.parts:
-                continue
-            if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if reason in text:
-                offenders.append(str(path.relative_to(REPO)))
-        self.assertEqual(offenders, [], "a defect reason lives in the record only")
+        # And the catcher works: a document that repeats the reason is found. The tree
+        # is built by the test in its own temp directory, so no machine's home
+        # directory is read and the result is the same on a clean runner.
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "doc.md").write_text("a copy: " + reason + "\n", encoding="utf-8")
+            (tree / "notes").mkdir()
+            (tree / "notes" / "kept.md").write_text("nothing to see\n", encoding="utf-8")
+            self.assertEqual(files_holding(tree, reason), ["doc.md"])
 
     def test_design_names_a_defect_by_its_id_and_never_by_its_reason(self) -> None:
         # Decision 36 used to quote two defect lines from the handovers, then to point
