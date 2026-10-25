@@ -58,6 +58,7 @@ clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT]
 clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
+clowder job park <job-id> [--by NAME]
 clowder job close <job-id> [--delete-branch]
 clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--heavy] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
@@ -65,6 +66,7 @@ clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
 clowder owner <id> --item TEXT [--detail TEXT|--detail-file PATH] | --clear
 clowder step abandon <id> --why TEXT
+clowder step report <id> --headline TEXT [--answer-file PATH] [--by NAME]
 clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id> [--job ID]
@@ -85,6 +87,12 @@ Run `clowder`. From a checkout with nothing installed, `py -3.15 -m clowder`.
 - **`job pin <job-id>`** pins the job's saved commit into the reviewer's copy. Use it when the
   writer's space has moved on to a later job and `job handover` cannot reach the branch. It
   verifies the copy holds the commit and prints the branch and commit it pinned.
+- **`job park <job-id>`** frees the space of a job that is passed, published and waiting only
+  on the owner's merge word. The branch and the published commit stay on the record, the
+  checkout goes back to the base, and the next job starts in the same space - no second pane,
+  no second install. Run it after `job publish`, when nothing is left to edit. `job merge` then
+  refuses if the branch has moved since it was parked, because the owner's word was for the
+  commit he passed.
 - **`checkouts`** prints one line per checkout - main and each worktree - saying whether it is
   current, behind its remote, or has no remote. `--fetch` refreshes the comparison first. Open a
   job from a stale base is refused until the checkout is pulled.
@@ -95,6 +103,10 @@ Run `clowder`. From a checkout with nothing installed, `py -3.15 -m clowder`.
   machine restarted - as abandoned, keeps the reason, leaves the answer empty, and frees its job
   for the next step. It refuses without a reason. It writes one audit line, like the state repair.
   Do not use `--force` for this; `--force` skips the branch and clean-tree checks with it.
+- **`step report <id> --headline TEXT`** is what the worker runs to close its own step: one
+  line, plus `--answer-file` when the answer is long. It is not your command and you do not need
+  it for the usual path - `inbox` closes a reported step from the session, and the read still
+  works afterwards - but a step that closes its own record is never one you must read to clear.
 
 - **`agents`** is the live roster. Read it before every dispatch. Never carry a list of agent
   names, panes or bus addresses from earlier in the session.
@@ -102,9 +114,10 @@ Run `clowder`. From a checkout with nothing installed, `py -3.15 -m clowder`.
   never tell the user the work is done.
 - **`tasks`** shows what is queued, what is underway, and what has no answer yet.
 - **`inbox`** is the fallback. It lists the steps that have reported since you last looked,
-  with a line of the answer. A worker sends its report over the agent bus when it finishes, so
-  trust that message first; run `inbox` when a send may have failed, or when a worker may have
-  gone quiet.
+  with a line of the answer, and it closes each of them on its report, so their jobs are free
+  for the next step without a read. A worker sends its report over the agent bus when it
+  finishes, so trust that message first; run `inbox` when a send may have failed, or when a
+  worker may have gone quiet.
 - **`report <id>`** reads the worker's own Pi session file: usage, cost, model, and the last
   thing it said in prose. It is a read, not a scrape.
 
@@ -395,10 +408,11 @@ Re: <the question it answers>
 - `clowder owner <id> --item TEXT [--detail TEXT|--detail-file PATH]` records one line that
   waits on the owner when no other field carries it, such as a report you are holding for him.
   Write it in his words, names first, and say where he does it (this chat, a pull-request page).
-  The board numbers every question waiting on him, this kind and an open decision alike, so he
-  can answer with a number. `--clear` removes it when he answers. Record it the moment you
-  decide to hold something for him; the board's owner section can only show what a command
-  recorded.
+  The item is a single line of at most 120 characters, and a longer one, or one with a line
+  break, is refused: it is the heading, not the letter. The board numbers every question
+  waiting on him, this kind and an open decision alike, so he can answer with a number.
+  `--clear` removes it when he answers. Record it the moment you decide to hold something for
+  him; the board's owner section can only show what a command recorded.
 - `--detail` (or `--detail-file` for a long one) carries the full body behind the one line: what
   the decision is, the options, what each costs, and your recommendation. One line is for the
   board; the detail is for him. The board renders it in full, wrapped, with nothing clipped. It

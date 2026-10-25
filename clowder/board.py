@@ -94,7 +94,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .pill.bad { color: var(--warn); border-color: var(--warn); }
 .nothing { color: var(--muted); margin: 0; }
 .why { display: block; color: var(--muted); font-size: .85rem; }
-.owner-detail { white-space: pre-wrap; margin: .35rem 0 0; color: var(--ink); }
+/* The heading of a question, then the body under it. The item is one line by rule,
+   so it wraps as a heading; the detail keeps its own line breaks and is never cut. */
+.owner-title { font-weight: 600; overflow-wrap: anywhere; }
+.owner-detail {
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: .35rem 0 0;
+  color: var(--ink); font-size: .92rem;
+}
 ul { margin: 0; padding-left: 1.1rem; }
 li { margin: .25rem 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
@@ -519,6 +525,19 @@ def front_door_label(data: BoardData) -> str:
     return data.front_door_name or "the front door"
 
 
+def names_the_merge(text: str) -> bool:
+    """Does an owner item name the merge word, so it is the merge decision itself?
+
+    The board derives a "your word" line for a job that waits on the merge word, and
+    an owner item can be the same decision in the front door's words. The two are
+    one decision shown twice, and the item is the one he answers. A word check is
+    the narrowest rule that can tell that apart from an item about something else on
+    the same job: a miss shows a duplicate (noise), a false hit could hide a
+    decision, so only the explicit word counts.
+    """
+    return "merge" in _flat(text).lower()
+
+
 def waiting_on_you(data: BoardData) -> list[str]:
     """Only what the owner must do: a decision, a review to merge, work at risk.
 
@@ -531,8 +550,16 @@ def waiting_on_you(data: BoardData) -> list[str]:
     # with `owner --item` or as an open decision on a report. One sequence, so a
     # number names one question on the whole page.
     questions: list[tuple[str, str]] = []
+    # A job whose merge word is the only gate left, already named by an owner item.
+    # That item is the line he reads and answers, so the derived merge line below
+    # must not repeat the same decision a second time. Only an item that names the
+    # merge counts: an item about something else on the same job is a different
+    # decision, and suppressing the merge line would hide one he must still give.
+    named_by_item: set[str] = set()
     for task in data.tasks:
         if task.owner_item and task.status != CLOSED:
+            if task.job and names_the_merge(task.owner_item):
+                named_by_item.add(task.job)
             detail = (
                 f"<div class='owner-detail'>{_e(task.owner_detail)}</div>"
                 if task.owner_detail
@@ -541,7 +568,9 @@ def waiting_on_you(data: BoardData) -> list[str]:
             questions.append(
                 (
                     task.owner_item_at or task.created_at,
-                    f"{_full(task.owner_item or '')} "
+                    # The item is the heading; the detail is the body under it. They
+                    # are rendered differently so a heading cannot become a page.
+                    f"<span class='owner-title'>{_full(task.owner_item or '')}</span> "
                     f"<span class='why'>your move, [{_e(task.id)}]</span>{detail}",
                 )
             )
@@ -620,7 +649,12 @@ def waiting_on_you(data: BoardData) -> list[str]:
         if not job.is_open:
             continue
         open_steps = [task for task in data.tasks if task.job == job.id and task.is_open]
-        if not open_steps and job.has_pass and not job.has_merge_word:
+        if (
+            not open_steps
+            and job.has_pass
+            and not job.has_merge_word
+            and job.id not in named_by_item
+        ):
             reviewed_by = f" was reviewed by {_e(job.reviewer)}" if job.reviewer else ""
             lines.append(
                 f"<b>your word</b> {_e(job.name_in_words)}{reviewed_by} "
@@ -746,7 +780,9 @@ def _job_fields(job: Job, state: str) -> dict[str, str]:
 
 def _step_state_in_words(task: Task) -> str:
     """Where a step is, in words, derived from what it holds. Never stored."""
-    if task.status == REPORTED:
+    if task.status == REPORTED or (task.is_closed and task.answer):
+        # A step that reported and closed itself on that report still answered. The
+        # answer is on the record, so it is not "closed, no answer came".
         return "answered"
     if task.status == FAILED:
         # A dispatch whose send failed. It stopped, so it is never called in
@@ -985,6 +1021,8 @@ def _job_details(job: Job) -> str:
         bits.append(f"reviewer {job.reviewer}")
     bits.append(f"pass {'yes' if job.has_pass else 'no'}")
     bits.append(f"word {'yes' if job.has_merge_word else 'no'}")
+    if job.parked_at:
+        bits.append(f"parked at {(job.park_commit or job.commit or '')[:7]}")
     return (
         "<details class='more'><summary>details</summary>"
         f"<div class='full'>{_e(' | '.join(bits))}</div></details>"

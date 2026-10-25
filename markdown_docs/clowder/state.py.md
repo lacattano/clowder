@@ -50,11 +50,13 @@ Key fields: `id`, `label`, `title`, `effect`, `labels`, `repo`, `repo_path`,
 `commit`, `reviewer`, `review_commit`, `handed_over_at`, `released_at`,
 `held_ref`, the owner's words (`pass_shown`, `pass_answer`, `pass_at`, `pass_by`,
 `pass_commit`, `merge_word`, `merge_word_at`, `merge_word_by`), `published_at`,
-`merged_at`, `extra`.
+`merged_at`, `parked_at`, `park_commit`, `extra`.
 
 Properties and methods:
 
 - `is_open` (property) -> `bool`.
+- `is_parked` (property) -> `bool` - a published job that released its checkout while
+  it waits on the merge word.
 - `name_in_words` (property) -> `str` - the change named the owner's way
   (`title`, else `label`).
 - `effect_in_words` (property) -> `str` - one line on what the change does, else

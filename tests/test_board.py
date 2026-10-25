@@ -310,6 +310,11 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("A: 14 days, costs X.", waiting[0])
         self.assertIn("costs Y.", waiting[0])
         self.assertIn("Recommend A. " * 60, waiting[0], "the full detail, not a clip")
+        self.assertIn(
+            "costs X." + chr(10) + "B: 30 days",
+            waiting[0],
+            "the detail keeps its own line breaks instead of being flattened",
+        )
 
     def test_an_owner_item_without_a_detail_has_no_detail_body(self) -> None:
         waiting = waiting_on_you(
@@ -341,8 +346,10 @@ class WaitingTest(unittest.TestCase):
             "t-0002", owner_item="choose C or D", owner_item_at="2026-10-01T11:00:00Z"
         )
         waiting = waiting_on_you(data(tasks=[second, first]))
-        self.assertIn("<b>1.</b> choose A or B", waiting[0])
-        self.assertIn("<b>2.</b> choose C or D", waiting[1])
+        # The item is the heading: numbered, then the line he reads, then the
+        # "your move" note under it. The class is what makes it a heading.
+        self.assertIn("<b>1.</b> <span class='owner-title'>choose A or B</span>", waiting[0])
+        self.assertIn("<b>2.</b> <span class='owner-title'>choose C or D</span>", waiting[1])
 
     def test_an_uncheckable_commit_is_a_worker_note_not_a_warning(self) -> None:
         notes = data(tasks=[task()], risk_notes={"t-0001": "unknown"})
@@ -379,6 +386,27 @@ class WaitingTest(unittest.TestCase):
         )
         self.assertIn("empty change", empty)
         self.assertNotIn("could not check", empty)
+
+    def test_an_owner_item_naming_the_merge_is_the_only_line(self) -> None:
+        # One decision, one line: an item that names the merge stands in for the
+        # derived "your word" line on the same job.
+        passed = job(pass_at=now_iso(), published_at=now_iso())
+        item = task("t-0001", status=REPORTED, owner_item="merge the refund change")
+        waiting = waiting_on_you(data(jobs=[passed], tasks=[item]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("owner-title", waiting[0])
+        self.assertNotIn("your word", waiting[0])
+
+    def test_an_item_about_another_thing_does_not_hide_the_merge_line(self) -> None:
+        # The merge word is still his to give, so it must still be shown. Only an
+        # item that names the merge stands in for it; a false hit would hide a
+        # decision, which is worse than showing one twice.
+        passed = job(pass_at=now_iso(), published_at=now_iso())
+        item = task("t-0001", status=REPORTED, owner_item="choose the colours")
+        waiting = waiting_on_you(data(jobs=[passed], tasks=[item]))
+        self.assertEqual(len(waiting), 2)
+        self.assertIn("choose the colours", " ".join(waiting))
+        self.assertIn("your word", " ".join(waiting))
 
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
@@ -687,6 +715,26 @@ class KanbanTest(unittest.TestCase):
         self.assertIn("j-0002", done, "a closed job is Done")
         self.assertIn("t-0002", done, "an answered step with no job is Done")
         self.assertIn("t-0003", done, "an abandoned step is kept in Done, never hidden")
+
+    def test_a_step_closed_on_its_report_reads_answered(self) -> None:
+        # A step that reports now closes itself, so a closed status alone would
+        # read "closed, no answer came" - the opposite of what happened.
+        html = render_board(
+            data(
+                tasks=[
+                    task(
+                        "t-0001",
+                        job=None,
+                        status=CLOSED,
+                        answer="the refund page is missing",
+                        closed_at="2026-09-27T10:00:00Z",
+                    )
+                ]
+            )
+        )
+        done = html[html.index("rows-done") :]
+        self.assertIn("answered", done)
+        self.assertNotIn("no answer came", done)
 
     def test_a_job_and_its_step_are_one_card(self) -> None:
         html = render_board(data(jobs=[job("j-0001")], tasks=[task("t-0001", job="j-0001")]))

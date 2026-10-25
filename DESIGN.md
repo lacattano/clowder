@@ -580,6 +580,88 @@ remote-pi 0.7.0 has no shell `send`; until it does, a machine that wants the bus
 `[bus] send_argv` to a bridge it trusts. With no bus configured the collision is still stopped,
 by the guard.
 
+### 33. A step that reports closes itself
+
+Seen 2026-10-24: a worker's report reached the record only when the front door read it. Until
+then the step still said `dispatched`, and the one-open-step guard refused the next step on the
+job. The way past was to read a finished report for its side effect. It happened nine times in
+one day, and each time the workaround was to read the report for a side effect.
+
+The tool cannot see the front door's bus inbox, but it holds the other half of every report: the
+answer stays in the worker's own session, which is what the marker already tells the worker. So
+there are two intakes, and either closes the step:
+
+- `clowder step report <id> --headline TEXT [--answer-file PATH]` is the worker closing its own
+  record. One line, plus the file when the answer is long. It is the exception to "the tool never
+  records an answer for the worker": the worker wrote it, and it carries `answer_source: step`
+  or `file`.
+- `clowder inbox` closes every open step whose worker has settled and left an answer, on the
+  evidence it already read. `answer_source: session`.
+
+Either way the record is what `report` would have written - the answer, the usage window, the
+model, the commit - and one audit line, action `step-report`, with the same fields as a
+`step-close` line. The status becomes `closed` with `reported_at` set, so `is_open` is false, the
+one-open-step, heavy-slot and reset guards free themselves, and the board's Done column stops
+calling finished work "in progress". A closed step that has an answer reads `answered`, not
+`closed, no answer came`.
+
+Reporting twice closes once. A step that is not open is not swept, and `step report` on a closed
+step prints "already closed" and changes nothing, so a retried report cannot write a second
+close, a second timestamp or a second audit line. A read of a closed step does not reopen it.
+
+What it does not do: it does not decide the report was good. A worker that answers in one line
+and stops is closed as reported. The read still shows the whole answer, and the front door still
+reads the report it must act on - it just no longer reads it to clear a record.
+
+### 34. The owner item is a heading, and the detail is the body
+
+Seen 2026-10-24, in his words: the board "shows a massive wall of text". An owner item was one
+field, so everything went into it: the question, the options, the costs and the recommendation.
+
+- `owner --item` is one line, at most 120 characters. A line break or a longer line is refused
+  with the advice to use `--detail`, so the enforcement sits where the text is recorded and the
+  board cannot refill one item at a time. A record written by an older copy is still rendered in
+  full; the rule binds new writes, it does not rewrite the past.
+- The board renders the item as a heading (`.owner-title`, bold, wrapping) and the detail as a
+  body under it (`.owner-detail`, `pre-wrap`, wrapping, never clipped). The detail keeps its own
+  line breaks; the item is flattened, because it is one line.
+- One decision is shown once. If an owner item on a job names the merge, the derived "your
+  word" line for that job is skipped: the item is the line he reads and answers, so the two
+  would be the same decision twice. The check is the literal word, because a miss shows a
+  duplicate and a false hit would hide a decision - and hiding is the worse failure. An item
+  about something else on the same job leaves the merge line in place.
+
+### 35. A published job parks its branch and frees its space
+
+Seen 2026-10-24: a passed, published job waiting on the owner's merge word held its checkout. A
+new job in the same repo was refused, and the only way forward was a second pane - 241 MB to
+1.9 GB of worktree for a job nobody is editing.
+
+The mechanism is the release this tool already has, applied to the last waiting state. `job
+handover` and `job close` both detach a space at the base and keep the branch; `job park` does
+the same for a job whose only remaining gate is the owner's word:
+
+- It refuses unless the job is open, published, has no merge word yet, and has no open step. An
+  unpublished or unsigned job is not waiting on him yet, and a job with the word is merged, not
+  parked.
+- It records `parked_at` and `park_commit` (the branch tip), sets `released_at`, and detaches the
+  space at the base. The branch is kept, so the commit is reachable and the pull request is
+  untouched. `job open` already gates on a job whose space is checked out, so the next job starts
+  there. One branch per checkout still holds: parking releases the checkout, it does not
+  multiplex it.
+- A step cannot be sent to a parked job: its checkout is released, so a step would read
+  whatever branch came next. The refusal names the merge command instead.
+- One audit line, action `job-park`, with the branch and the commit.
+- `job merge` on a parked job refuses if the branch no longer points at `park_commit`. The
+  owner's word was for the commit he passed, so a moved branch is code he has not seen: the fix
+  is a fresh walkthrough and pass, or moving the branch back - never a merge of the new tip. A
+  job that was never parked is checked exactly as before, because only a recorded `park_commit`
+  turns the check on.
+
+What happens if the parked branch moves: nothing moves it from inside the crew. The space is
+released, so no pane holds it, and the branch is not checked out anywhere. Only a hand-made
+checkout can move it, and the merge check above catches that.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from

@@ -13,8 +13,10 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd, load
+from clowder.board import BoardData, waiting_on_you
 from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
+from clowder.timeutil import now_iso
 from tests.support import (
     clean_env,
     default_usage,
@@ -3294,8 +3296,8 @@ class CliTest(unittest.TestCase):
         )
         self.cli("owner", "t-0002", "--item", "choose C or D", env=self.fake_env())
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        self.assertIn("<b>1.</b> choose A or B", html)
-        self.assertIn("<b>2.</b> choose C or D", html)
+        self.assertIn("<b>1.</b> <span class='owner-title'>choose A or B</span>", html)
+        self.assertIn("<b>2.</b> <span class='owner-title'>choose C or D</span>", html)
 
     def test_recording_the_answer_clears_the_owner_item(self) -> None:
         self.dispatch(
@@ -5220,6 +5222,337 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("1 closed", out)
         self.assertIn("0 still open", out)
+
+    # -- a step closes itself when it reports (2026-10-24) -------------------
+
+    def test_a_step_that_reports_is_closed_without_any_read(self) -> None:
+        # The owner's complaint, in full: a finished step stayed `dispatched`, the
+        # one-open-step guard then refused the next step, and the only way past was
+        # to read the report for its side effect - nine times in one day. The cheap
+        # check the front door already runs closes it instead.
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+
+        code, out, err = self.cli("inbox", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0001", out, "the step is listed as having reported")
+
+        task = StateStore(self.state).get("t-0001")
+        self.assertEqual(task.status, CLOSED, "reported, and closed without a read")
+        self.assertEqual(task.answer, "the refund page is missing", "the answer is kept")
+        self.assertIsNotNone(task.usage, "the usage window is kept")
+        self.assertIsNotNone(task.reported_at)
+        self.assertEqual(task.close_reason, "the step reported")
+
+        # And the guard frees itself: the next step on the same job goes out.
+        code, out, err = self.step("--job", job_id, "ship: add the refund terms")
+        self.assertEqual(code, 0, err)
+        self.assertIn("t-0002 sent", out)
+
+        # A read afterwards still shows the answer and the usage, and does not
+        # reopen the step it closed.
+        code, out, err = self.cli("report", "t-0001", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("the refund page is missing", out)
+        self.assertEqual(StateStore(self.state).get("t-0001").status, CLOSED)
+
+    def test_an_unreadable_roster_closes_nothing(self) -> None:
+        # The roster is the evidence that the worker has stopped. A list that could
+        # not be read proves nothing, so a step is never closed on it - an open step
+        # stays open, and the guard stays up, rather than closing work in flight.
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        self.answer_the_step()
+        env = self.state_env(CLOWDER_FAKE_LIST_FAIL="1")
+        code, _, err = self.cli("inbox", env=env)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(StateStore(self.state).get("t-0001").status, DISPATCHED)
+
+    def test_a_step_reported_twice_closes_once(self) -> None:
+        # Both intake paths, twice each. `step report` is the worker writing the
+        # record itself; `inbox` is the front door's cheap check. Neither may write
+        # a second close, a second audit line, or a new timestamp.
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        body = self.root / "answer.md"
+        body.write_text("Re: the refund page\nThe terms page is empty.\n", encoding="utf-8")
+
+        code, _, err = self.cli(
+            "step",
+            "report",
+            "t-0001",
+            "--headline",
+            "the refund page is missing",
+            "--answer-file",
+            str(body),
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        first = StateStore(self.state).get("t-0001")
+        self.assertEqual(first.status, CLOSED)
+        self.assertIn("The terms page is empty.", first.answer or "", "the file is the body")
+
+        code, out, err = self.cli(
+            "step", "report", "t-0001", "--headline", "again", env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("already", out)
+        self.assertEqual(self.cli("inbox", env=self.state_env())[0], 0)
+
+        after = StateStore(self.state).get("t-0001")
+        self.assertEqual(after.closed_at, first.closed_at, "closed once")
+        self.assertEqual(after.answer, first.answer, "the first report stands")
+        lines = (self.root / "state.json.audit").read_text(encoding="utf-8").splitlines()
+        reports = [json.loads(line) for line in lines if '"step-report"' in line]
+        self.assertEqual(len(reports), 1, "one line for one close")
+        self.assertEqual(reports[0]["step"], "t-0001")
+        self.assertTrue(reports[0]["answer_kept"])
+
+    def test_a_step_report_needs_one_line_and_cannot_revive_an_abandoned_step(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        code, _, err = self.cli(
+            "step", "report", "t-0001", "--headline", "one\ntwo", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--answer-file", err)
+        code, _, _ = self.cli(
+            "step", "abandon", "t-0001", "--why", "pane died", env=self.state_env()
+        )
+        self.assertEqual(code, 0)
+        code, _, err = self.cli(
+            "step", "report", "t-0001", "--headline", "done", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("abandoned", err)
+        self.assertEqual(StateStore(self.state).get("t-0001").status, ABANDONED)
+
+    # -- one line on the board, detail behind it (2026-10-24) ----------------
+
+    def test_a_long_or_multi_line_owner_item_is_refused_with_the_detail_advice(self) -> None:
+        # The board "shows a massive wall of text", and it got there one item at a
+        # time: the item was the only field, so everything went into it. The line is
+        # now enforced at the place it is recorded, and the body has a field.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        too_long = "read every word of this: " + "x" * cli.OWNER_ITEM_LIMIT
+        code, _, err = self.cli("owner", "t-0001", "--item", too_long, env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("--detail", err)
+        self.assertIsNone(self.only_task()["owner_item"], "nothing was recorded")
+
+        code, _, err = self.cli(
+            "owner", "t-0001", "--item", "choose A or B\nand here is why", env=self.fake_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--detail", err)
+        self.assertIsNone(self.only_task()["owner_item"])
+
+        # The heading and the body are accepted together.
+        code, _, err = self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B",
+            "--detail",
+            "A: 14 days, costs X.\nB: 30 days, costs Y.\nRecommend A.",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertEqual(task["owner_item"], "choose A or B")
+        self.assertIn("Recommend A.", task["owner_detail"])
+
+    def test_the_board_shows_an_item_line_with_its_detail_under_it(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "choose A or B",
+            "--detail",
+            "A: 14 days, costs X.\nB: 30 days, costs Y.\nRecommend A.",
+            env=self.fake_env(),
+        )
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        heading = html.index("owner-title'>choose A or B")
+        body = html.index("owner-detail'>A: 14 days")
+        self.assertLess(heading, body, "the item is the heading, the detail is under it")
+        self.assertIn("costs X.\nB: 30 days, costs Y.", html, "the detail keeps its lines")
+
+    def test_a_merge_decision_named_by_an_owner_item_is_shown_once(self) -> None:
+        # A job in "awaiting merge" and an owner item saying the same thing were two
+        # lines in his section: one decision, listed twice. The item is the line he
+        # reads and answers, so the derived line steps aside.
+        passed = Job(
+            id="j-0001",
+            label="refund",
+            repo="myrepo",
+            repo_path=str(self.repo_path),
+            worktree=str(self.repo_path),
+            branch="task/refund",
+            base="main",
+            agent="maker",
+            pass_at=now_iso(),
+            published_at=now_iso(),
+        )
+        item = Task(
+            id="t-0001",
+            question="does the site need a refund policy?",
+            brief="ship: add the refund page",
+            shape="ship",
+            agent="maker",
+            repo="myrepo",
+            repo_path=str(self.repo_path),
+            job="j-0001",
+            status=REPORTED,
+            owner_item="merge the refund change",
+            owner_item_at=now_iso(),
+        )
+        waiting = waiting_on_you(
+            BoardData(
+                tasks=[item],
+                jobs=[passed],
+                agents=[],
+                state_path=str(self.state),
+                generated_at="2026-10-25 12:00",
+            )
+        )
+        self.assertEqual(len(waiting), 1, "one decision, one line")
+        self.assertIn("merge the refund change", waiting[0])
+        self.assertNotIn("your word", waiting[0])
+
+    # -- a job that awaits a merge word frees its space (2026-10-24) --------
+
+    def publish_a_pinned_job(self) -> tuple[str, Path]:
+        """A passed, published job whose writer's space still holds its branch.
+
+        `job pin` is the path that leaves the branch in the writer's space: the
+        reviewer holds the save in its own copy, and nothing releases the writer's
+        checkout. That is the job that used to hold the space while it waited.
+        """
+        job_id, maker_folder = self.open_a_job()
+        saved = self.save_as_crew(maker_folder)
+        code, _, err = self.cli(
+            "job",
+            "pin",
+            job_id,
+            "--to",
+            "verifier",
+            "--name",
+            "myrepo-verifier",
+            "--commit",
+            saved,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.owner_pass(job_id)
+        with mock.patch.object(cli, "_publish_branch"):
+            code, _, err = self.cli("job", "publish", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        return job_id, maker_folder
+
+    def test_a_published_job_can_be_parked_and_its_space_takes_a_new_job(self) -> None:
+        job_id, maker_folder = self.publish_a_pinned_job()
+
+        # Today's refusal, kept as the record of the problem: the space is held.
+        code, _, err = self.cli(
+            "job",
+            "open",
+            "myrepo",
+            "--label",
+            "terms",
+            "--role",
+            "maker",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("still open on this worktree", err)
+
+        code, out, err = self.cli("job", "park", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("parked", out)
+        parked = StateStore(self.state).get_job(job_id)
+        self.assertEqual(parked.park_commit, parked.commit)
+        self.assertTrue(parked.is_parked)
+        self.assertIsNotNone(parked.released_at)
+        self.assertEqual(
+            parked.state_in_words, "waiting on your merge word", "his gate is unchanged"
+        )
+        self.assertIsNone(gitcmd.current_branch(maker_folder), "the checkout is released")
+        self.assertIsNotNone(
+            gitcmd.commit_of(self.repo_path, "task/refund"), "the branch is kept"
+        )
+
+        # A step cannot be sent to a parked job: its space belongs to what came next,
+        # so a step would read the wrong code or take the checkout back.
+        code, _, err = self.step("--job", job_id, "ship: add the refund page")
+        self.assertEqual(code, 2)
+        self.assertIn("parked", err)
+
+        # The next job starts in the same space: no second pane, no second checkout.
+        new_id, _ = self.open_a_job(label="terms")
+        self.assertNotEqual(new_id, job_id)
+        self.assertEqual(gitcmd.current_branch(maker_folder), "task/terms")
+
+        # The owner's merge word still lands on the recorded commit, while the
+        # space holds the new job.
+        code, _, err = self.cli(
+            "job",
+            "word",
+            job_id,
+            "--word",
+            "merge it",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        with mock.patch.object(cli, "_merge_pull_request") as merge:
+            code, out, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        merge.assert_called_once()
+        merged = StateStore(self.state).get_job(job_id)
+        self.assertIsNotNone(merged.merged_at)
+        self.assertEqual(merged.commit, parked.park_commit, "the parked commit is merged")
+        self.assertEqual(
+            gitcmd.current_branch(maker_folder),
+            "task/terms",
+            "the new job's checkout is not disturbed by the merge",
+        )
+
+    def test_a_parked_branch_that_moved_is_not_merged(self) -> None:
+        job_id, _ = self.publish_a_pinned_job()
+        self.assertEqual(self.cli("job", "park", job_id, env=self.state_env())[0], 0)
+        parked = StateStore(self.state).get_job(job_id)
+        self.assertEqual(
+            self.cli(
+                "job",
+                "word",
+                job_id,
+                "--word",
+                "merge it",
+                "--by",
+                "lacattano",
+                env=self.state_env(),
+            )[0],
+            0,
+        )
+        # Someone moves the branch by hand while it waits. The parked space cannot:
+        # it is detached, and the branch is not checked out there any more.
+        moved = self.save_as_crew(self.repo_path, name="moved.py")
+        gitcmd.run_git(self.repo_path, "branch", "-f", "task/refund", moved)
+        with mock.patch.object(cli, "_merge_pull_request") as merge:
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 1)
+        self.assertIn("has moved", err)
+        self.assertIn(parked.park_commit[:7], err)
+        merge.assert_not_called()
+        self.assertIsNone(StateStore(self.state).get_job(job_id).merged_at)
 
 
 if __name__ == "__main__":

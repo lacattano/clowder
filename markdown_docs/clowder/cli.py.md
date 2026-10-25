@@ -45,6 +45,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `owner` | `cmd_owner` | Record or clear one thing that waits on the owner, against a task. |
 | `step abandon` | `cmd_step_abandon` | Record a dead step as abandoned and free its job for the next step. |
 | `step close` | `cmd_step_close` | Close a step that can never report, and keep the answer it has. |
+| `step report` | `cmd_step_report` | Close a finished step where it reports: one line, the answer from a file, one audit line. |
 | `ensure` | `cmd_ensure` | Make sure an agent serves a repo, creating one when there is none. |
 | `agents` | `cmd_agents` | List live agents (the roster is the tool's). |
 | `agent reset` | `cmd_agent_reset` | Give an agent a fresh context, and prove the session changed. |
@@ -55,6 +56,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `job list` | `cmd_job_list` | List jobs. |
 | `job handover` | `cmd_job_handover` | Give a reviewer the writer's saved code, pinned to one commit. |
 | `job pin` | `cmd_job_pin` | Pin a job's saved commit into a reviewer's copy, and prove it landed. |
+| `job park` | `cmd_job_park` | Free the space of a published job that waits only on the merge word. |
 | `job pass` | `cmd_job_pass` | Record the owner's pass. |
 | `job word` | `cmd_job_word` | Record the owner's merge word. |
 | `job sync` | `cmd_job_sync` | Merge `origin/<base>` into the job branch, without rewriting it. |
@@ -73,7 +75,8 @@ All handlers take `args: argparse.Namespace` and return `int`.
 with `set_defaults`.
 
 Module constants: `PROGRAM = "clowder"`, `NEEDS_HUMAN = 3`, `DEFAULT_TIMEOUT_S =
-60.0`, `BOARD_REFRESH_MUX_TIMEOUT_S = 3.0`, `_QUIT_KEYS`, `_RESEED_MARKER`.
+60.0`, `BOARD_REFRESH_MUX_TIMEOUT_S = 3.0`, `OWNER_ITEM_LIMIT = 120`, `_QUIT_KEYS`,
+`_RESEED_MARKER`.
 
 ## How It Works (internals)
 
@@ -132,14 +135,22 @@ plumbing reached by almost every handler.
 
 ### Report and inbox - `cmd_report`, `cmd_inbox`
 
-- `_agents_by_name(mux) -> dict[str, AgentInfo]` - the live roster as a lookup.
-  Best effort: an unreadable list is empty.
+- `_agents_by_name(mux) -> dict[str, AgentInfo] | None` - the live roster as a
+  lookup, or `None` when the list could not be read. `None` is not an empty list:
+  nothing is closed on a roster that proved nothing.
 - `_session_and_answer(recorded, live, since, until=None) -> tuple[str | None, str | None]`
   - the session a step's answer should be read from, and the answer in it.
 - `_report_until(store, task, since) -> float | None` - where this step's dispatch
   window ends: the next task to the same agent.
 - `_reported_since_look(store, agents) -> list[tuple[Task, str]]` - open steps whose
   worker has settled and left an answer since dispatch.
+- `_close_reported_steps(store, agents) -> list[Task]` - closes every open step that
+  reported, recording what `report` would, so the one-open-step guard frees itself
+  without a read. Called by `inbox`; idempotent, so a second report closes nothing.
+- `_step_window(store, task) -> tuple[float | None, float | None]` - the step's own
+  dispatch window, shared by `report` and `step report`.
+- `_record_step_facts(task, usage) -> bool` - records the usage, the model and the
+  commit a report is measured by; shared by `report` and `step report`.
 - `_report_next(task) -> str` - one line naming what the reader most likely does
   after the report.
 - `_resolve_session(mux, task, since, until=None) -> tuple[str | None, str | None, str | None]`
@@ -166,8 +177,8 @@ plumbing reached by almost every handler.
   create=True, split=False)` - the one place where an agent for a repo is found or
   made. Used by `ensure`, `job open`, `job handover` and `job pin`.
 - `_release_job_space(config, job, *, force=False) -> str` - returns a job's space
-  to the base while keeping its install; returns the base ref. Used by `job close`
-  and `job merge`.
+  to the base while keeping its install; returns the base ref. Used by `job close`,
+  `job merge` and `job park`.
 - `_sync_job_branch(config, store, job) -> bool` - merges `origin/<base>` into the
   job branch under the crew identity. Used by `job handover` and `job sync`.
 - `_require_pass(job) -> None` - refuses unless the owner's pass is recorded. Used
