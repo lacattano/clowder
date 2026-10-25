@@ -667,9 +667,10 @@ checkout can move it, and the merge check above catches that.
 Seen 2026-10-25, measured from the files rather than felt: 28 days of carried work had five
 handover documents and 13 working days with none, including days of 54, 50, 58, 66, 28 and 44
 steps. One known defect was written in three handovers in a row and still bit; another was in one
-handover, absent from the next two, and back in the last. Both are in the handover files of
-2026-10-18, 2026-10-22 and 2026-10-25 and reach the defects record when it is seeded; they are not
-quoted here, because a defect has one home and this is not it. Five items in the latest handover
+handover, absent from the next two, and back in the last. Both reach the defects record when it is
+seeded, and each is in the handover files named here: the model defect in 2026-10-18, 2026-10-22
+and 2026-10-25, the identity defect in 2026-10-12 and 2026-10-25. They are not quoted here,
+because a defect has one home and this is not it. Five items in the latest handover
 appear in no earlier one, and whether they were older and never written down cannot be known. The
 front door did not read the latest handover at session start; its own start order named a list of
 files, so reading it depended on memory.
