@@ -101,7 +101,13 @@ def write_board(data: BoardData, path: str | Path) -> Path
 - `front_door_label(data)` - the front door's configured name, else
   `"the front door"`.
 - `waiting_on_you(data)` - only what the owner must do: a decision, a review to
-  merge, work at risk. The front door's own to-do list is not here.
+  merge, work at risk. The front door's own to-do list is not here. An owner item is
+  rendered as a heading (`owner-title`) with its detail body (`owner-detail`) under
+  it, and a job whose merge word is already named by an owner item is not listed a
+  second time.
+- `names_the_merge(text) -> bool` - does an owner item name the merge, so it stands in
+  for the derived "your word" line on its job? The literal word only: a miss shows
+  the same decision twice, a false hit would hide one.
 - `waiting_for_worker(data)` - warnings for the front door: a step gone quiet, or a
   commit on no branch.
 - `render_board(data)` - the whole page as one self-contained HTML string.
@@ -149,7 +155,7 @@ are only reached through `render_board`.
 - `_label_pills(labels) -> str` - one pill per label, coloured by its reserved
   family (`sev:`, `phase:`); other labels plain.
 - `_job_details(job) -> str` - the folded handles for a job (effect, branch,
-  commit, reviewer, pass/word yes/no).
+  commit, reviewer, pass/word yes/no, the parked commit when it is parked).
 - `_agent_reason(data, name, reviewer=None) -> str` - why a card waits: the
   reviewer is checking it, or the live agent and its status.
 - `_queued_card(item) -> tuple[card, fields]`, `_job_card(data, job, state, shape)
@@ -174,8 +180,8 @@ are only reached through `render_board`.
   and `"under review"` while a step is still in flight (an owner-facing gate word
   would be premature).
 - `_step_state_in_words(task) -> str` - where a step is, derived from what it
-  holds: `answered`, `failed`, `abandoned, no answer came`, `closed, no answer
-  came`, or `in progress`.
+  holds: `answered` (reported, or closed on its report with the answer kept),
+  `failed`, `abandoned, no answer came`, `closed, no answer came`, or `in progress`.
 
 ### Text handling - used across the page
 

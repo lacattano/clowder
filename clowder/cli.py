@@ -25,7 +25,7 @@ from .errors import ClowderError, DispatchError, GitError, MuxError, StateError,
 from .marker import DEFAULT_SENDER, apply_marker
 from .mux import AgentInfo, Mux, MuxResult
 from .report import INDENT, build_report, usage_breakdown
-from .sessions import read_answer, read_model, read_usage
+from .sessions import Usage, read_answer, read_model, read_usage
 from .state import (
     ABANDONED,
     CLOSED,
@@ -69,6 +69,11 @@ DEFAULT_TIMEOUT_S = 60.0
 # hold that command up. The live list is read with this timeout; when it does not
 # answer, the page is written from state alone.
 BOARD_REFRESH_MUX_TIMEOUT_S = 3.0
+
+# An owner item is the heading on the board, not the whole story. The detail field
+# carries the body. A line longer than this is refused with the advice to use it,
+# so the board cannot fill with walls of text one item at a time.
+OWNER_ITEM_LIMIT = 120
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         "inbox", help="what has reported since you last looked", parents=[common]
     )
     inbox.add_argument("--json", action="store_true")
-    inbox.set_defaults(handler=cmd_inbox)
+    inbox.set_defaults(handler=cmd_inbox, refreshes_board=True)
 
     show = sub.add_parser("report", help="read one task's report", parents=[common])
     show.add_argument("id", help="task id, e.g. t-0001")
@@ -249,6 +254,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s_close.add_argument("--json", action="store_true")
     s_close.set_defaults(handler=cmd_step_close, refreshes_board=True)
+
+    s_report = step_sub.add_parser(
+        "report",
+        help="close a finished step at the place it reports, keeping the answer",
+        parents=[common],
+    )
+    s_report.add_argument("id", help="task id, e.g. t-0001")
+    s_report.add_argument(
+        "--headline",
+        required=True,
+        metavar="TEXT",
+        help="one line the reader sees first: what the step found (required)",
+    )
+    s_report.add_argument(
+        "--answer-file",
+        metavar="PATH",
+        help="the whole answer, from a file the worker writes",
+    )
+    s_report.add_argument(
+        "--by", metavar="NAME", help="who is reporting (default: the step's agent)"
+    )
+    s_report.add_argument("--json", action="store_true")
+    s_report.set_defaults(handler=cmd_step_report, refreshes_board=True)
 
     make = sub.add_parser(
         "ensure",
@@ -502,6 +530,16 @@ def build_parser() -> argparse.ArgumentParser:
     j_publish.add_argument("--json", action="store_true")
     j_publish.set_defaults(handler=cmd_job_publish, refreshes_board=True)
 
+    j_park = job_parser(
+        "park", "free the space of a published job that waits on the merge word"
+    )
+    j_park.add_argument("id")
+    j_park.add_argument(
+        "--by", metavar="NAME", help="who is parking it (goes in the audit line)"
+    )
+    j_park.add_argument("--json", action="store_true")
+    j_park.set_defaults(handler=cmd_job_park, refreshes_board=True)
+
     j_merge = job_parser("merge", "merge the job's pull request, once the owner has said so")
     j_merge.add_argument("id")
     j_merge.add_argument("--pr", required=True, help="the pull request number or URL")
@@ -708,6 +746,15 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         if not job.is_open:
             raise DispatchError(
                 f"{job.id} is closed. Open a job for this work, or dispatch without --job."
+            )
+        if job.is_parked:
+            # Its checkout was released on purpose and may hold the next job now, so a
+            # step here would either read the wrong code or take the space back.
+            raise DispatchError(
+                f"{job.id} is parked: {job.branch} waits on the owner's merge word and "
+                "its space belongs to whatever came next. There is nothing to send to "
+                "it. Once the word is recorded, merge it with "
+                f"`{PROGRAM} job merge {job.id} --pr NUMBER`."
             )
         who = [name for name in (job.agent, job.reviewer) if name]
         if args.agent not in who:
@@ -1093,7 +1140,11 @@ def _refuse_open_work(args: argparse.Namespace, agent, store: StateStore, job) -
     holding = [
         open_job
         for open_job in store.open_jobs()
-        if open_job.id != dispatched and inside(agent.cwd, open_job.worktree)
+        if open_job.id != dispatched
+        # A released job has handed its space back, so it does not hold a pane. A
+        # parked job is released too: its branch waits, its checkout does not.
+        and open_job.released_at is None
+        and inside(agent.cwd, open_job.worktree)
     ]
     if holding:
         listed = ", ".join(f"{open_job.id} ({open_job.name_in_words})" for open_job in holding)
@@ -1157,12 +1208,17 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     return 0
 
 
-def _agents_by_name(mux: Mux) -> dict[str, AgentInfo]:
-    """The live roster as a lookup. Best effort: an unreadable list is empty."""
+def _agents_by_name(mux: Mux) -> dict[str, AgentInfo] | None:
+    """The live roster as a lookup, or None when it could not be read.
+
+    None is not an empty list. A step whose agent is missing is closed on the
+    strength of a roster that was read and did not contain it; a roster that could
+    not be read at all proves nothing, so nothing is closed on it.
+    """
     try:
         return {agent.name: agent for agent in mux.list_agents()}
     except MuxError:
-        return {}
+        return None
 
 
 def _session_and_answer(
@@ -1243,10 +1299,65 @@ def _reported_since_look(
     return found
 
 
+def _close_reported_steps(store: StateStore, agents: dict[str, AgentInfo]) -> list[Task]:
+    """Close every open step whose worker has finished and left its answer.
+
+    A worker reports over the agent bus, and this tool cannot read the front
+    door's inbox. It does hold the other half of the report: the answer stays in
+    the worker's own session, which is what the marker already tells the worker.
+    So the step closes on the evidence `inbox` already reads, and nobody has to
+    read the whole answer first to clear the record.
+
+    What is recorded is what `report` would have recorded - the answer, the usage
+    window, the model, the commit - plus one audit line saying the step reported.
+    A step that has already reported is no longer open, so a second run closes
+    nothing twice, and a worker that reports twice is closed once.
+    """
+    closed: list[Task] = []
+    for task, answer in _reported_since_look(store, agents):
+        agent = agents.get(task.agent)
+        session_path = task.agent_session or (agent.session_path if agent else None)
+        since, until = _step_window(store, task)
+        usage = read_usage(session_path, since, until) if session_path else None
+        _record_step_facts(task, usage)
+        task.answer = answer
+        task.answer_source = "session"
+        task.reported_at = now_iso()
+        task.closed_at = task.reported_at
+        task.close_reason = "the step reported"
+        task.status = CLOSED
+        closed.append(task)
+
+    if closed:
+        store.save()
+        for task in closed:
+            audit.append_audit(
+                store.path,
+                {
+                    "at": task.closed_at,
+                    "by": task.agent,
+                    "action": "step-report",
+                    "step": task.id,
+                    "job": task.job,
+                    "agent": task.agent,
+                    "reason": task.close_reason,
+                    "answer_kept": True,
+                },
+            )
+    return closed
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
     config, store = _context(args)
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
-    found = _reported_since_look(store, _agents_by_name(mux))
+    agents = _agents_by_name(mux)
+    roster = agents or {}
+    # A step that reported closes itself here, so the next step is not blocked by a
+    # record nobody has read yet. This is the same evidence the list below shows,
+    # and it is only acted on when the live roster was actually read.
+    just_closed = _close_reported_steps(store, roster) if agents is not None else []
+    found = [(task, task.answer or "") for task in just_closed]
+    found += _reported_since_look(store, roster)
 
     if args.json:
         _emit_json(
@@ -1284,8 +1395,49 @@ def cmd_inbox(args: argparse.Namespace) -> int:
             ]
         )
     print(_column(rows))
+    if just_closed:
+        print(
+            f"\n{len(just_closed)} step(s) closed on their report, so their jobs are "
+            "free for the next step"
+        )
     print(f"\n{len(found)} step(s) have reported. Read one with: {PROGRAM} report <id>")
     return 0
+
+
+def _step_window(store: StateStore, task: Task) -> tuple[float | None, float | None]:
+    """The step's own dispatch window `[since, until)`.
+
+    One place, so a step that closes itself on its report reads the same window a
+    read of its report would.
+    """
+    since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
+    return since, _report_until(store, task, since)
+
+
+def _record_step_facts(task: Task, usage: Usage | None) -> bool:
+    """Record what a report is measured by: usage, model and commit.
+
+    Shared by `report` (a read) and `step report` (the step closing itself), so the
+    two cannot record different facts about the same step.
+    """
+    changed = False
+    if usage is not None:
+        task.usage = usage.to_dict()
+        changed = True
+        # The model that ran this step, read from its own session. Measurement,
+        # not a guard: if the session names no model, nothing is recorded.
+        if usage.model and task.model != usage.model:
+            task.model = usage.model
+            task.provider = usage.provider
+            changed = True
+    # The directory means different code at different times, so the commit is what
+    # a report is really about.
+    if task.worktree and gitcmd.is_repo(task.worktree):
+        head = gitcmd.head_commit(task.worktree)
+        if head and head != task.commit:
+            task.commit = head
+            changed = True
+    return changed
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -1293,8 +1445,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     task = store.get(args.id)
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
 
-    since = to_epoch(task.dispatched_at) or to_epoch(task.created_at)
-    until = _report_until(store, task, since)
+    since, until = _step_window(store, task)
     session_path, session_answer, agent_status = _resolve_session(mux, task, since, until)
 
     usage = read_usage(session_path, since, until) if session_path else None
@@ -1318,23 +1469,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     settled = agent_status in (None, "idle", "done")
     stranded = False
     if not args.no_save:
-        changed = False
-        if usage is not None:
-            task.usage = usage.to_dict()
-            changed = True
-            # The model that ran this step, read from its own session. Measurement,
-            # not a guard: if the session names no model, nothing is recorded.
-            if usage.model and task.model != usage.model:
-                task.model = usage.model
-                task.provider = usage.provider
-                changed = True
-        # The directory means different code at different times, so the commit is
-        # what a report is really about.
-        if task.worktree and gitcmd.is_repo(task.worktree):
-            head = gitcmd.head_commit(task.worktree)
-            if head and head != task.commit:
-                task.commit = head
-                changed = True
+        changed = _record_step_facts(task, usage)
         # The reachability gate, where a worker makes its claim. A commit that is on
         # no branch exists only in that folder, and reusing the folder destroys it.
         # The board asks the same questions in the same order, so both answers
@@ -1347,7 +1482,14 @@ def cmd_report(args: argparse.Namespace) -> int:
                 stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
                 if stranded:
                     stranded = not _job_moved_past(task, job)
-        if answer and (task.answer != answer or task.status != REPORTED) and settled:
+        # A step that closed itself on its report keeps its status: a read is not a
+        # second event, and it must not reopen a closed step.
+        if (
+            answer
+            and (task.answer != answer or task.status != REPORTED)
+            and settled
+            and not task.is_closed
+        ):
             task.answer = answer
             task.answer_source = source or "session"
             task.reported_at = now_iso()
@@ -1453,6 +1595,19 @@ def cmd_owner(args: argparse.Namespace) -> int:
         text = args.item.strip()
         if not text:
             raise UsageError("--item needs a line of text")
+        # The board's heading is one line; the body behind it is --detail. Enforcing
+        # that here is what stops the wall of text coming back one item at a time.
+        if "\n" in text:
+            raise UsageError(
+                "--item is one line. Put the body - the options, what each costs, the "
+                "recommendation - in --detail or --detail-file."
+            )
+        if len(text) > OWNER_ITEM_LIMIT:
+            raise UsageError(
+                f"--item is {len(text)} characters, and the board shows one line of at "
+                f"most {OWNER_ITEM_LIMIT}. Make it a heading and put the rest in "
+                "--detail or --detail-file."
+            )
         task.owner_item = text
         task.owner_item_at = now_iso()
         task.owner_detail = _owner_detail(args)
@@ -1578,6 +1733,101 @@ def cmd_step_close(args: argparse.Namespace) -> int:
         _emit_json({"task": task.to_dict(), "audit": str(audit_file)})
         return 0
     print(f"{task.id} closed: {why}")
+    if task.job:
+        print(f"{INDENT}{task.job} is free for the next step")
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
+
+
+def cmd_step_report(args: argparse.Namespace) -> int:
+    """Close a finished step where it reports, keeping the answer and the facts.
+
+    A worker's report used to reach the record only when the front door read it,
+    and the read was the side effect that freed the job. Here the step closes
+    itself: the worker writes one line (and the whole answer, from a file, when it
+    is long), the status leaves `dispatched`, and the one-open-step guard frees
+    itself. Nothing is lost - a read still shows the answer, the usage, and the
+    commit.
+
+    A second report for the same step changes nothing and records nothing twice,
+    so a retried report is safe.
+    """
+    config, store = _context(args)
+    task = store.get(args.id)
+    headline = (args.headline or "").strip()
+    if not headline:
+        raise UsageError("--headline is required: one line on what the step found")
+    if "\n" in headline:
+        raise UsageError(
+            "--headline is one line. Put the rest in --answer-file, where the whole "
+            "answer belongs."
+        )
+    if task.is_abandoned:
+        raise StateError(
+            f"{task.id} was abandoned: {task.abandon_reason or 'no reason recorded'}. "
+            "An abandoned step keeps no answer; open a new step for this work."
+        )
+    if not task.is_open:
+        if args.json:
+            _emit_json({"task": task.to_dict(), "closed": False, "already": True})
+        else:
+            print(f"{task.id} is already {task.status}; nothing changed")
+        return 0
+
+    answer = headline
+    source = "step"
+    if args.answer_file:
+        path = Path(args.answer_file).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise UsageError(f"cannot read --answer-file {path}: {exc}") from exc
+        if text:
+            answer = text
+            source = "file"
+
+    mux = Mux(config.mux_bin, config.mux_prompt_argv)
+    since, until = _step_window(store, task)
+    session_path = task.agent_session
+    if not (session_path and Path(session_path).exists()):
+        agent = None
+        try:
+            agent = mux.find_agent(task.agent)
+        except MuxError:
+            agent = None
+        session_path = agent.session_path if agent is not None else session_path
+    usage = read_usage(session_path, since, until) if session_path else None
+    _record_step_facts(task, usage)
+    if session_path:
+        task.agent_session = session_path
+
+    task.answer = answer
+    task.answer_source = source
+    task.reported_at = now_iso()
+    task.closed_at = task.reported_at
+    task.close_reason = "the step reported"
+    task.status = CLOSED
+    store.save()
+
+    who = (args.by or task.agent or config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": task.closed_at,
+            "by": who,
+            "action": "step-report",
+            "step": task.id,
+            "job": task.job,
+            "agent": task.agent,
+            "reason": task.close_reason,
+            "answer_kept": True,
+        },
+    )
+
+    if args.json:
+        _emit_json({"task": task.to_dict(), "closed": True, "audit": str(audit_file)})
+        return 0
+    print(f"{task.id} closed on its report: {headline}")
     if task.job:
         print(f"{INDENT}{task.job} is free for the next step")
     print(f"{INDENT}audit: {audit_file}")
@@ -1851,6 +2101,106 @@ def cmd_job_open(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_job_park(args: argparse.Namespace) -> int:
+    """Park a published job's branch, and free its space for the next job.
+
+    A passed, published job is finished as far as the crew's work goes: its only
+    open gate is the owner's merge word, and nothing is edited on the branch while
+    it waits. It used to keep its checkout until that word came, so a second change
+    to the same repo needed a second pane - 241 MB to 1.9 GB of worktree for a job
+    nobody is working in.
+
+    Parking is the release this tool already knows (`job handover` and `job close`
+    do the same), applied to the last waiting state: the branch stays, the commit
+    the owner's word is for is recorded, and the space goes back to the base, so the
+    next job starts in the same space. No second branch enters the checkout, because
+    the point is to release it, not to multiplex it. The merge still lands on the
+    recorded commit: `job merge` refuses if the branch has moved since.
+    """
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    if not job.is_open:
+        raise StateError(f"{job.id} is {job.state_in_words}, so there is nothing to park.")
+    if job.is_parked:
+        if args.json:
+            _emit_json({"job": job.to_dict(), "parked": False, "already": True})
+        else:
+            print(
+                f"{job.id} is already parked: {job.branch} at "
+                f"{(job.park_commit or job.commit or 'no commit')[:7]}"
+            )
+        return 0
+    if not job.published_at:
+        raise StateError(
+            f"{job.id} is not published, so the owner's merge word is not the only "
+            "gate left. Parking is for a published job that waits on that word: "
+            f"publish it first with {PROGRAM} job publish {job.id}."
+        )
+    if job.has_merge_word:
+        raise StateError(
+            f"{job.id} already has the owner's merge word, so nothing is waiting. "
+            f"Merge it: {PROGRAM} job merge {job.id} --pr NUMBER"
+        )
+
+    open_steps = [task for task in store.all() if task.job == job.id and task.is_open]
+    if open_steps:
+        listed = ", ".join(f"{task.id} ({task.agent})" for task in open_steps)
+        raise StateError(
+            f"{job.id} still has open steps: {listed}. Parking would free a space "
+            "while work is in flight on the branch. Wait for it to report."
+        )
+
+    # The commit the owner's word will be for. Read from the branch, not the
+    # folder, because a released space sits on the base.
+    tip = gitcmd.commit_of(job.worktree, job.branch) or gitcmd.commit_of(
+        job.repo_path, job.branch
+    )
+    if not tip:
+        raise StateError(
+            f"cannot read {job.branch}, so parking would forget which commit the "
+            "owner's merge word is for. Nothing was released."
+        )
+
+    base_ref = _release_job_space(config, job)
+    job.commit = tip
+    job.park_commit = tip
+    job.parked_at = now_iso()
+    job.released_at = job.released_at or job.parked_at
+    store.save()
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "at": job.parked_at,
+            "by": who,
+            "action": "job-park",
+            "job": job.id,
+            "branch": job.branch,
+            "commit": tip,
+            "space": job.worktree,
+        },
+    )
+
+    if args.json:
+        _emit_json(
+            {
+                "job": job.to_dict(),
+                "parked": True,
+                "commit": tip,
+                "returned_to": base_ref,
+                "space": "free",
+                "audit": str(audit_file),
+            }
+        )
+        return 0
+    print(f"{job.id} parked: {job.branch} kept at {tip[:7]}, space free on {base_ref}")
+    print(f"{INDENT}{job.worktree}")
+    print(f"{INDENT}the next job can start here; the owner's merge word is for {tip[:7]}")
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
+
+
 def _release_job_space(config: Config, job: Job, *, force: bool = False) -> str:
     """Return a job's space to the base, keeping its install. Returns the base ref.
 
@@ -1868,8 +2218,9 @@ def _release_job_space(config: Config, job: Job, *, force: bool = False) -> str:
         shown = ", ".join(entry.split(maxsplit=1)[-1] for entry in dirty[:5])
         more = ", and more" if len(dirty) > 5 else ""
         raise GitError(
-            f"{worktree} is not clean: {shown}{more}. Closing a job leaves the tree "
-            "ready for the next one, so this is refused. Commit, stash, or pass --force."
+            f"{worktree} is not clean: {shown}{more}. A job that gives its space "
+            "back leaves the tree ready for the next one, so this is refused. "
+            "Commit, stash, or pass --force."
         )
 
     on = gitcmd.current_branch(worktree)
@@ -2417,6 +2768,26 @@ def cmd_job_merge(args: argparse.Namespace) -> int:
     config, store = _context(args)
     job = store.get_job(args.id)
     _require_merge_word(job)
+    # A parked job's space is detached, so the recorded commit is the only thing
+    # that says what the owner's word is for. If the branch moved by hand since it
+    # was parked, a merge would land code he never passed.
+    if job.park_commit:
+        tip = gitcmd.commit_of(job.worktree, job.branch) or gitcmd.commit_of(
+            job.repo_path, job.branch
+        )
+        if tip is None:
+            raise StateError(
+                f"{job.id} was parked at {job.park_commit[:7]}, and {job.branch} cannot be "
+                "read now, so the commit the owner's word is for cannot be confirmed. "
+                "Nothing was merged."
+            )
+        if tip != job.park_commit:
+            raise StateError(
+                f"{job.id} was parked at {job.park_commit[:7]}, and {job.branch} has "
+                f"moved to {tip[:7]}. The owner's word was for the commit he passed, so "
+                "merging now would land code he has not seen. Walk the new commit and "
+                "take a fresh pass, or move the branch back."
+            )
     _merge_pull_request(job, args.pr)
     # The pull request merged, so the job is finished. Record that first, then
     # close the record the way `job close` does: the branch is kept and the space

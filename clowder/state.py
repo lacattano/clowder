@@ -187,12 +187,23 @@ class Job:
     merge_word_by: str | None = None
     published_at: str | None = None
     merged_at: str | None = None
+    # A published job, waiting only on the owner's merge word, parks its branch:
+    # the space goes back to the base and is free for the next job, while the
+    # branch and the commit the owner's word was for stay on the record. Parking
+    # is the release the record already understands (`released_at`); these two
+    # fields say why it was released and which commit must still be the one merged.
+    parked_at: str | None = None
+    park_commit: str | None = None
     # Fields a newer copy wrote that this code does not know; kept, never dropped.
     extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def is_open(self) -> bool:
         return self.status == OPEN
+
+    @property
+    def is_parked(self) -> bool:
+        return bool(self.parked_at)
 
     @property
     def name_in_words(self) -> str:

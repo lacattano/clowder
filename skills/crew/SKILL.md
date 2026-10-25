@@ -86,6 +86,18 @@ not joined - say so rather than fail quietly; the front door can join it from it
 command sent as a prompt is a message, not a command. The answer also stays in the worker's
 session, so `clowder inbox` is the fallback if the send does not arrive.
 
+**Close your own step.** When the work is done, close the step where it reports:
+
+```
+clowder step report <task-id> --headline "one line on what you found" [--answer-file PATH]
+```
+
+That is what frees the next step on the job; without it the record stays `dispatched` and the
+next step is refused. The headline is one line. Put a long answer in a file and pass it with
+`--answer-file`, so the full text is on the record. Reporting twice is harmless: the second call
+changes nothing. The front door's `clowder inbox` closes the same step from the session if the
+call does not arrive.
+
 ## The owner gate
 
 The owner cannot read or write code. He is never handed a diff as a check, and he is never
