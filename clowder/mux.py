@@ -401,19 +401,18 @@ class Mux:
             return None
         return input_line(result.stdout)
 
-    def start_agent(
+    def build_start_agent_argv(
         self,
         name: str,
         pane_id: str,
         kind: str = "pi",
-        timeout_s: float | None = None,
         agent_args: Sequence[str] = (),
-    ) -> MuxResult:
-        """Start an agent in a pane that is sitting at a shell prompt.
+    ) -> list[str]:
+        """The command that starts an agent in a pane at its shell prompt.
 
-        Returns only once the multiplexer has detected the agent and considers it
-        ready, or with a failure that names the reason. `agent_args` are passed
-        to the agent after `--`, e.g. `--continue` to resume the last session.
+        Public so a caller whose start failed can print this same command for
+        the owner to run by hand. A second copy of the argv would drift from
+        the one the tool actually runs.
         """
         argv = [
             self.binary,
@@ -428,6 +427,23 @@ class Mux:
         if agent_args:
             argv.append("--")
             argv.extend(agent_args)
+        return argv
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: Sequence[str] = (),
+    ) -> MuxResult:
+        """Start an agent in a pane that is sitting at a shell prompt.
+
+        Returns only once the multiplexer has detected the agent and considers it
+        ready, or with a failure that names the reason. `agent_args` are passed
+        to the agent after `--`, e.g. `--continue` to resume the last session.
+        """
+        argv = self.build_start_agent_argv(name, pane_id, kind, agent_args)
         return self._run(argv, timeout_s if timeout_s is not None else 45.0)
 
     def wait_for_agent(self, name: str, until: Sequence[str], timeout_s: float) -> MuxResult:

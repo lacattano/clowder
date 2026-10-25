@@ -62,6 +62,11 @@ def make_mux_launcher(directory: Path) -> Path:
     has to be a real executable too. On Windows that is a .cmd shim; elsewhere a
     shell script.
 
+    The launcher counts `agent start` calls in `CLOWDER_FAKE_START_COUNT`, when a
+    test asks for it. It writes that line itself, before the fake is started, so a
+    start that is killed mid-attempt is still counted: a record written by the fake
+    can die with the process, and then a count of attempts races the kill.
+
     One known limit of the Windows shim: cmd.exe splits its own command line on
     newlines, so a brief containing newlines does not survive this stand-in. The
     real multiplexer is an .exe and takes argv directly, so that is a property of
@@ -74,11 +79,24 @@ def make_mux_launcher(directory: Path) -> Path:
 
     if os.name == "nt":
         launcher = directory / "fakemux.cmd"
-        launcher.write_text(f'@echo off\r\n"{python}" "{script}" %*\r\n', encoding="ascii")
+        count = (
+            'if "%1"=="agent" if "%2"=="start" if defined CLOWDER_FAKE_START_COUNT '
+            'echo start>>"%CLOWDER_FAKE_START_COUNT%"\r\n'
+        )
+        launcher.write_text(
+            f'@echo off\r\n{count}"{python}" "{script}" %*\r\n', encoding="ascii"
+        )
         return launcher
 
     launcher = directory / "fakemux"
-    launcher.write_text(f'#!/bin/sh\nexec "{python}" "{script}" "$@"\n', encoding="ascii")
+    count = (
+        'if [ "$1" = "agent" ] && [ "$2" = "start" ] '
+        '&& [ -n "$CLOWDER_FAKE_START_COUNT" ]; then '
+        'echo start >> "$CLOWDER_FAKE_START_COUNT"; fi\n'
+    )
+    launcher.write_text(
+        f'#!/bin/sh\n{count}exec "{python}" "{script}" "$@"\n', encoding="ascii"
+    )
     launcher.chmod(launcher.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return launcher
 

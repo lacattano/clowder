@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd, load
+from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from tests.support import (
     clean_env,
@@ -22,6 +23,156 @@ from tests.support import (
     write_fake_state,
     write_session,
 )
+
+
+def _start_error(code: str, message: str) -> MuxResult:
+    """A failed start as the multiplexer reports one: a named code and a reason."""
+    return MuxResult(
+        argv=("mux", "agent", "start"),
+        returncode=5,
+        stdout=json.dumps({"error": {"code": code, "message": message}}),
+        stderr="",
+        duration_ms=1,
+    )
+
+
+def _start_refusal(pane_id: str) -> MuxResult:
+    """The refusal the multiplexer gives while a pane is still not a shell."""
+    return _start_error(
+        "pane_not_shell", f"agent target pane {pane_id} is not an available shell"
+    )
+
+
+class _SlowStartMux:
+    """A mux stand-in whose start needs a floor of seconds before it lands.
+
+    The real restart passes its per-attempt timeout to the multiplexer, so this
+    records what it was given and answers the way herdr does: the not-a-shell
+    refusal while the attempt is too short for this pane, success once it is
+    long enough. That is how a slow-but-working start (22 to 45 seconds on the
+    owner's box) is tested without waiting those seconds for real.
+    """
+
+    def __init__(self, needs_s: float) -> None:
+        self.needs_s = needs_s
+        self.timeouts: list[float] = []
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: tuple[str, ...] = (),
+    ) -> MuxResult:
+        allowed = float(timeout_s or 0.0)
+        self.timeouts.append(allowed)
+        if allowed < self.needs_s:
+            return _start_refusal(pane_id)
+        return MuxResult(
+            argv=("mux", "agent", "start", "--pane", pane_id),
+            returncode=0,
+            stdout="{}",
+            stderr="",
+            duration_ms=1,
+        )
+
+
+class _SpendsItsTimeoutMux:
+    """A mux whose start takes as long as it is allowed, then times out.
+
+    A real start still running when its allowance ends is killed by the
+    multiplexer call, so it reports a timeout rather than the not-a-shell
+    refusal. This stand-in does the same without a real pane to wait for: it
+    spends exactly the timeout it is given, so the wall clock shows what the
+    restart allowed an attempt to take.
+    """
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: tuple[str, ...] = (),
+    ) -> MuxResult:
+        allowed = float(timeout_s or 0.0)
+        self.timeouts.append(allowed)
+        time.sleep(allowed)
+        return MuxResult(
+            argv=("mux", "agent", "start", "--pane", pane_id),
+            returncode=None,
+            stdout="",
+            stderr="",
+            duration_ms=int(allowed * 1000),
+            timed_out=True,
+        )
+
+
+class _RefuseThenTimeoutMux:
+    """A pane that never becomes a shell, until the budget runs out mid-attempt.
+
+    The first attempt is refused at once and costs no time; the retry gets only
+    what is left of the budget, and answers the way a killed attempt does: a
+    timeout measured in milliseconds. That is the shape that made the old
+    message read "did not return within 9ms".
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.timeouts: list[float] = []
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: tuple[str, ...] = (),
+    ) -> MuxResult:
+        self.calls += 1
+        self.timeouts.append(float(timeout_s or 0.0))
+        if self.calls == 1:
+            return _start_refusal(pane_id)
+        return MuxResult(
+            argv=("mux", "agent", "start", "--pane", pane_id),
+            returncode=None,
+            stdout="",
+            stderr="",
+            duration_ms=9,
+            timed_out=True,
+        )
+
+
+class _ThenFailsMux:
+    """Refuses the first attempt, then answers with a different, named failure.
+
+    This is the reviewer's probe: a retry that fails for its own reason. The
+    budget did not stop that start, so the reason must be the failure and not the
+    budget, whatever the attempt number.
+    """
+
+    def __init__(self, failure: MuxResult) -> None:
+        self.failure = failure
+        self.calls = 0
+        self.timeouts: list[float] = []
+
+    def start_agent(
+        self,
+        name: str,
+        pane_id: str,
+        kind: str = "pi",
+        timeout_s: float | None = None,
+        agent_args: tuple[str, ...] = (),
+    ) -> MuxResult:
+        self.calls += 1
+        self.timeouts.append(float(timeout_s or 0.0))
+        if self.calls == 1:
+            return _start_refusal(pane_id)
+        return self.failure
 
 
 class CliTest(unittest.TestCase):
@@ -4094,6 +4245,26 @@ class CliTest(unittest.TestCase):
             "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
         )
 
+    @staticmethod
+    def start_count(path: Path) -> int:
+        """How many `agent start` calls were made, counted by the launcher.
+
+        The launcher writes this before the fake runs, so a start killed
+        mid-attempt is counted too. Reading the fake's own log would race that
+        kill and see nothing.
+        """
+        if not path.is_file():
+            return 0
+        return len(path.read_text(encoding="utf-8").splitlines())
+
+    @staticmethod
+    def reseed_help() -> str:
+        """The `agent reseed --help` text, as the owner reads it."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.suppress(SystemExit):
+            cli.build_parser().parse_args(["agent", "reseed", "--help"])
+        return out.getvalue()
+
     def test_agent_reset_changes_the_session_and_names_it(self) -> None:
         self.seed_agent()
         code, out, err = self.cli(
@@ -4173,7 +4344,7 @@ class CliTest(unittest.TestCase):
             "reseed",
             "myrepo-maker",
             "--timeout",
-            "2",
+            "30",
             env=self.state_env(CLOWDER_FAKE_LOG=str(log)),
         )
         self.assertEqual(code, 0, err)
@@ -4232,13 +4403,238 @@ class CliTest(unittest.TestCase):
             "reseed",
             "myrepo-maker",
             "--timeout",
-            "2",
+            "30",
             env=self.state_env(CLOWDER_FAKE_LOG=str(log)),
         )
         self.assertEqual(code, 0, err)
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         start = next(c for c in calls if c[:2] == ["agent", "start"])
         self.assertEqual(start[-2:], ["--", "--continue"], "Pi resumes the same session")
+
+    def test_agent_reseed_retries_while_the_pane_is_not_yet_a_shell(self) -> None:
+        # The quit and the export have both worked, but the multiplexer has not
+        # yet seen the pane as a shell. A single start would fail and leave the
+        # pane down, so the start is retried until one lands.
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, out, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "30",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log), CLOWDER_FAKE_START_BUSY="2"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("reseeded", out)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        starts = [c for c in calls if c[:2] == ["agent", "start"]]
+        self.assertEqual(len(starts), 3, "two refusals, then the start that lands")
+        for start in starts:
+            self.assertEqual(start[-2:], ["--", "--continue"], "Pi resumes the session")
+        self.assertEqual(len([c for c in calls if c[:2] == ["agent", "wait"]]), 1)
+
+    def test_agent_reseed_names_the_manual_start_when_the_pane_never_settles(self) -> None:
+        # A genuine timeout must say where the pane stands and print the exact
+        # command that brings Pi back. The pane is left alone: no second quit.
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, out, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "3",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log), CLOWDER_FAKE_START_BUSY="always"),
+        )
+        self.assertEqual(code, 2, err)
+        self.assertIn("left at its shell", err)
+        self.assertIn(
+            "agent start myrepo-maker --kind pi --pane w9:p1 -- --continue",
+            err,
+            "the message names the manual start command",
+        )
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([c for c in calls if c[:2] == ["agent", "wait"]], [])
+        self.assertEqual(
+            len([c for c in calls if c[:2] == ["agent", "send-keys"]]),
+            1,
+            "the pane is not quit a second time",
+        )
+        self.assertEqual(
+            len([c for c in calls if c[:2] == ["pane", "close"]]), 0, "the pane stays open"
+        )
+
+    def test_a_slow_start_that_fits_the_budget_lands(self) -> None:
+        # A pane on this box can take 22 to 45s to come up. The first attempt must
+        # get the whole --timeout budget: a cap of the restart helper's own would
+        # cut that slow-but-working start short, which is the case the retry
+        # exists to cover.
+        mux = _SlowStartMux(needs_s=25.0)
+        started = cli._start_agent_when_ready(mux, "myrepo-maker", "w9:p1", 60.0)
+        self.assertTrue(started.ok, started.result.error_text())
+        self.assertEqual(len(mux.timeouts), 1, "the first attempt lands; no retry is spent")
+        self.assertFalse(started.clipped, "the only attempt had the whole budget")
+        self.assertGreaterEqual(
+            mux.timeouts[0], 25.0, "the whole budget reached the start, not a smaller cap"
+        )
+
+    def test_a_start_that_outlasts_the_whole_budget_fails_with_the_manual_command(self) -> None:
+        # The budget bounds the start itself, not just the retries. A start still
+        # running when the budget ends is a failure, and it says how to finish by
+        # hand. Its own first attempt got the whole budget, so its own reason is
+        # the real one and is quoted.
+        self.seed_agent()
+        starts = self.root / "starts.txt"
+        code, _, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "3",
+            env=self.state_env(
+                CLOWDER_FAKE_START_COUNT=str(starts),
+                CLOWDER_FAKE_START_DELAY="20",
+            ),
+        )
+        self.assertEqual(code, 2, err)
+        self.assertIn("left at its shell", err)
+        self.assertIn(
+            "agent start myrepo-maker --kind pi --pane w9:p1 -- --continue",
+            err,
+            "the message names the manual start command",
+        )
+        self.assertIn(
+            "did not return within",
+            err,
+            "the first attempt had the whole budget, so its own reason is quoted",
+        )
+        self.assertNotIn("ran out of its", err, "nothing was clipped, so no budget excuse")
+        self.assertEqual(self.start_count(starts), 1, "one attempt, cut at the budget")
+
+        # The last attempt is clipped to what is left of the budget, so the whole
+        # call finishes near it rather than running past it.
+        timed = _SpendsItsTimeoutMux()
+        spent_from = time.monotonic()
+        result = cli._start_agent_when_ready(timed, "myrepo-maker", "w9:p1", 0.4)
+        elapsed = time.monotonic() - spent_from
+        self.assertFalse(result.ok)
+        self.assertFalse(result.clipped, "the only attempt had the whole budget")
+        self.assertEqual(len(timed.timeouts), 1, "one attempt, given all that is left")
+        self.assertLessEqual(
+            timed.timeouts[0], 0.4, "the attempt was given no more than the budget"
+        )
+        self.assertLess(elapsed, 2.0, "the call ended near the budget, not long after it")
+
+        # The waits default to a slow start's worth, and the help says the number
+        # is per wait, not for the whole command.
+        parsed = cli.build_parser().parse_args(["agent", "reseed", "someone"])
+        self.assertEqual(parsed.timeout, 60.0)
+        help_text = self.reseed_help()
+        self.assertIn("budget for each wait", help_text)
+        for wait in ("quit", "export", "start", "ready"):
+            self.assertIn(wait, help_text, f"the help names the {wait} wait")
+        self.assertIn("four minutes", help_text, "the worst case is named")
+
+    def test_a_clipped_final_attempt_names_the_whole_budget_not_a_sliver(self) -> None:
+        # The reviewer's case: after retries, the final attempt is cut to the last
+        # few milliseconds of the budget. Quoting that sliver as the reason would
+        # tell the owner the start failed in 9ms, which never happened. The budget
+        # that ran out is the fact, and it is named in full.
+        # The start step is stubbed on purpose: a real clipped attempt needs two
+        # fake mux calls inside one budget, and that depends on how loaded the box
+        # is. Everything around it - the quit, the export, the message - is real.
+        self.seed_agent()
+        sliver = cli.RestartResult(
+            result=MuxResult(
+                argv=("mux", "agent", "start"),
+                returncode=None,
+                stdout="",
+                stderr="",
+                duration_ms=9,
+                timed_out=True,
+            ),
+            attempts=3,
+            budget_s=60.0,
+        )
+        self.assertEqual(cli._restart_reason(sliver), "the restart ran out of its 60s budget")
+        with mock.patch.object(cli, "_start_agent_when_ready", return_value=sliver):
+            code, _, err = self.cli(
+                "agent", "reseed", "myrepo-maker", "--timeout", "60", env=self.state_env()
+            )
+        self.assertEqual(code, 2, err)
+        self.assertIn("ran out of its 60s budget", err)
+        self.assertNotIn(
+            "did not return within", err, "a clipped sliver is not quoted as the reason"
+        )
+        self.assertIn("left at its shell", err)
+        self.assertIn("agent start myrepo-maker --kind pi --pane w9:p1 -- --continue", err)
+
+        # And the clipping itself, which is what makes the sliver above possible:
+        # the second attempt gets less than the first, so the budget is going.
+        mux = _RefuseThenTimeoutMux()
+        restart = cli._start_agent_when_ready(mux, "myrepo-maker", "w9:p1", 0.6)
+        self.assertFalse(restart.ok)
+        self.assertTrue(restart.clipped, "a second attempt is clipped by the budget")
+        self.assertEqual(restart.attempts, 2)
+        self.assertLess(
+            mux.timeouts[1], mux.timeouts[0], "the second attempt got what was left"
+        )
+        self.assertEqual(cli._restart_reason(restart), "the restart ran out of its 0.6s budget")
+
+    def test_a_different_failure_after_a_refusal_keeps_its_own_reason(self) -> None:
+        # The reviewer's probe: the first attempt is refused, the retry fails with
+        # agent_not_ready. The budget did not stop that start - the agent blocked
+        # during startup did - so the message must name that failure and must not
+        # claim the budget ran out.
+        self.seed_agent()
+        blocked = _start_error("agent_not_ready", "the agent blocked during startup")
+        mux = _ThenFailsMux(blocked)
+        restart = cli._start_agent_when_ready(mux, "myrepo-maker", "w9:p1", 30.0)
+        self.assertFalse(restart.ok)
+        self.assertTrue(restart.clipped, "a second attempt did not get the whole budget")
+        self.assertEqual(restart.attempts, 2)
+        reason = cli._restart_reason(restart)
+        self.assertIn("agent_not_ready: the agent blocked during startup", reason)
+        self.assertNotIn("ran out of its", reason, "the budget is not what stopped it")
+
+        # And through the real command path, so the owner-facing sentence is the
+        # one asserted, not just the reason fragment.
+        with mock.patch.object(cli, "_start_agent_when_ready", return_value=restart):
+            code, _, err = self.cli(
+                "agent", "reseed", "myrepo-maker", "--timeout", "30", env=self.state_env()
+            )
+        self.assertEqual(code, 2, err)
+        self.assertIn("agent_not_ready: the agent blocked during startup", err)
+        self.assertNotIn("ran out of its", err)
+        self.assertIn("left at its shell", err)
+        self.assertIn("agent start myrepo-maker --kind pi --pane w9:p1 -- --continue", err)
+
+    def test_a_different_start_failure_is_not_retried(self) -> None:
+        # Only the not-yet-a-shell refusal is worth waiting out. A start that
+        # fails for another reason is the answer, so it is sent once and reported
+        # with its own reason.
+        self.seed_agent()
+        log = self.root / "calls.jsonl"
+        code, _, err = self.cli(
+            "agent",
+            "reseed",
+            "myrepo-maker",
+            "--timeout",
+            "30",
+            env=self.state_env(CLOWDER_FAKE_LOG=str(log), CLOWDER_FAKE_START_FAIL="1"),
+        )
+        self.assertEqual(code, 2, err)
+        self.assertIn("agent_not_ready: the agent blocked during startup", err)
+        self.assertNotIn("ran out of its", err, "a real reason is not replaced by the budget")
+        self.assertIn("agent start myrepo-maker --kind pi --pane w9:p1 -- --continue", err)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            len([c for c in calls if c[:2] == ["agent", "start"]]),
+            1,
+            "a different failure is not retried",
+        )
+        self.assertEqual([c for c in calls if c[:2] == ["agent", "wait"]], [])
 
     def test_the_reseed_export_matches_the_shell(self) -> None:
         # The pane's shell decides the syntax: PowerShell uses $env:, POSIX uses

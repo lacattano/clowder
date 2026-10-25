@@ -28,6 +28,7 @@ class CopyState:
     is_repo: bool = True
     main_checkout: bool = False
 
+
 @dataclass
 class WorktreeInfo:
     path: str
@@ -36,10 +37,12 @@ class WorktreeInfo:
     detached: bool = False
     bare: bool = False
 
+
 @dataclass(frozen=True)
 class Identity:
     name: str
     email: str
+
 
 @dataclass(frozen=True)
 class CommitAuthorship:

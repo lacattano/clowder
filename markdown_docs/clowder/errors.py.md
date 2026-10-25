@@ -32,12 +32,26 @@ Signatures (all bodies are docstring only; the work is in the class attribute):
 class ClowderError(Exception):
     exit_code = 1
 
+
 class ConfigError(ClowderError): ...
+
+
 class UsageError(ClowderError): ...
+
+
 class StateError(ClowderError): ...
-class MuxError(ClowderError): exit_code = 2
-class GitError(ClowderError): exit_code = 2
-class DispatchError(ClowderError): exit_code = 2
+
+
+class MuxError(ClowderError):
+    exit_code = 2
+
+
+class GitError(ClowderError):
+    exit_code = 2
+
+
+class DispatchError(ClowderError):
+    exit_code = 2
 ```
 
 ## How It Works (internals)

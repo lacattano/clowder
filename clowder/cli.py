@@ -14,6 +14,7 @@ import sys
 import time
 import webbrowser
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -312,9 +313,13 @@ def build_parser() -> argparse.ArgumentParser:
     a_reseed.add_argument(
         "--timeout",
         type=float,
-        default=30.0,
+        default=60.0,
         metavar="SECONDS",
-        help="how long to wait for each step (default: 30)",
+        help=(
+            "the budget for each wait, not for the whole command: quit, export, "
+            "start and ready each get this many seconds (default: 60, because one "
+            "slow start can take 45s; four waits can take about four minutes)"
+        ),
     )
     a_reseed.add_argument(
         "--force", action="store_true", help="reseed even with an unreported step"
@@ -2754,6 +2759,12 @@ _QUIT_KEYS = ("/", "q", "u", "i", "t", "enter")
 # The line the export prints, so the wait proves the command ran in the shell.
 _RESEED_MARKER = "clowder-identity-seeded"
 
+# What the multiplexer says while it still believes a pane holds the agent that
+# just quit. Pi has gone and the pane is at its shell, but the multiplexer has not
+# noticed yet, so a start sent now is refused until it does. Matched on the words
+# rather than the exit code, because the same refusal is what a start reports.
+_PANE_NOT_A_SHELL = ("not an available shell", "not a shell")
+
 
 def _wait_for_agent_gone(mux: Mux, name: str, timeout_s: float) -> bool:
     """Wait until the agent leaves the roster, or the wait runs out.
@@ -2787,6 +2798,101 @@ def _reseed_export(identity: gitcmd.Identity, shell: str | None) -> str:
         return "; ".join(pwsh_pairs) + f"; Write-Output '{_RESEED_MARKER}'"
     posix_pairs = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
     return f"export {posix_pairs}; echo {_RESEED_MARKER}"
+
+
+def _pane_not_a_shell(result: MuxResult) -> bool:
+    """True when a start failed only because the pane is not seen as a shell yet."""
+    text = result.error_text().lower()
+    return any(marker in text for marker in _PANE_NOT_A_SHELL)
+
+
+@dataclass(frozen=True)
+class RestartResult:
+    """The last start attempt, and how much of the budget it was allowed.
+
+    `clipped` means the attempt did not get the whole budget, because earlier
+    attempts and their backoff spent part of it. Its own duration is then the
+    last sliver of the budget, not the time a start really had, so it says
+    nothing about the pane and must not be quoted to the owner as the reason.
+    """
+
+    result: MuxResult
+    attempts: int
+    budget_s: float
+
+    @property
+    def ok(self) -> bool:
+        return self.result.ok
+
+    @property
+    def clipped(self) -> bool:
+        return self.attempts > 1
+
+
+def _seconds(value: float) -> str:
+    """A number of seconds as the owner would say it: 60s, 2.5s, 0.4s."""
+    return f"{value:g}s"
+
+
+def _restart_reason(restart: RestartResult) -> str:
+    """Why the start did not land, in words that describe the real wait.
+
+    The budget is named only when the budget is what stopped the start: a clipped
+    final attempt that was killed by it had no time to answer, so its own duration
+    (often a few milliseconds) is noise. Every attempt that answered is quoted as
+    it answered - a refusal, a named failure such as agent_not_ready, or a timeout
+    that was given its whole allowance. A different failure on a retry is still
+    that failure's own reason: the budget did not stop it.
+    """
+    if restart.clipped and restart.result.timed_out:
+        return f"the restart ran out of its {_seconds(restart.budget_s)} budget"
+    return restart.result.error_text()
+
+
+def _start_agent_when_ready(
+    mux: Mux, name: str, pane_id: str, timeout_s: float
+) -> RestartResult:
+    """Start Pi again, retrying while the multiplexer still calls the pane busy.
+
+    The quit and the identity export both finish before this runs, but the
+    multiplexer can take a moment to see that the pane is a shell again. A start
+    sent in that gap is refused with "not an available shell", and one attempt
+    would leave the pane down. Only that refusal is retried: any other failure is
+    reported at once.
+
+    `timeout_s` is the whole restart budget, not one attempt. The first attempt
+    may spend all of it, because a slow pane that is still starting must be
+    allowed to land; a fixed per-attempt cap would cut exactly that start short.
+    A retry spends only the backoff between attempts, and every attempt after
+    the first gets what is left, so the last one is clipped to the budget.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    delay = 0.25
+    attempts = 0
+    while True:
+        remaining = max(0.0, deadline - time.monotonic())
+        attempts += 1
+        started = mux.start_agent(
+            name,
+            pane_id,
+            kind=DEFAULT_KIND,
+            timeout_s=remaining,
+            agent_args=("--continue",),
+        )
+        if started.ok or not _pane_not_a_shell(started):
+            return RestartResult(started, attempts, timeout_s)
+        if time.monotonic() >= deadline:
+            return RestartResult(started, attempts, timeout_s)
+        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+        delay = min(delay * 2, 2.0)
+
+
+def _start_agent_by_hand(mux: Mux, name: str, pane_id: str) -> str:
+    """The exact command the owner can run to start the agent in its pane."""
+    argv = mux.build_start_agent_argv(
+        name, pane_id, kind=DEFAULT_KIND, agent_args=("--continue",)
+    )
+    return shlex.join(argv)
 
 
 def cmd_agent_reseed(args: argparse.Namespace) -> int:
@@ -2852,9 +2958,17 @@ def cmd_agent_reseed(args: argparse.Namespace) -> int:
             f"the identity export did not reach {name}'s shell, so nothing was seeded."
         )
 
-    started = mux.start_agent(name, pane_id, kind=DEFAULT_KIND, agent_args=("--continue",))
-    if not started.ok:
-        raise MuxError(f"could not restart Pi in {name}: {started.error_text()}")
+    restart = _start_agent_when_ready(mux, name, pane_id, args.timeout)
+    if not restart.ok:
+        # The quit and the export already ran, so the pane is at its shell with
+        # the identity seeded. It is left that way: nothing here closes it or
+        # quits again. The owner gets the exact command to bring Pi back.
+        manual = _start_agent_by_hand(mux, name, pane_id)
+        raise MuxError(
+            f"could not restart Pi in {name} after the identity export: "
+            f"{_restart_reason(restart)}. The pane is left at its shell with the "
+            f"identity seeded, so it is usable. Start it by hand:\n{INDENT}{manual}"
+        )
     ready = mux.wait_for_agent(name, ("idle", "done"), args.timeout)
     if not ready.ok:
         raise StateError(

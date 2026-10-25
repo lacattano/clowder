@@ -29,6 +29,7 @@ class AgentInfo:
     session_path: str | None = None
     focused: bool = False
 
+
 @dataclass
 class MuxResult:
     argv: tuple[str, ...]
@@ -70,6 +71,7 @@ def bus_send(self, agent, brief, timeout_s=60.0) -> MuxResult
 def bus_peers(self, timeout_s=15.0) -> list[tuple[str, str]] | None
 def is_bus_joined(self, agent, cwd=None, timeout_s=15.0) -> bool | None
 def read_input(self, target, timeout_s=15.0) -> str | None
+def build_start_agent_argv(self, name, pane_id, kind="pi", agent_args=()) -> list[str]
 def start_agent(self, name, pane_id, kind="pi", timeout_s=None, agent_args=()) -> MuxResult
 def wait_for_agent(self, name, until, timeout_s) -> MuxResult
 def rename_agent(self, old, new, timeout_s=20.0) -> MuxResult
@@ -89,7 +91,9 @@ Highlights:
 - `read_input(target)` - the text sitting in an agent's input box; `None` when it
   cannot be read.
 - `start_agent(name, pane_id, kind="pi", ...)` - starts an agent in a pane that is
-  at a shell prompt.
+  at a shell prompt. `build_start_agent_argv(...)` is the argv it runs, public so a
+  caller whose start failed can print the same command for the owner to run by
+  hand instead of composing a second copy that may drift.
 
 ### Module functions
 

@@ -33,6 +33,7 @@ class BoardAgent:
     main_checkout: bool = False
     detached: bool = False
 
+
 @dataclass(frozen=True)
 class FilterField:
     name: str
@@ -40,6 +41,7 @@ class FilterField:
     control: str
     values: tuple[str, ...] = ()
     note: str = ""
+
 
 @dataclass
 class BoardData:
