@@ -5769,7 +5769,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("a total rephrase is not found", out)
         self.assertNotIn("d-0001", out)
 
-    def test_start_lists_the_defects_added_in_the_last_seven_days(self) -> None:
+    def test_start_lists_the_defects_seen_in_the_last_seven_days(self) -> None:
         # The near-duplicate defence is a person reading the recent lines, so start
         # has to show them.
         moment = datetime.now(UTC)
@@ -5798,9 +5798,9 @@ class CliTest(unittest.TestCase):
         )
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
-        self.assertIn("defects added in the last 7 days: 1", out)
+        self.assertIn("defects seen in the last 7 days: 1", out)
         self.assertIn("d-0001 a defect recorded two days ago", out)
-        self.assertNotIn("d-0002", out.split("defects added in the last 7 days")[1])
+        self.assertNotIn("d-0002", out.split("defects seen in the last 7 days")[1])
 
     def test_a_corrupt_defects_record_fails_open_on_start_and_the_board(self) -> None:
         # One malformed file must not take away the page that says what is happening.
@@ -5843,6 +5843,147 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("defects", "add", "--line", "x", env=self.fake_env())
         self.assertEqual(code, 1, "adding still refuses, because it must read the record")
         self.assertIn("not valid JSON", err)
+
+    # -- seeding the record ---------------------------------------------------
+
+    def seed(self, *args: str, env: dict[str, object] | None = None):
+        """One seeded entry, the way the twelve were written."""
+        return self.cli("defects", "add", *args, env=env or self.fake_env())
+
+    def test_a_seeded_entry_records_its_dates_count_state_and_detail(self) -> None:
+        # The seed path: a defect known from an older record, not seen just now. It
+        # carries when it was first and last recorded, how often, and where it stands.
+        code, out, err = self.seed(
+            "--line",
+            "a pane reset drops the pane to the default model",
+            "--status",
+            "open",
+            "--first-seen",
+            "2026-10-18",
+            "--last-seen",
+            "2026-10-25",
+            "--count",
+            "3",
+            "--detail",
+            "Seen in the handovers of 2026-10-18, 2026-10-22 and 2026-10-25.\n"
+            "The reset warns and audits the change; it does not restore the model.",
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001 recorded", out)
+
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        entry = stored["defects"]["d-0001"]
+        self.assertEqual(entry["state"], "open")
+        self.assertEqual(entry["count"], 3)
+        self.assertEqual(entry["first_seen"], "2026-10-18T00:00:00Z")
+        self.assertEqual(entry["last_seen"], "2026-10-25T00:00:00Z")
+        self.assertIn("does not restore the model", entry["detail"])
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn("open", out)
+
+        code, out, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("does not restore the model", out, "the detail is shown")
+
+    def test_a_fixed_entry_is_listed_and_not_repeated(self) -> None:
+        # A fixed defect is kept: a return of it is exactly the repetition the record
+        # exists to catch. It is not a repetition now, so it is not in --repeated.
+        code, _, err = self.seed(
+            "--line",
+            "a step that reports left its step open",
+            "--status",
+            "fixed",
+            "--first-seen",
+            "2026-10-25",
+            "--count",
+            "2",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, _, err = self.seed(
+            "--line",
+            "a job awaiting the merge word held its space",
+            "--status",
+            "open",
+            "--first-seen",
+            "2026-10-25",
+            "--count",
+            "2",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out, "a fixed entry stays in the list")
+        self.assertIn("fixed", out)
+        self.assertIn("d-0002", out)
+
+        code, out, err = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0002", out, "seen twice with no job")
+        self.assertNotIn("d-0001", out, "a fixed defect is not a repetition")
+
+    def test_a_seeded_entry_without_a_state_or_a_start_is_refused(self) -> None:
+        # The guard that keeps the next seed honest: a seed says both when it was
+        # recorded and where it stands today. Dates without a state, or a count with no
+        # start, are refused rather than written with a default.
+        code, _, err = self.seed(
+            "--line", "a defect with a date but no state", "--first-seen", "2026-10-25"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("needs --status", err)
+
+        code, _, err = self.seed(
+            "--line",
+            "a defect with a count but no start",
+            "--count",
+            "2",
+            "--status",
+            "open",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--count needs --first-seen", err)
+
+        code, _, err = self.seed(
+            "--line",
+            "a defect that ends before it starts",
+            "--first-seen",
+            "2026-10-25",
+            "--last-seen",
+            "2026-10-18",
+            "--status",
+            "open",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("last seen cannot be before first seen", err)
+
+        self.assertFalse((self.root / "defects.json").exists(), "a refused seed writes nothing")
+
+    def test_start_names_the_seeded_entries_as_seen_in_the_last_seven_days(self) -> None:
+        # The source handovers are within the week, so every seeded entry is in the
+        # recent list once - the near-duplicate defence seeding depends on.
+        for line in ("a seeded defect one", "a seeded defect two"):
+            code, _, err = self.seed(
+                "--line",
+                line,
+                "--status",
+                "open",
+                "--first-seen",
+                "2026-10-18",
+                "--last-seen",
+                "2026-10-25",
+                env=self.fake_env(),
+            )
+            self.assertEqual(code, 0, err)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects seen in the last 7 days: 2", out)
+        self.assertEqual(out.count("d-0001"), 1, "each entry once")
+        self.assertEqual(out.count("d-0002"), 1)
 
 
 if __name__ == "__main__":

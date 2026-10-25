@@ -66,7 +66,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `queue list` | `cmd_queue_list` | Show what is decided and still waiting to go. |
 | `queue send` | `cmd_queue_send` | Send one queued item, once its block has cleared. |
 | `queue drop` | `cmd_queue_drop` | Drop a queued item, with a reason and a name that stay on the record. |
-| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), the owner's decisions, steps in flight, the queue, repeated defects, and the defects added in the last seven days. Fails open on an unreadable record, with exit code 4. |
+| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), the owner's decisions, steps in flight, the queue, repeated defects, and the defects seen in the last seven days. Fails open on an unreadable record, with exit code 4. |
 | `defects add` | `cmd_defects_add` | Record one sighting of a defect, or the same one again. |
 | `defects list` | `cmd_defects_list` | Every known defect, `--repeated` (seen twice with no open job), or `--like WORDS` (an exact-word search). Refuses on an unreadable record. |
 | `defects show` | `cmd_defects_show` | One defect in full; the only place its detail lives. |

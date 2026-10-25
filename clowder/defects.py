@@ -31,7 +31,7 @@ from pathlib import Path
 
 from .errors import StateError
 from .state import file_lock
-from .timeutil import now, now_iso, to_epoch
+from .timeutil import now, now_iso, parse_iso, to_epoch, to_iso
 
 SCHEMA_VERSION = 1
 
@@ -88,6 +88,19 @@ def normalise_line(text: str) -> str:
     return " ".join(text.split()).casefold().strip(".,;:!?`'\" ")
 
 
+def moment_of(value: str) -> str:
+    """A recorded moment from a date or an ISO timestamp, always a full ISO string.
+
+    A bare date is taken as midnight UTC, which is what a handover gives: the day the
+    defect was stated. Storing the moment rather than the date keeps the handover
+    window exact, while `short_date` still shows people the day.
+    """
+    text = value.strip()
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        text = text + "T00:00:00Z"
+    return to_iso(parse_iso(text))
+
+
 def short_date(value: str | None) -> str:
     """The date part of a recorded moment, or `-`. The record keeps the time too."""
     if not value:
@@ -110,6 +123,9 @@ class Defect:
     job: str | None = None
     state: str = OPEN
     reason: str | None = None
+    # The body behind the one line: the workaround, the citations, what was seen.
+    # It lives here and nowhere else - not in a handover, not in a doc.
+    detail: str | None = None
     # Fields a newer copy wrote that this code does not know. Kept, never dropped.
     extra: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
@@ -306,6 +322,10 @@ class DefectStore:
         job: str | None = None,
         state: str | None = None,
         reason: str | None = None,
+        detail: str | None = None,
+        first_seen: str | None = None,
+        last_seen: str | None = None,
+        count: int = 1,
     ) -> tuple[Defect, bool]:
         """Record one sighting. Returns the defect and whether it is new.
 
@@ -320,6 +340,12 @@ class DefectStore:
         chosen = state or (HAS_JOB if job else OPEN)
         if chosen not in STATES:
             raise StateError(f"state must be one of {', '.join(STATES)}")
+        began = moment_of(first_seen) if first_seen else None
+        last = moment_of(last_seen) if last_seen else None
+        if count < 1:
+            raise StateError("count must be 1 or more")
+        if last is not None and began is not None and last < began:
+            raise StateError("last seen cannot be before first seen")
         with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
             self._loaded = False
             self.load()
@@ -331,11 +357,13 @@ class DefectStore:
                 current = Defect(
                     id=f"d-{self._next:04d}",
                     line=text,
-                    first_seen=moment,
-                    last_seen=moment,
+                    first_seen=began or moment,
+                    last_seen=last or began or moment,
+                    count=count,
                     job=job,
                     state=chosen,
                     reason=reason,
+                    detail=(detail or "").strip() or None,
                 )
                 self._defects[current.id] = current
             else:
@@ -352,6 +380,8 @@ class DefectStore:
                     current.state = HAS_JOB
                 if reason:
                     current.reason = reason
+                if detail and (detail.strip() or None) != current.detail:
+                    current.detail = detail.strip() or None
             if current.state == HAS_JOB and not current.job:
                 current.state = OPEN
             self._save()
@@ -361,10 +391,15 @@ class DefectStore:
 def recently_seen(
     defects: Sequence[Defect], days: int, *, at: datetime | None = None
 ) -> list[Defect]:
-    """Those first seen in the last `days` days, newest first."""
+    """Those last seen in the last `days` days, newest first.
+
+    Last seen, not first seen: the list exists so a person about to add a defect sees
+    the ones in play now. A defect first stated a month ago and still biting is exactly
+    the one a reworded duplicate would run from.
+    """
     cutoff = (at or now()).timestamp() - days * 86400
-    kept = [defect for defect in defects if (to_epoch(defect.first_seen) or 0) >= cutoff]
-    return sorted(kept, key=lambda defect: defect.first_seen, reverse=True)
+    kept = [defect for defect in defects if (to_epoch(defect.last_seen) or 0) >= cutoff]
+    return sorted(kept, key=lambda defect: defect.last_seen, reverse=True)
 
 
 def read_defects(store: DefectStore) -> tuple[list[Defect], str | None]:

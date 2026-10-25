@@ -205,7 +205,11 @@ class SafeReadTest(unittest.TestCase):
             store = DefectStore(Path(tmp) / "defects.json")
             store.sighting("today")
             old, _ = store.sighting("long ago")
-            old.first_seen = to_iso(now() - timedelta(days=8))
+            # Last seen, not first seen: a defect stated a month ago and still biting
+            # is exactly the one a reworded duplicate would run from.
+            long_ago = to_iso(now() - timedelta(days=8))
+            old.first_seen = long_ago
+            old.last_seen = long_ago
             entries, error = read_defects(store)
             self.assertIsNone(error)
             recent = recently_seen(entries, 7)

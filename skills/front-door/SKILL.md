@@ -24,7 +24,7 @@ clowder start
 
 It prints: the handover file and its age, and says plainly when it is STALE and why; the
 decisions that wait on the owner; the steps in flight; the queue count; the defects seen twice
-with no job; and the defects added in the last seven days. Read the handover it names. If it says
+with no job; and the defects seen in the last seven days. Read the handover it names. If it says
 stale, work happened after that handover was written, so treat its "in flight" and "landed"
 sections as out of date and write the next one before the session ends.
 
@@ -69,7 +69,12 @@ Two more mechanisms, so one fact lives in one place:
   the owner's words, at the moment you see it. Add `--job <id>` when a job fixes it, `--status
   fixed` when the fix lands, or `--status accepted-workaround --reason TEXT` when the owner
   accepts the cost. If it is not in that record it is not known, and nothing else - not the
-  handover, not DESIGN.md, not your own words - stores one.
+  handover, not DESIGN.md, not your own words - stores one. `--detail` (or `--detail-file`) is
+  the body behind the line: the workaround and the citations, kept in the entry itself.
+- **Seeding an entry from an older record.** A defect known only from a handover is added with
+  `--first-seen DATE --last-seen DATE --count N --status ...`: the dates say when it was recorded,
+  the count how often, and the state where it stands today. A seeded entry is refused without a
+  state, and a count without a start, so a seed cannot quietly claim the defect was seen now.
 - **Before adding, look.** `clowder defects list --like "<the words you would use>"` finds a
   defect that holds every one of those words, in any order. It cannot find a total rephrase - no
   search can, and fuzzy matching would merge two real defects - so also read the lines added in

@@ -675,6 +675,34 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="why it is accepted - required with --status accepted-workaround",
     )
+    # Seeding: a defect known from an older record, not seen just now. The dates travel
+    # with --status, so a seed always says where it stands today.
+    d_add.add_argument(
+        "--first-seen",
+        metavar="DATE",
+        help="when it was first recorded (a date or ISO timestamp); needs --status",
+    )
+    d_add.add_argument(
+        "--last-seen",
+        metavar="DATE",
+        help="when it was last recorded; needs --first-seen and --status",
+    )
+    d_add.add_argument(
+        "--count",
+        type=int,
+        metavar="N",
+        help="the recorded count of sightings; needs --first-seen",
+    )
+    d_add.add_argument(
+        "--detail",
+        metavar="TEXT",
+        help="the body behind the one line: workaround, citations, what was seen",
+    )
+    d_add.add_argument(
+        "--detail-file",
+        metavar="PATH",
+        help="read the detail body from a file, for a long one",
+    )
     d_add.add_argument("--json", action="store_true")
     d_add.set_defaults(handler=cmd_defects_add, refreshes_board=True)
 
@@ -4221,9 +4249,36 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
         raise UsageError("--state has-job needs --job ID")
     if args.job:
         store.get_job(args.job)  # refuse an id that names nothing
+    if args.detail and args.detail_file:
+        raise UsageError("pass --detail or --detail-file, not both")
+    # A seed carries a date and a state, and either alone is refused: a seeded entry
+    # must say both when it was recorded and where it stands today, or the record
+    # would quietly claim the defect was seen now, or leave its state to a default.
+    if (args.first_seen or args.last_seen or args.count is not None) and not state:
+        raise UsageError(
+            "a seeded entry needs --status: say where the defect stands today "
+            f"({', '.join(DEFECT_STATES)})."
+        )
+    if args.count is not None and not args.first_seen:
+        raise UsageError("--count needs --first-seen: a recorded count needs its start")
+    if args.last_seen and not args.first_seen:
+        raise UsageError("--last-seen needs --first-seen")
 
+    detail = _owner_detail(args)
     defects = _defect_store(config)
-    defect, created = defects.sighting(line, job=args.job, state=state, reason=reason)
+    try:
+        defect, created = defects.sighting(
+            line,
+            job=args.job,
+            state=state,
+            reason=reason,
+            detail=detail,
+            first_seen=args.first_seen,
+            last_seen=args.last_seen,
+            count=args.count if args.count is not None else 1,
+        )
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
 
     if args.json:
         _emit_json(
@@ -4332,6 +4387,10 @@ def cmd_defects_show(args: argparse.Namespace) -> int:
     if defect.reason:
         rows.append(["reason", defect.reason])
     print(_column(rows))
+    if defect.detail:
+        print()
+        for line in defect.detail.splitlines():
+            print(f"{INDENT}{line}")
     print(f"\nrecord: {defects.path}")
     return 0
 
@@ -4445,7 +4504,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not repeated:
         print(f"{INDENT}(none)")
 
-    print(f"\ndefects added in the last {RECENT_DEFECT_DAYS} days: {len(recent)}")
+    print(f"\ndefects seen in the last {RECENT_DEFECT_DAYS} days: {len(recent)}")
     for defect in recent:
         print(f"{INDENT}- {defect.id} {_clip(defect.line, 70)}")
     if not recent:

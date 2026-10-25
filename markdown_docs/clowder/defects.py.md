@@ -51,7 +51,7 @@ def describe(defect: Defect, *, open_jobs: Sequence[str] = ()) -> str
 - `short_date(value)` - the `YYYY-MM-DD` part of a recorded moment, or `-`. The
   record keeps the whole moment so handovers can window it precisely; people read
   the date.
-- `recently_seen(defects, days)` - those first seen in the last `days` days, newest
+- `recently_seen(defects, days)` - those last seen in the last `days` days, newest
   first. `clowder start` prints these so a near-duplicate is visible before it is
   added.
 - `read_defects(store)` - every defect, or no defects and the reason the file could
@@ -66,7 +66,8 @@ def describe(defect: Defect, *, open_jobs: Sequence[str] = ()) -> str
 ### `Defect` (dataclass) - one known defect
 
 Fields: `id`, `line`, `first_seen`, `last_seen`, `count`, `job`, `state`, `reason`,
-and `extra` (unknown fields from a newer copy, kept).
+`detail` (the workaround and citations; the body behind the one line), and `extra`
+(unknown fields from a newer copy, kept).
 
 - `seen_twice` (property) - `count >= 2`.
 - `settled` (property) - `state` is `fixed` or `accepted-workaround`.
@@ -83,11 +84,13 @@ and `extra` (unknown fields from a newer copy, kept).
 - `get(id)` - one defect, or `StateError` naming the list command.
 - `find_by_line(line)` - the defect whose normalised line matches.
 - `repeated(open_jobs)` - the defects a second sighting obliges someone to act on.
-- `recent(days)` - the defects first seen in the last `days` days (seeded from the
+- `recent(days)` - the defects last seen in the last `days` days (seeded from the
   strict loader; the drawing commands use the module-level safe reader).
 - `broken()` - `(key, why)` for entries that cannot be named: no id, an id that is
   not the key, or no line. The handover write refuses while one exists.
-- `sighting(line, *, job, state, reason)` - one read-modify-write under the lock.
+- `sighting(line, *, job, state, reason, detail, first_seen, last_seen, count)` - one
+  read-modify-write under the lock. The date and count arguments seed a defect known
+  from an older record; a re-sighting ignores them and bumps the count.
   Returns the defect and whether it is new. The same normalised line bumps the
   count and `last_seen`; a job, a state or a reason given now is recorded without
   erasing what was known. A `fixed` defect seen again is `open` again; a job given

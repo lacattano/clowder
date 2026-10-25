@@ -302,13 +302,17 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual(offenders, [], "a defect reason lives in the record only")
 
     def test_design_names_a_defect_by_its_id_and_never_by_its_reason(self) -> None:
-        # Decision 36 used to quote two defect lines from the handovers. A quoted
-        # defect is a second copy: the doc now points at the record instead.
+        # Decision 36 used to quote two defect lines from the handovers, then to point
+        # at the handover files. A copied defect is a second copy: the doc names the
+        # record by id instead.
         design = (REPO / "DESIGN.md").read_text(encoding="utf-8")
         self.assertNotIn("A reset drops the pane to the default model", design)
         self.assertNotIn("A publish refused for a foreign identity", design)
         self.assertIn("by its one line and its id", design)
         self.assertIn("clowder defects show <id>", design)
+        self.assertIn("d-0001", design, "the seeded defects are named by id")
+        self.assertIn("d-0002", design)
+        self.assertNotIn("the handover files named here", design, "the file pointer is gone")
 
     def test_last_activity_counts_a_defect_sighting(self) -> None:
         self.store.save()

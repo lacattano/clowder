@@ -667,10 +667,9 @@ checkout can move it, and the merge check above catches that.
 Seen 2026-10-25, measured from the files rather than felt: 28 days of carried work had five
 handover documents and 13 working days with none, including days of 54, 50, 58, 66, 28 and 44
 steps. One known defect was written in three handovers in a row and still bit; another was in one
-handover, absent from the next two, and back in the last. Both reach the defects record when it is
-seeded, and each is in the handover files named here: the model defect in 2026-10-18, 2026-10-22
-and 2026-10-25, the identity defect in 2026-10-12 and 2026-10-25. They are not quoted here,
-because a defect has one home and this is not it. Five items in the latest handover
+handover, absent from the next two, and back in the last. Both are in the defects record now, as
+d-0001 and d-0002. They are not quoted here, because a defect has one home and this is not it.
+Five items in the latest handover
 appear in no earlier one, and whether they were older and never written down cannot be known. The
 front door did not read the latest handover at session start; its own start order named a list of
 files, so reading it depended on memory.
@@ -681,8 +680,10 @@ document becomes a view of the tool:
 - **One record.** `.clowder/defects.json`, beside the state file, is the only home for a known
   defect, quirk or workaround. `clowder defects add|list|show` writes and reads it. Fields: id,
   one line in the owner's words, first and last seen (a moment; the list shows the date), count,
-  job or none, state (open, has-job, fixed, accepted-workaround), and the reason on an accepted
-  workaround. The same normalised line is the same defect, so a second sighting raises the count
+  job or none, state (open, has-job, fixed, accepted-workaround), the reason on an accepted
+  workaround, and a detail body for the workaround and the citations. Seeding an entry from an
+  older record carries its dates and its count, and is refused without a state: a seed must say
+  where the defect stands today, not inherit a default. The same normalised line is the same defect, so a second sighting raises the count
   and moves `last_seen` instead of adding a record. If it is not in this file it is not known.
 - **One generated view.** `clowder handover write` composes `HANDOVER-<date>.md` from the record:
   what waits on the owner, the steps in flight, the open changes, what merged since the last
@@ -712,7 +713,7 @@ document becomes a view of the tool:
   defect written differently gets a new id and the count never rises. Do not fix that with fuzzy
   matching: it would merge two real defects, which is worse than a miss. Fix it with what a person
   can act on: `clowder defects list --like "<words>"` finds a line holding every one of those
-  words in any order, and `clowder start` prints the defects added in the last seven days so a
+  words in any order, and `clowder start` prints the defects seen in the last seven days so a
   near-duplicate is visible before a new one is added. A total rephrase is still missed, and a
   test pins that miss so the limit cannot be quietly forgotten.
 - **A broken record fails open.** `clowder start` and the board are drawn from the state, so a
