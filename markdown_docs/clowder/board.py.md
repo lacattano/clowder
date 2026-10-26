@@ -128,9 +128,11 @@ def write_board(data: BoardData, path: str | Path) -> Path
   the defects record cannot be read, `BoardData.defects_note` carries the file and
   the fault, and this section shows it instead of the list: the page still draws.
 - `render_board(data)` - the whole page as one self-contained HTML string: four
-  sections first (For you, Running now, Waiting for a worker, Changed since you last
-  opened this page), then the records. It reloads itself only when a step is in
-  flight, and says in one line when nothing has changed since the last draw.
+  sections first (For you, Running now, Waiting for a worker, What landed since this
+  page was last drawn), then the records. It reloads itself only when a step is in
+  flight, and says in one line when nothing has landed since the last draw. The landed
+  section counts landed work only, and a step with no update is marked when the roster
+  was not read live.
 - `write_board(data, path)` - writes `render_board(data)` to `path` (creating
   parents) and returns the `Path`.
 

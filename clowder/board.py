@@ -580,15 +580,20 @@ def names_the_merge(text: str) -> bool:
 def waiting_on_you(data: BoardData) -> list[str]:
     """Only what the owner must do: a decision, a review to merge, work at risk.
 
+    One line each: the number he replies with, how long it has waited, and the thing in
+    his words. No task or job id: the number is this page's own numbering, and the
+    handle would only be something else for him to hold. The detail, where there is
+    one, sits under the line, after the number and the wait.
+
     The front door's own to-do list is not here. A queued item or a step with no
     answer is chased by the front door, and lives in `waiting_for_worker`.
     """
-    lines: list[str] = []
+    entries: list[tuple[str, str, str, str]] = []  # moment, heading, note, detail
 
     # Every question the owner must answer is numbered, whether it was recorded
     # with `owner --item` or as an open decision on a report. One sequence, so a
     # number names one question on the whole page.
-    questions: list[tuple[str, str]] = []
+    questions: list[tuple[str, str, str, str]] = []
     # A job whose merge word is the only gate left, already named by an owner item.
     # That item is the line he reads and answers, so the derived merge line below
     # must not repeat the same decision a second time. Only an item that names the
@@ -607,10 +612,10 @@ def waiting_on_you(data: BoardData) -> list[str]:
             questions.append(
                 (
                     task.owner_item_at or task.created_at,
-                    # The item is the heading; the detail is the body under it. They
-                    # are rendered differently so a heading cannot become a page.
-                    f"<span class='owner-title'>{_full(task.owner_item or '')}</span> "
-                    f"<span class='why'>your move, [{_e(task.id)}]</span>{detail}",
+                    # The item is the heading; the detail is the body under it.
+                    f"<span class='owner-title'>{_full(task.owner_item or '')}</span>",
+                    "your move",
+                    detail,
                 )
             )
     for task in data.tasks:
@@ -618,31 +623,30 @@ def waiting_on_you(data: BoardData) -> list[str]:
             questions.append(
                 (
                     task.created_at,
-                    f"{_full(task.open_decision)} "
-                    f"<span class='why'>decision, [{_e(task.id)}] asked by "
-                    f"{_e(task.agent)} about {_full(task.question)}</span>",
+                    _full(task.open_decision),
+                    f"decision, asked by {_e(task.agent)} about {_full(task.question)}",
+                    "",
                 )
             )
-    entries: list[tuple[str, str]] = sorted(questions, key=lambda item: item[0])
+    entries = sorted(questions, key=lambda item: item[0])
     jobs_by_id = {job.id: job for job in data.jobs}
     for task in data.tasks:
         if task.id in data.stranded:
             job = jobs_by_id.get(task.job or "")
             belongs = (
-                f"the change {_e(job.name_in_words)} [{_e(job.id)}]"
+                f"the change {_e(job.name_in_words)}"
                 if job is not None
-                else f"step {_e(task.id)}"
+                else "a step with no change"
             )
             keep = f'git -C "{_e(task.worktree)}" branch keep-{_e(task.id)} {_e(task.commit)}'
             entries.append(
                 (
                     task.created_at,
-                    f"<b>work at risk</b> <span class='id'>{_e(task.id)}</span> "
-                    f"{belongs}: commit {_e(task.commit)} is genuinely stranded. "
-                    f"<span class='why'>it is on no branch, and no later commit "
-                    f"supersedes it. It lives only in {_e(task.worktree)}, so reusing "
-                    f"that space would lose it. To keep it, run "
-                    f"<code>{keep}</code></span>",
+                    f"<b>work at risk</b> {belongs}",
+                    f"commit {_e((task.commit or '')[:7])} is on no branch",
+                    f"<span class='why'>No later commit supersedes it, and it lives only in "
+                    f"{_e(task.worktree)}, so reusing that space would lose it. To keep "
+                    f"it, run <code>{keep}</code></span>",
                 )
             )
 
@@ -663,10 +667,10 @@ def waiting_on_you(data: BoardData) -> list[str]:
             entries.append(
                 (
                     moment,
-                    f"<b>needs re-review</b> {_e(job.name_in_words)} was checked at "
-                    f"{_e(checked)} but has moved to {_e(tip[:7])}. "
-                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; the "
-                    "reviewer must check the new commit before you walk it.</span>",
+                    f"<b>needs re-review</b> {_e(job.name_in_words)}",
+                    f"checked at {_e(checked)}, now at {_e(tip[:7])}",
+                    f"<span class='why'>{_e(job.effect_in_words)}; the reviewer must "
+                    "check the new commit before you walk it.</span>",
                 )
             )
             continue
@@ -675,10 +679,10 @@ def waiting_on_you(data: BoardData) -> list[str]:
             entries.append(
                 (
                     moment,
-                    f"<b>review unconfirmed</b> {_e(job.name_in_words)} was checked at "
-                    f"{_e(checked)}, but its current commit could not be read. "
-                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; confirm "
-                    "the branch by hand before you walk it.</span>",
+                    f"<b>review unconfirmed</b> {_e(job.name_in_words)}",
+                    f"checked at {_e(checked)}, and the current commit could not be read",
+                    f"<span class='why'>{_e(job.effect_in_words)}; confirm the branch by "
+                    "hand before you walk it.</span>",
                 )
             )
             continue
@@ -687,10 +691,10 @@ def waiting_on_you(data: BoardData) -> list[str]:
         entries.append(
             (
                 moment,
-                f"<b>held for your review</b> {_e(job.name_in_words)} was handed to "
-                f"{_e(job.reviewer)} "
-                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; waiting "
-                f"{_e(human_age(seconds))}{quiet}. Walk it in the reviewer's space.</span>",
+                f"<b>held for your review</b> {_e(job.name_in_words)}",
+                f"handed to {_e(job.reviewer)} {_e(human_age(seconds))}{quiet} ago",
+                f"<span class='why'>{_e(job.effect_in_words)}; walk it in the "
+                "reviewer's space.</span>",
             )
         )
 
@@ -704,25 +708,29 @@ def waiting_on_you(data: BoardData) -> list[str]:
             and not job.has_merge_word
             and job.id not in named_by_item
         ):
-            reviewed_by = f" was reviewed by {_e(job.reviewer)}" if job.reviewer else ""
+            reviewed_by = f"reviewed by {_e(job.reviewer)}" if job.reviewer else "passed"
             entries.append(
                 (
                     job.published_at or job.created_at,
-                    f"<b>your word</b> {_e(job.name_in_words)}{reviewed_by} "
-                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; "
-                    "the front door merges it once you give your merge word and the "
-                    "checks are green</span>",
+                    f"<b>your word</b> {_e(job.name_in_words)}",
+                    reviewed_by,
+                    f"<span class='why'>{_e(job.effect_in_words)}; the front door merges "
+                    "it once you give your merge word and the checks are green.</span>",
                 )
             )
 
     # One number per line, in the order above, and the exact word to type: the number.
-    # The age is measured from the record's own moment, not from this render.
-    for number, (moment, line) in enumerate(entries, start=1):
+    # The wait is measured from the record's own moment, and it sits on the line, not
+    # after a detail block, so he does not have to hunt for it.
+    lines: list[str] = []
+    for number, (moment, heading, note, detail) in enumerate(entries, start=1):
         waited = human_age(elapsed_seconds(moment, None))
         lines.append(
-            f"<b>{number}.</b> {line} "
+            f"<b>{number}.</b> {heading} "
             f"<span class='type'>type {number}</span>"
             f"<span class='age'>waited {_e(waited)}</span>"
+            + (f" <span class='why'>{note}</span>" if note else "")
+            + detail
         )
     return lines
 
@@ -761,6 +769,18 @@ def waiting_for_worker(data: BoardData) -> list[str]:
 
     for task in open_tasks(data.tasks):
         if task.age_seconds < QUIET_AFTER_SECONDS:
+            continue
+        if not data.live_ok:
+            # No live read, so a quiet step is judged on the record's own age: this is
+            # the only evidence there is, and it is enough to say "nothing recorded
+            # since". It is a different claim from "the worker is idle", and it is the
+            # one the page can stand behind.
+            lines.append(
+                f"<b>not checked live</b> <span class='id'>{_e(task.id)}</span> "
+                f"{_e(task.agent)} shipped nothing to the record for "
+                f"{_e(human_age(task.age_seconds))}; confirm the worker is still on it "
+                f"<span class='why'>{_more(task.question, 120)}</span>"
+            )
             continue
         agent = next((a for a in data.agents if a.name == task.agent), None)
         if agent is None:
@@ -809,14 +829,26 @@ def waiting_for_worker(data: BoardData) -> list[str]:
 
 
 def running_now(data: BoardData) -> list[str]:
-    """What each worker is on, how long, and whether the step is heavy."""
+    """What each worker is on, how long, and whether the step is heavy.
+
+    Without a live read this is "open steps", not "busy workers": the record cannot say
+    whether the pane is working, so a step that has recorded nothing for a while is
+    marked. The owner must be able to tell a running step from one that was dispatched
+    hours ago, and this page must not call the second one running in silence.
+    """
     lines: list[str] = []
     for task in sorted(
         open_tasks(data.tasks), key=lambda task: task.dispatched_at or task.created_at
     ):
         heavy = " <span class='pill'>heavy</span>" if task.heavy else ""
+        quiet = ""
+        if not data.live_ok and task.age_seconds >= QUIET_AFTER_SECONDS:
+            quiet = (
+                f" <span class='pill bad'>no update for "
+                f"{_e(human_age(task.age_seconds))}</span>"
+            )
         lines.append(
-            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{heavy} "
+            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{heavy}{quiet} "
             f"<span class='age'>{_e(human_age(task.age_seconds))}</span>"
         )
     return lines
@@ -1312,16 +1344,24 @@ def render_board(data: BoardData) -> str:
             "recorded; a report the front door holds in its words will not appear here."
         )
 
-    idle_line = "Nothing is running. This page does not reload itself when idle."
+    idle_line = "No step is open. This page does not reload itself when idle."
     running_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in running) + "</ul>"
         if running
         else _nothing(idle_line)
     )
-    running_html += (
-        "<p class='why'>A step is one worker's turn. Heavy means it may install "
-        "or run a suite, and only one heavy step runs at a time.</p>"
-    )
+    if data.live_ok:
+        running_note = (
+            "A step is one worker's turn. Heavy means it may install or run a suite, and "
+            "only one heavy step runs at a time."
+        )
+    else:
+        running_note = (
+            "These are the open steps in the record. The live state of each worker was "
+            "not read, so a step marked 'no update' has recorded nothing for that long: "
+            "it may be working, or it may have stopped."
+        )
+    running_html += f"<p class='why'>{running_note}</p>"
 
     queue_parts: list[str] = []
     if queue:
@@ -1338,17 +1378,20 @@ def render_board(data: BoardData) -> str:
         queue_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
 
     drawn = _display_stamp(data.previous_draw) if data.previous_draw else data.generated_at
+    # The section counts landed work only, and says so: a step that started is under
+    # "Running now", not here. "Nothing changed" would be false while a step runs.
     if data.previous_draw and not changed:
-        freshness = f"Nothing has changed since {drawn}."
+        freshness = f"Nothing has landed since {drawn}."
     elif data.previous_draw:
-        freshness = f"Changed since the page was last drawn at {drawn}; the list is below."
+        counted = "1 thing landed" if len(changed) == 1 else f"{len(changed)} things landed"
+        freshness = f"{counted} since the page was last drawn at {drawn}; the list is below."
     else:
         freshness = f"This is the first draw, at {data.generated_at}."
     shown = changed[:CHANGED_CAP]
     changed_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in shown) + "</ul>"
         if changed
-        else _nothing(f"Nothing has changed since {drawn}.")
+        else _nothing(f"Nothing has landed since {drawn}.")
     )
     if len(changed) > len(shown):
         changed_html += (
@@ -1356,8 +1399,9 @@ def render_board(data: BoardData) -> str:
             "are in the record below.</p>"
         )
     changed_html = (
-        "<p class='why'>The tool cannot know when you opened this page. It knows when it "
-        "last drew it, and this list is everything recorded since then.</p>" + changed_html
+        "<p class='why'>The tool cannot know when you opened this page; it knows when it "
+        "last drew it. This lists the work that landed since then, and nothing else: a "
+        "step that started is under Running now.</p>" + changed_html
     )
 
     kanban_html = _kanban(data)
@@ -1487,7 +1531,7 @@ def render_board(data: BoardData) -> str:
 {_section("For you", len(for_you), needs_html, css="needs")}
 {_section("Running now", len(running), running_html)}
 {_section("Waiting for a worker", len(queue) + len(worker), queue_html)}
-{_section("Changed since you last opened this page", len(changed), changed_html)}
+{_section("What landed since this page was last drawn", len(changed), changed_html)}
 {filters_html}
 {kanban_html}
 {_section("Agents and spaces", len(agent_rows), agents_html)}

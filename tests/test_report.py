@@ -127,6 +127,14 @@ class BuildReportTest(unittest.TestCase):
         self.assertNotIn("For the owner:", "\n".join(lines[3:]), "not repeated below")
         self.assertIn("The terms page was a placeholder.", text)
 
+    def test_a_placeholder_owner_line_counts_as_missing(self) -> None:
+        # "For the owner: ok" passes a prefix check and says nothing. The floor is a
+        # length and a word count, so a placeholder is visibly incomplete like a missing
+        # line - and `step report` warns on it too, because it asks the same function.
+        text = build_report(task(), usage(), "The refund page is missing.\nFor the owner: ok")
+        self.assertIn("(incomplete: no For the owner: line", text)
+        self.assertNotIn("For the owner: ok", text)
+
     def test_a_report_without_the_owner_line_is_visibly_incomplete(self) -> None:
         # Not silently accepted: the answer still prints, and the report says why the
         # front door cannot relay it.

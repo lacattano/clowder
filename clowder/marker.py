@@ -32,12 +32,11 @@ DEFAULT_SENDER = "the front door"
 # told to send, with the job id, a headline and the answer's place.
 REPORT_INSTRUCTION = (
     "Report per the crew skill.\n"
-    "End it with one line: For the owner: <two sentences, his words, what this changes\n"
-    "for him>. The front door relays that line verbatim.\n"
-    "When this step is done, send its report to {sender} over the agent bus. Find them by\n"
-    "name in your own peer list, and send the job id, a one-line headline, and\n"
-    "where the full answer is. The answer also stays in your session, so `clowder inbox`\n"
-    "can find it."
+    "End with one line: For the owner: <two sentences, his words, what changes for him>.\n"
+    "Send the report to {sender} over the agent bus, by name in your peer list:\n"
+    "the job id, a one-line headline, where the full answer is.\n"
+    'Close it: clowder step report {task_id} --headline "<one line>"; clowder inbox\n'
+    "finds it."
 )
 
 
@@ -50,5 +49,5 @@ def marker_line(task_id: str, shape: str, repo: str, sender: str) -> str:
 def apply_marker(brief: str, task_id: str, shape: str, repo: str, sender: str) -> str:
     """The exact text handed to the multiplexer."""
     header = marker_line(task_id, shape, repo, sender)
-    instruction = REPORT_INSTRUCTION.format(sender=sender)
+    instruction = REPORT_INSTRUCTION.format(sender=sender, task_id=task_id)
     return f"{header}\n{instruction}\n{brief}"

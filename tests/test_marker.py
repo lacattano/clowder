@@ -39,7 +39,7 @@ class ApplyMarkerTest(unittest.TestCase):
         # The short marker still carries the essential instruction: send, to whom,
         # resolved in the worker's own peer list, with the id, a headline and where
         # the answer is. Without this, decision 22's failure returns.
-        self.assertIn("send its report to topcat over the agent bus", text)
+        self.assertIn("Send the report to topcat over the agent bus", text)
         self.assertIn("peer list", text)
         self.assertIn("job id", text)
         self.assertIn("one-line headline", text)
@@ -54,13 +54,13 @@ class ApplyMarkerTest(unittest.TestCase):
 
     def test_the_marker_is_short(self) -> None:
         # The whole point of the move: the per-dispatch instruction is small. The old
-        # marker was 128 words; this bounds it well below that. It grew once, on
-        # 2026-10-26, for the one line the owner asked every report to carry.
+        # marker was 128 words; the bound is 60 and it holds - the owner-facing line was
+        # added on 2026-10-26 by tightening the rest, not by raising the bound.
         from clowder.marker import REPORT_INSTRUCTION
 
-        self.assertLessEqual(len(REPORT_INSTRUCTION.split()), 90)
+        self.assertLessEqual(len(REPORT_INSTRUCTION.split()), 60)
         self.assertIn("For the owner:", REPORT_INSTRUCTION)
-        self.assertIn("relays that line verbatim", REPORT_INSTRUCTION)
+        self.assertIn("clowder step report {task_id}", REPORT_INSTRUCTION)
 
     def test_the_message_names_no_bus_address(self) -> None:
         # The worker resolves the name in its own peer list; addresses move.

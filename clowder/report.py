@@ -25,15 +25,26 @@ REPORT_LINE_LIMIT = 40
 # him. The front door relays it verbatim. It is part of the answer, so it lives in the
 # record with the answer; this module only finds it and shows it first.
 OWNER_LINE_PREFIX = "For the owner:"
+# A placeholder is not a line. "For the owner: ok" passes a prefix check and says
+# nothing, so the check is a floor on both length and words: two sentences in his words
+# cannot be shorter than this, and the front door must be able to relay it as it stands.
+OWNER_LINE_MIN_CHARS = 40
+OWNER_LINE_MIN_WORDS = 8
 
 
 def owner_line(answer: str | None) -> str | None:
-    """The owner-facing line from an answer, or None when the report has none."""
+    """The owner-facing line from an answer, or None when there is no usable one.
+
+    One place decides what counts, so `report`, `step report` and the tests agree: a
+    line that is only a prefix, or too short to say what changes, is not a line.
+    """
     for line in (answer or "").splitlines():
         text = line.strip()
         if text.lower().startswith(OWNER_LINE_PREFIX.lower()):
             rest = text[len(OWNER_LINE_PREFIX) :].strip()
-            return rest or None
+            if len(rest) < OWNER_LINE_MIN_CHARS or len(rest.split()) < OWNER_LINE_MIN_WORDS:
+                return None
+            return rest
     return None
 
 

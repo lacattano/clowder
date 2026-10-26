@@ -747,27 +747,38 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   render, with a git look per agent. It is built from the state file now, and every field the
   state cannot know is left empty ("-") with one line saying the roster was not read live.
   `board --live` asks the multiplexer once for the live list; `clowder agents` still reads it,
-  because that command is about agents. Measured after: `board` 0.6s, a state-changing command
-  0.2s, `board --live` 1.4s (min of five; the machine was loaded, so the medians are worse).
+  because that command is about agents. Measured on this box, min of five, memory at 61%: `board`
+  3.15s, `board --live` 4.90s, `agents` 3.56s, `tasks` 0.63s, and a state-changing command on a
+  small state 0.23s. The roster read is worth the `board --live` minus `board` delta, 1.4-1.8s.
+  The rest of `board` is **not** the roster: it is 182 `commit_risk` git looks for the stranded-
+  commit check on this record, about 1.4s in-process and the larger part of the 3.15s wall time.
+  A 0.62s figure quoted earlier was a run where every memo answer still held - a best case, not the
+  number. That check is the next target; it is untouched here.
 - **The order is his.** "For you" (one line per question, the number he replies with, and how
   long it has waited), "Running now" (each worker, what it is on, how long, heavy or not),
   "Waiting for a worker" (the front door's queue, oldest first, with its own warnings), then
-  "Changed since you last opened this page". The records follow, unchanged: the filterable cards,
-  agents and spaces, answers, dropped items, the model rollup.
-- **"Changed" is honest about what it can know.** The tool cannot know when he opened the page; it
+  "What landed since this page was last drawn". The records follow, unchanged: the filterable
+  cards, agents and spaces, answers, dropped items, the model rollup.
+- **"What landed" is scoped to what it counts.** The tool cannot know when he opened the page; it
   knows when it last drew it, because the page carries that moment in its own body and the next
-  draw reads the file it is replacing. So the section says exactly that, and lists landed work in
-  one sentence each, in his words, no id and no state word - the newest twelve, with "showing the
-  newest 12 of N" when the record is older than that, because the first draw of an old record held
-  months of merges and he asked for a page, not a wall. With nothing new it says "Nothing has
-  changed since 12:40" - the last draw, not the last render, so a redraw cannot invent freshness.
-  The footer keeps the page's own age: generated at, and the record's last change.
+  draw reads the file it is replacing. The section counts landed work only - a step that started
+  is under Running now, not here - and both the heading and the empty line say so ("Nothing has
+  landed since 12:40"), because "nothing changed" was false while a step ran. One sentence each,
+  in his words, no id and no state word - the newest twelve, with "showing the newest 12 of N"
+  when the record is older, because the first draw of an old record held months of merges. The
+  footer keeps the page's own age: generated at, and the record's last change.
 - **It reloads only while work runs.** The page always carried a 30s meta refresh. It now carries
   one only while a step is in flight: the browser re-reads the file, and the box draws nothing
   between commands, so an idle reload is flicker. The alternative - a timer that redraws the page
-  while work runs - would cost a render per tick: at the measured 0.62s and 30s, about 74s of CPU
-  per hour per open page, plus a process to start and stop. The meta refresh costs a file read and
-  no daemon, so it is the cheaper one and there is still no server or port to manage.
+  while work runs - would cost a render per tick; at the measured 0.23s for a state change on a
+  small state, and 3.15s on this record, that is 27s to 6 minutes of CPU per hour per open page,
+  plus a process to start and stop. The meta refresh costs a file read and no daemon, so it is the
+  cheaper one and there is still no server or port to manage.
+- **Not live means "not checked", not "busy" or "idle".** The roster is not read on a normal draw,
+  so the page says what it can: a step whose record has not changed for the quiet threshold is
+  marked "no update for 6h" under Running now, and the worker section repeats it as "not checked
+  live - shipped nothing to the record for 6h". A dead worker therefore reads as doubtful instead
+  of running, and nothing is called idle without a live read.
 - **Every report carries one line for him.** `For the owner: <two sentences, his words, what this
   changes for him>`. The dispatch marker requires it, `clowder report` shows it first and marks a
   report without it "(incomplete: ...)", and `step report` says so on stderr. The front door

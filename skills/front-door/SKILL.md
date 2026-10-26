@@ -55,7 +55,7 @@ The newer pieces, so a fresh you does not have to discover them:
   you need the live roster, and the page says which it shows. It is rewritten by every command
   that changes state, so it is current without anyone running `clowder board`.
 - The page reloads itself only while something is in flight. When nothing is, it says so and
-  does not reload. Relay "nothing has changed since ..." as it stands; do not add news.
+  does not reload. Relay "nothing has landed since ..." as it stands; do not add news.
 
 What a refresh cannot recover: anything you kept only in your own words. If it is not on a job, a
 task or a queue item, a fresh you will not know it.
@@ -504,7 +504,7 @@ It writes one HTML file next to the state file and prints the path. It is drawn 
 file, so it needs no server and no multiplexer read (`--live` adds the live roster, and the page
 says which it shows). Its first section is "For you": one line per question, the number he
 replies with, and how long it has waited. Then "Running now", "Waiting for a worker" (your
-queue), and "Changed since you last opened this page", which the tool titles honestly: it knows
+queue), and "What landed since this page was last drawn", which the tool titles honestly: it knows
 when it last drew the page, not when he opened it. Relay his section in words. Do not paste the
 HTML at the user.
 

@@ -298,7 +298,7 @@ class CliTest(unittest.TestCase):
             sent.startswith("[clowder job t-0001 | ship | myrepo | from topcat]\n"), sent
         )
         # The tool, not the brief writer, tells the worker to report over the bus.
-        self.assertIn("send its report to topcat over the agent bus", sent)
+        self.assertIn("Send the report to topcat over the agent bus", sent)
         self.assertIn("peer list", sent)
         self.assertIn("clowder inbox", sent)
         self.assertIn("crew skill", sent)
@@ -3683,7 +3683,7 @@ class CliTest(unittest.TestCase):
         owner = (self.root / "board.html").read_text(encoding="utf-8")
         owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertIn("t-0001", owner)
-        self.assertIn("genuinely stranded", owner)
+        self.assertIn("on no branch", owner)
         self.assertIn("To keep it", owner)
         self.assertIn(f"branch keep-t-0001 {lost}", owner)
 
