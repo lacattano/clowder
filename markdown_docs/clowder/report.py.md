@@ -7,8 +7,11 @@ of a report. The shape is fixed, because the shape is the point:
 
 1. The question first, so a late answer still knows what it answers (`Re: ...`).
 2. One indented usage line.
-3. The answer.
-4. At most one open decision.
+3. The answer - with the owner-facing line (`For the owner: ...`) shown once, first,
+   and the body below it.
+4. A note when a report has no such line: "(incomplete: ...)". A report without it is
+   readable but cannot be relayed to the owner as it is.
+5. At most one open decision.
 
 It also has small formatters for token counts and cost, and a helper that says
 where the work happened (main checkout, a named worktree, or a branch at a commit).
@@ -17,6 +20,17 @@ The module is pure formatting. It reads no files and runs no commands; the calle
 supplies the `Task`, `Usage`, `Job` and answer objects.
 
 ## Public API
+
+```python
+OWNER_LINE_PREFIX = "For the owner:"
+
+def owner_line(answer: str | None) -> str | None
+def strip_owner_line(answer: str) -> str
+```
+
+- `owner_line(answer)` - the one line the front door relays verbatim, or None.
+- `strip_owner_line(answer)` - the answer without that line, for the body, so the
+  line is shown once.
 
 ```python
 def format_tokens(count: int) -> str

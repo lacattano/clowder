@@ -32,6 +32,8 @@ DEFAULT_SENDER = "the front door"
 # told to send, with the job id, a headline and the answer's place.
 REPORT_INSTRUCTION = (
     "Report per the crew skill.\n"
+    "End it with one line: For the owner: <two sentences, his words, what this changes\n"
+    "for him>. The front door relays that line verbatim.\n"
     "When this step is done, send its report to {sender} over the agent bus. Find them by\n"
     "name in your own peer list, and send the job id, a one-line headline, and\n"
     "where the full answer is. The answer also stays in your session, so `clowder inbox`\n"

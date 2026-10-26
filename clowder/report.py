@@ -21,6 +21,31 @@ INDENT = "    "
 # fixed lines above it (question, usage, change) are always shown.
 REPORT_LINE_LIMIT = 40
 
+# The one line every report must carry, in the owner's words: what this changes for
+# him. The front door relays it verbatim. It is part of the answer, so it lives in the
+# record with the answer; this module only finds it and shows it first.
+OWNER_LINE_PREFIX = "For the owner:"
+
+
+def owner_line(answer: str | None) -> str | None:
+    """The owner-facing line from an answer, or None when the report has none."""
+    for line in (answer or "").splitlines():
+        text = line.strip()
+        if text.lower().startswith(OWNER_LINE_PREFIX.lower()):
+            rest = text[len(OWNER_LINE_PREFIX) :].strip()
+            return rest or None
+    return None
+
+
+def strip_owner_line(answer: str) -> str:
+    """The answer without its owner-facing line, for the body of the report."""
+    kept = [
+        line
+        for line in answer.splitlines()
+        if not line.strip().lower().startswith(OWNER_LINE_PREFIX.lower())
+    ]
+    return "\n".join(kept).strip()
+
 
 def format_tokens(count: int) -> str:
     if count >= 1_000_000:
@@ -100,10 +125,18 @@ def build_report(
     if job is not None and job.title:
         lines.append(INDENT + f"change: {job.title} - {job.state_in_words}")
 
+    line = owner_line(answer)
+    if line:
+        # The relay line goes first: it is the one sentence the owner reads, and the
+        # body below it is the detail.
+        lines.append(INDENT + f"{OWNER_LINE_PREFIX} {line}")
+
     if answer:
-        shown, hidden = _answer_lines(answer, full)
-        for line in shown:
-            lines.append(INDENT + line.rstrip())
+        shown, hidden = _answer_lines(strip_owner_line(answer), full)
+        for body_line in shown:
+            # Not `line`: that name holds the owner-facing line above, and reusing it
+            # here once made the incomplete check below compare against an answer line.
+            lines.append(INDENT + body_line.rstrip())
         if hidden:
             lines.append(
                 INDENT + f"... {hidden} more line(s) hidden; read the whole answer with --full"
@@ -117,6 +150,13 @@ def build_report(
     else:
         lines.append(
             INDENT + f"(no answer yet - dispatched {human_duration(task.age_seconds)} ago)"
+        )
+
+    if answer and line is None:
+        # Visible, not silent: the report is readable, but it cannot be relayed as it is.
+        lines.append(
+            INDENT + "(incomplete: no For the owner: line - the front door cannot relay this "
+            "until one is added)"
         )
 
     if task.open_decision:

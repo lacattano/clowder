@@ -29,7 +29,7 @@ from .state import (
     Task,
     step_in_flight,
 )
-from .timeutil import elapsed_seconds, human_age, human_duration
+from .timeutil import elapsed_seconds, human_age, human_duration, to_epoch
 
 # An open step whose agent is idle for longer than this is worth a second look:
 # nothing is running, so nobody may be coming back to it.
@@ -44,6 +44,10 @@ TITLE = "clowder board"
 # An open tab follows along on its own: no server, no network. The one script is
 # the page's own filter loop, inline; nothing is fetched.
 REFRESH_SECONDS = 30
+# How many landed changes the "Changed" section prints. His complaint was a wall of
+# text, and the first draw of an old record can hold months of merges; the newest few
+# are what he can act on, and the count is named so the cut is never hidden.
+CHANGED_CAP = 12
 
 STYLE = """
 :root {
@@ -102,6 +106,13 @@ tbody tr:last-child td { border-bottom: 0; }
   white-space: pre-wrap; overflow-wrap: anywhere; margin: .35rem 0 0;
   color: var(--ink); font-size: .92rem;
 }
+/* The exact word to type, and how long a question has waited. */
+.type {
+  display: inline-block; margin-left: .35rem; padding: .05rem .45rem;
+  border: 1px solid var(--accent); border-radius: 999px; color: var(--accent);
+  font-size: .78rem; font-family: Consolas, "Cascadia Mono", monospace;
+}
+.age { color: var(--muted); font-size: .85rem; margin-left: .4rem; }
 ul { margin: 0; padding-left: 1.1rem; }
 li { margin: .25rem 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
@@ -247,7 +258,9 @@ class BoardAgent:
     space: str | None = None
     branch: str | None = None
     commit: str | None = None
-    saved: bool = True
+    # None means the state file does not say: the roster was not read live. The page
+    # shows "-", never a guess.
+    saved: bool | None = None
     main_checkout: bool = False
     detached: bool = False
 
@@ -402,7 +415,19 @@ class BoardData:
     queued: list[Queued] = field(default_factory=list)
     agents: list[BoardAgent] = field(default_factory=list)
     state_path: str = ""
+    # `generated_at` is the local stamp a person reads; `drawn_at` is the same moment
+    # as an ISO timestamp, which is what the page records for itself and what the next
+    # draw compares against. Minutes are too coarse to answer "changed since".
     generated_at: str = ""
+    drawn_at: str = ""
+    # When the previous version of this page was drawn (ISO), or None for the first
+    # draw. Read from the file being replaced, so the page can say what changed since
+    # it was last drawn without keeping a second record.
+    previous_draw: str | None = None
+    # The newest moment any record was touched, as a display stamp. This is the honest
+    # clock for "nothing has changed since": a page redrawn at 13:10 with no new record
+    # says 12:40, not 13:10.
+    last_change: str | None = None
     live_ok: bool = True
     note: str | None = None
     # The front door's own name, for text that means it and not the owner.
@@ -439,6 +464,12 @@ def _e(value: object) -> str:
 def now_stamp() -> str:
     """A readable local time for the page header."""
     return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def stamp_of(moment: datetime) -> str:
+    """A recorded moment as the local stamp the page shows."""
+    local = moment.astimezone() if moment.tzinfo else moment
+    return local.strftime("%Y-%m-%d %H:%M")
 
 
 def _flat(text: str) -> str:
@@ -592,10 +623,7 @@ def waiting_on_you(data: BoardData) -> list[str]:
                     f"{_e(task.agent)} about {_full(task.question)}</span>",
                 )
             )
-    ordered = sorted(questions, key=lambda item: item[0])
-    for number, (_, line) in enumerate(ordered, start=1):
-        lines.append(f"<b>{number}.</b> {line}")
-
+    entries: list[tuple[str, str]] = sorted(questions, key=lambda item: item[0])
     jobs_by_id = {job.id: job for job in data.jobs}
     for task in data.tasks:
         if task.id in data.stranded:
@@ -606,13 +634,16 @@ def waiting_on_you(data: BoardData) -> list[str]:
                 else f"step {_e(task.id)}"
             )
             keep = f'git -C "{_e(task.worktree)}" branch keep-{_e(task.id)} {_e(task.commit)}'
-            lines.append(
-                f"<b>work at risk</b> <span class='id'>{_e(task.id)}</span> "
-                f"{belongs}: commit {_e(task.commit)} is genuinely stranded. "
-                f"<span class='why'>it is on no branch, and no later commit "
-                f"supersedes it. It lives only in {_e(task.worktree)}, so reusing "
-                f"that space would lose it. To keep it, run "
-                f"<code>{keep}</code></span>"
+            entries.append(
+                (
+                    task.created_at,
+                    f"<b>work at risk</b> <span class='id'>{_e(task.id)}</span> "
+                    f"{belongs}: commit {_e(task.commit)} is genuinely stranded. "
+                    f"<span class='why'>it is on no branch, and no later commit "
+                    f"supersedes it. It lives only in {_e(task.worktree)}, so reusing "
+                    f"that space would lose it. To keep it, run "
+                    f"<code>{keep}</code></span>",
+                )
             )
 
     # The held changes waiting for him, oldest first. A queue with an age, so a
@@ -626,31 +657,41 @@ def waiting_on_you(data: BoardData) -> list[str]:
         if any(task.job == job.id and task.is_open for task in data.tasks):
             continue  # the review step is still running; not the owner's turn yet
         tip = data.rereview.get(job.id)
+        moment = job.handed_over_at or job.created_at
         if tip:
             checked = (job.review_commit or "")[:7]
-            lines.append(
-                f"<b>needs re-review</b> {_e(job.name_in_words)} was checked at "
-                f"{_e(checked)} but has moved to {_e(tip[:7])}. "
-                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; the "
-                "reviewer must check the new commit before you walk it.</span>"
+            entries.append(
+                (
+                    moment,
+                    f"<b>needs re-review</b> {_e(job.name_in_words)} was checked at "
+                    f"{_e(checked)} but has moved to {_e(tip[:7])}. "
+                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; the "
+                    "reviewer must check the new commit before you walk it.</span>",
+                )
             )
             continue
         if job.id in data.review_unconfirmed:
             checked = (job.review_commit or "")[:7]
-            lines.append(
-                f"<b>review unconfirmed</b> {_e(job.name_in_words)} was checked at "
-                f"{_e(checked)}, but its current commit could not be read. "
-                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; confirm "
-                "the branch by hand before you walk it.</span>"
+            entries.append(
+                (
+                    moment,
+                    f"<b>review unconfirmed</b> {_e(job.name_in_words)} was checked at "
+                    f"{_e(checked)}, but its current commit could not be read. "
+                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; confirm "
+                    "the branch by hand before you walk it.</span>",
+                )
             )
             continue
         seconds = elapsed_seconds(job.handed_over_at, None)
         quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
-        lines.append(
-            f"<b>held for your review</b> {_e(job.name_in_words)} was handed to "
-            f"{_e(job.reviewer)} "
-            f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; waiting "
-            f"{_e(human_age(seconds))}{quiet}. Walk it in the reviewer's space.</span>"
+        entries.append(
+            (
+                moment,
+                f"<b>held for your review</b> {_e(job.name_in_words)} was handed to "
+                f"{_e(job.reviewer)} "
+                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; waiting "
+                f"{_e(human_age(seconds))}{quiet}. Walk it in the reviewer's space.</span>",
+            )
         )
 
     for job in data.jobs:
@@ -664,13 +705,25 @@ def waiting_on_you(data: BoardData) -> list[str]:
             and job.id not in named_by_item
         ):
             reviewed_by = f" was reviewed by {_e(job.reviewer)}" if job.reviewer else ""
-            lines.append(
-                f"<b>your word</b> {_e(job.name_in_words)}{reviewed_by} "
-                f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; "
-                "the front door merges it once you give your merge word and the "
-                "checks are green</span>"
+            entries.append(
+                (
+                    job.published_at or job.created_at,
+                    f"<b>your word</b> {_e(job.name_in_words)}{reviewed_by} "
+                    f"<span class='why'>[{_e(job.id)}] {_e(job.effect_in_words)}; "
+                    "the front door merges it once you give your merge word and the "
+                    "checks are green</span>",
+                )
             )
 
+    # One number per line, in the order above, and the exact word to type: the number.
+    # The age is measured from the record's own moment, not from this render.
+    for number, (moment, line) in enumerate(entries, start=1):
+        waited = human_age(elapsed_seconds(moment, None))
+        lines.append(
+            f"<b>{number}.</b> {line} "
+            f"<span class='type'>type {number}</span>"
+            f"<span class='age'>waited {_e(waited)}</span>"
+        )
     return lines
 
 
@@ -753,6 +806,60 @@ def waiting_for_worker(data: BoardData) -> list[str]:
             )
 
     return lines
+
+
+def running_now(data: BoardData) -> list[str]:
+    """What each worker is on, how long, and whether the step is heavy."""
+    lines: list[str] = []
+    for task in sorted(
+        open_tasks(data.tasks), key=lambda task: task.dispatched_at or task.created_at
+    ):
+        heavy = " <span class='pill'>heavy</span>" if task.heavy else ""
+        lines.append(
+            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{heavy} "
+            f"<span class='age'>{_e(human_age(task.age_seconds))}</span>"
+        )
+    return lines
+
+
+def worker_queue(data: BoardData) -> list[str]:
+    """The front door's queue, oldest first: decided, not sent."""
+    lines: list[str] = []
+    for item in sorted(data.queued, key=lambda item: item.created_at):
+        who = item.agent or item.role or "unassigned"
+        lines.append(
+            f"<b>{_e(who)}</b> - {_full(item.question or item.brief)} "
+            f"<span class='why'>waiting {_e(human_age(item.age_seconds))}; "
+            f"why: {_e(item.why)}</span>"
+        )
+    return lines
+
+
+def changed_for_owner(data: BoardData, *, since: float | None) -> list[str]:
+    """What changed for him, one sentence each, newest first.
+
+    Only work that landed, in his words: the change's effect line, or its title. No
+    id, no state word, no branch - this is the section he reads without the crew's
+    dialect.
+    """
+    entries: list[tuple[float, str]] = []
+    for job in data.jobs:
+        moment = to_epoch(job.merged_at)
+        if moment is None or (since is not None and moment <= since):
+            continue
+        what = (job.effect or "").strip() or job.name_in_words
+        entries.append((moment, f"Now live: {_e(what)}"))
+    return [line for _, line in sorted(entries, key=lambda pair: pair[0], reverse=True)]
+
+
+def _display_stamp(value: str | None) -> str:
+    """A recorded moment as the stamp a person reads, whatever shape it arrived in."""
+    if not value:
+        return "the first draw"
+    try:
+        return stamp_of(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return value
 
 
 def _field_names() -> tuple[str, ...]:
@@ -1036,6 +1143,10 @@ def _agent_reason(data: BoardData, name: str, reviewer: str | None = None) -> st
         if data.live_ok:
             return f"{name} is not in the live agent list"
         return f"{name} is not running"
+    if agent.status is None:
+        # The roster was not read live, so its state is unknown. Saying "idle" here
+        # would be a guess, and the page must not guess.
+        return f"{name} - its state was not read live"
     return f"{name} is {agent.status or 'idle'}"
 
 
@@ -1180,25 +1291,74 @@ def _kanban(data: BoardData) -> str:
 
 
 def render_board(data: BoardData) -> str:
-    """The whole page, as one self-contained file."""
-    needs = waiting_on_you(data)
-    if needs:
-        needs_html = "<ul>" + "".join(f"<li>{line}</li>" for line in needs) + "</ul>"
+    """The whole page, as one self-contained file.
+
+    Four sections first, in the order the owner reads them: what waits on him, what is
+    running, the front door's queue, and what changed. The records follow, unchanged.
+    """
+    for_you = waiting_on_you(data)
+    running = running_now(data)
+    queue = worker_queue(data)
+    worker = waiting_for_worker(data)
+    since = to_epoch(data.previous_draw)
+    changed = changed_for_owner(data, since=since)
+    in_flight = bool(open_tasks(data.tasks))
+
+    if for_you:
+        needs_html = "<ul>" + "".join(f"<li>{line}</li>" for line in for_you) + "</ul>"
     else:
         needs_html = _nothing(
             "Nothing is recorded as waiting on you. The tool shows only what a command "
             "recorded; a report the front door holds in its words will not appear here."
         )
 
-    worker = waiting_for_worker(data)
+    idle_line = "Nothing is running. This page does not reload itself when idle."
+    running_html = (
+        "<ul>" + "".join(f"<li>{line}</li>" for line in running) + "</ul>"
+        if running
+        else _nothing(idle_line)
+    )
+    running_html += (
+        "<p class='why'>A step is one worker's turn. Heavy means it may install "
+        "or run a suite, and only one heavy step runs at a time.</p>"
+    )
+
+    queue_parts: list[str] = []
+    if queue:
+        queue_parts.append("<ul>" + "".join(f"<li>{line}</li>" for line in queue) + "</ul>")
     if worker:
-        listed = "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
-        worker_html = (
+        queue_parts.append(
             "<p class='why'>These wait for a worker, not for you. "
-            f"{_e(front_door_label(data))} chases them.</p>{listed}"
+            f"{_e(front_door_label(data))} chases them.</p>"
+            "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
         )
+    if queue_parts:
+        queue_html = "".join(queue_parts)
     else:
-        worker_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
+        queue_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
+
+    drawn = _display_stamp(data.previous_draw) if data.previous_draw else data.generated_at
+    if data.previous_draw and not changed:
+        freshness = f"Nothing has changed since {drawn}."
+    elif data.previous_draw:
+        freshness = f"Changed since the page was last drawn at {drawn}; the list is below."
+    else:
+        freshness = f"This is the first draw, at {data.generated_at}."
+    shown = changed[:CHANGED_CAP]
+    changed_html = (
+        "<ul>" + "".join(f"<li>{line}</li>" for line in shown) + "</ul>"
+        if changed
+        else _nothing(f"Nothing has changed since {drawn}.")
+    )
+    if len(changed) > len(shown):
+        changed_html += (
+            f"<p class='why'>Showing the newest {len(shown)} of {len(changed)}; the rest "
+            "are in the record below.</p>"
+        )
+    changed_html = (
+        "<p class='why'>The tool cannot know when you opened this page. It knows when it "
+        "last drew it, and this list is everything recorded since then.</p>" + changed_html
+    )
 
     kanban_html = _kanban(data)
 
@@ -1208,7 +1368,7 @@ def render_board(data: BoardData) -> str:
             _e(agent.pane_id or "-"),
             _e(agent.status or "-"),
             _e(agent.place_label),
-            _e("yes" if agent.saved else "no"),
+            _e("yes" if agent.saved else "no") if agent.saved is not None else "-",
             _e(agent.space_label),
         ]
         for agent in data.agents
@@ -1216,7 +1376,11 @@ def render_board(data: BoardData) -> str:
     agents_html = (
         _table(["name", "pane", "state", "space holds", "saved", "folder"], agent_rows)
         if agent_rows
-        else _nothing("No live agents were found.")
+        else _nothing(
+            "No agents were found in the live roster."
+            if data.live_ok
+            else "No agents are recorded in the state file."
+        )
     )
     if data.note:
         agents_html += f"<p class='nothing'>{_e(data.note)}</p>"
@@ -1277,7 +1441,7 @@ def render_board(data: BoardData) -> str:
             "Filters",
             None,
             _filter_controls()
-            + "<p class='why'>These narrow the cards below, on the page, where you "
+            + "<p class='why'>These narrow the records below, on the page, where you "
             "already are. What waits on you is above them and is not narrowed.</p>",
             css="filters",
         )
@@ -1285,9 +1449,24 @@ def render_board(data: BoardData) -> str:
         else ""
     )
 
-    live = "live" if data.live_ok else "not readable"
+    live = "read live" if data.live_ok else "from the state file"
+    changed_at = f" | last change {_e(data.last_change)}" if data.last_change else ""
     footer = (
-        f"generated {_e(data.generated_at)} | state {_e(data.state_path)} | agent list {live}"
+        f"generated {_e(data.generated_at)}{changed_at} | "
+        f"state {_e(data.state_path)} | roster {live}"
+    )
+
+    # Reload only while something is in flight. The browser re-reads this file; the box
+    # draws nothing until a command rewrites it, so an idle reload is pure flicker.
+    refresh_meta = (
+        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if in_flight else ""
+    )
+    reload_line = (
+        f"This page reloads every {REFRESH_SECONDS}s while work is running, and stops when "
+        "nothing is running."
+        if in_flight
+        else "Nothing is running, so this page does not reload itself. It changes when a "
+        "clowder command rewrites it."
     )
 
     return f"""<!doctype html>
@@ -1295,20 +1474,21 @@ def render_board(data: BoardData) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="{REFRESH_SECONDS}">
+{refresh_meta}
+<!-- drawn: {_e(data.drawn_at or data.generated_at)} -->
 <title>{_e(TITLE)}</title>
 <style>{STYLE}</style>
 </head>
 <body>
 <main>
 <h1>{_e(TITLE)}</h1>
-<p class="meta">What is queued, what is underway, and what is waiting on you.</p>
-<p class="meta">Generated {_e(data.generated_at)}. This page is a snapshot: it changes only
-when a clowder command rewrites it, and an open tab keeps what it loaded. If that time is not
-now, the page is stale.</p>
-{_section("Waiting on you", len(needs), needs_html, css="needs")}
+<p class="meta">What waits on you, what is running, what is queued, and what changed.</p>
+<p class="meta" id="freshness">{_e(freshness)} {_e(reload_line)}</p>
+{_section("For you", len(for_you), needs_html, css="needs")}
+{_section("Running now", len(running), running_html)}
+{_section("Waiting for a worker", len(queue) + len(worker), queue_html)}
+{_section("Changed since you last opened this page", len(changed), changed_html)}
 {filters_html}
-{_section("Waiting for a worker", len(worker), worker_html)}
 {kanban_html}
 {_section("Agents and spaces", len(agent_rows), agents_html)}
 {_section("Answers", len(answer_rows), answers_html)}

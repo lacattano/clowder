@@ -53,11 +53,14 @@ class ApplyMarkerTest(unittest.TestCase):
         self.assertTrue(text.endswith("do the thing"))
 
     def test_the_marker_is_short(self) -> None:
-        # The whole point of the move: the per-dispatch instruction is small. The
-        # old marker was 128 words; this bounds it well below that.
+        # The whole point of the move: the per-dispatch instruction is small. The old
+        # marker was 128 words; this bounds it well below that. It grew once, on
+        # 2026-10-26, for the one line the owner asked every report to carry.
         from clowder.marker import REPORT_INSTRUCTION
 
-        self.assertLessEqual(len(REPORT_INSTRUCTION.split()), 60)
+        self.assertLessEqual(len(REPORT_INSTRUCTION.split()), 90)
+        self.assertIn("For the owner:", REPORT_INSTRUCTION)
+        self.assertIn("relays that line verbatim", REPORT_INSTRUCTION)
 
     def test_the_message_names_no_bus_address(self) -> None:
         # The worker resolves the name in its own peer list; addresses move.

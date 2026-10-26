@@ -56,15 +56,19 @@ Add `.worktrees/` to each repo's `.gitignore`.
 
 ### The board
 
-`clowder board --open` writes one HTML file next to the state file and opens it. It leads with
-what is waiting on you - a decision, a finished review, or work that is on no branch - then open
-steps, agents and their spaces, answers, and jobs. It needs no server, and it still works when
-the multiplexer cannot be read.
+`clowder board --open` writes one HTML file next to the state file and opens it. It reads the
+state file only: no multiplexer call, so a draw is a fraction of a second, and the twenty-six
+commands that rewrite it after a state change pay that, not a live roster. `clowder board --live`
+adds the live roster when you want it, and the page says which one it shows.
 
-The open steps and the jobs narrow from a filter bar: repo, kind, status, agent, job, whether it
-waits on you, whether it is blocked, and how old it is, plus oldest-first or newest-first. That
-runs in the page itself over the data already on it, so there is no server to ask. What waits on
-you stays at the top and is never filtered away.
+It leads with four sections in the order you read them: what waits on you (one line each, the
+number to reply with, and how long it has waited), what is running now, the front door's queue,
+and what changed since the page was last drawn - one sentence each, in your words, no handles.
+The records follow: the filterable cards, agents and their spaces, answers, dropped queue items,
+and the model rollup.
+
+The page reloads itself only while something is in flight, and says plainly when nothing has
+changed since a given time. It needs no server.
 
 ## What this is not
 
@@ -82,7 +86,7 @@ you stays at the top and is never filtered away.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 767
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 776
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
