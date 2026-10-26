@@ -662,6 +662,78 @@ What happens if the parked branch moves: nothing moves it from inside the crew. 
 released, so no pane holds it, and the branch is not checked out anywhere. Only a hand-made
 checkout can move it, and the merge check above catches that.
 
+### 36. The learning loop: one record, one generated view, one command
+
+Seen 2026-10-25, measured from the files rather than felt: 28 days of carried work had five
+handover documents and 13 working days with none, including days of 54, 50, 58, 66, 28 and 44
+steps. One known defect was written in three handovers in a row and still bit; another was in one
+handover, absent from the next two, and back in the last. Both are in the defects record now, as
+d-0001 and d-0002. They are not quoted here, because a defect has one home and this is not it.
+Five items in the latest handover
+appear in no earlier one, and whether they were older and never written down cannot be known. The
+front door did not read the latest handover at session start; its own start order named a list of
+files, so reading it depended on memory.
+
+Writing a thing down is not the mechanism that stops it. So the fact moves into the tool, and the
+document becomes a view of the tool:
+
+- **One record.** `.clowder/defects.json`, beside the state file, is the only home for a known
+  defect, quirk or workaround. `clowder defects add|list|show` writes and reads it. Fields: id,
+  one line in the owner's words, first and last seen (a moment; the list shows the date), count,
+  job or none, state (open, has-job, fixed, accepted-workaround), the reason on an accepted
+  workaround, and a detail body for the workaround and the citations. Seeding an entry from an
+  older record carries its dates and its count, and is refused without a state: a seed must say
+  where the defect stands today, not inherit a default. The same normalised line is the same defect, so a second sighting raises the count
+  and moves `last_seen` instead of adding a record. If it is not in this file it is not known.
+- **One generated view.** `clowder handover write` composes `HANDOVER-<date>.md` from the record:
+  what waits on the owner, the steps in flight, the open changes, what merged since the last
+  handover, the queue count, and the defects whose `last_seen` is inside the window, each as one
+  line and an id. Only the last section is hand-written, from `handover-notes.md`, capped at ten
+  lines - the cap is what stops the old document growing back. A defect entry with no id stops the
+  write, so a hand-edited file cannot lose one quietly. A second write in one day replaces the
+  file; the window still starts at the newest earlier handover, so a rewrite cannot drop what the
+  first write recorded. The old `HANDOVER-*.md` files are history and stay read-only: a
+  file with no `generated:` mark is never written to, so a day whose date one already
+  carries gets `HANDOVER-<date>.generated.md` beside it, and the old file is left byte
+  for byte as it was. `clowder start` reads the newest document, and for a day that has
+  both kinds, the generated one.
+- **One command that reads it.** `clowder start` prints, in order, the handover file and its age
+  (and says plainly when it is STALE, with the reason), the decisions that wait on the owner, the
+  steps in flight, the queue count, and the defects seen twice with no open job. Stale is a fact
+  about the record, not a memory: any recorded activity - a dispatch, a report, a job opened or
+  merged, a queue item, a defect sighting - newer than the handover's own `generated:` line means
+  a session ran and nobody wrote a new handover. The front-door skill's start order is this one
+  command, not a list of files.
+- **The repetition rule, with teeth.** A second sighting of the same defect must open a job or
+  record an accepted workaround with the reason; bumping the count is not enough. The tool says so
+  when the count moves, and keeps saying it where it is read: `clowder defects list --repeated`,
+  `clowder start`, and the board's section that waits for the front door - not the section that
+  waits for the owner, because opening the job is the front door's act.
+- **A reworded defect is a new one, by design.** Matching is on the exact words, so the same
+  defect written differently gets a new id and the count never rises. Do not fix that with fuzzy
+  matching: it would merge two real defects, which is worse than a miss. Fix it with what a person
+  can act on: `clowder defects list --like "<words>"` finds a line holding every one of those
+  words in any order, and `clowder start` prints the defects seen in the last seven days so a
+  near-duplicate is visible before a new one is added. A total rephrase is still missed, and a
+  test pins that miss so the limit cannot be quietly forgotten.
+- **A broken record fails open.** `clowder start` and the board are drawn from the state, so a
+  malformed `defects.json` prints everything else, warns with the file and the parse error, and
+  exits 4 (`RECORD_UNREADABLE`); the board shows the warning in the front door's section. One
+  malformed file must not take away the page that says what is happening. `clowder defects list`
+  is the command that refuses, because reading the record is its job.
+- **No second copy.** The handover and DESIGN's Open section name a defect by its one line and its
+  id; neither restates it. The test of the rule is mechanical: if a defect's text is found in two
+  of the three places, one of them is wrong by construction. So DESIGN's Open section stopped
+  carrying nine defects in prose on 2026-10-25 (decision 36's note in that section says where they
+  went); the detail lives in `clowder defects show <id>`, and nowhere else.
+
+What would have to be true to need retrieval: the record would have to outgrow reading it. The
+threshold to watch is `clowder defects list` growing past a screen or two - a few hundred entries,
+or a session that has to search rather than scan. Even then the first answer is a filter on the
+record (by repo, by job, by state), not an embedding: a defect is one line, and a one-line index
+is a `grep`. Only a record whose lines are no longer enough to choose from would need semantic
+search, and that day is not today. No index is built.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from
@@ -700,9 +772,11 @@ board (step 4), `/calm` (step 5).
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
 shape, a pointer to the reviewer's walkthrough, and the rules the front door runs by - say when
 you dispatch, ask for exactly one decision. The owner gate and the always-rules are not repeated
-here; the skill carries one pointer at the shipped `crew` skill. It opens with a reading order for
-a fresh context - inbox, queue, open steps, jobs, agents, the Open section - so a refresh is cheap
-and the front door holds no state in its head.
+here; the skill carries one pointer at the shipped `crew` skill. It opens with one command for a
+fresh context - `clowder start`, which prints the handover and its age (stale said plainly), the
+owner's decisions, the steps in flight, the queue and the repeated defects - so a refresh is cheap
+and the front door holds no state in its head. (Decision 36 replaced an earlier list of files
+with that one command.)
 
 `skills/crew/SKILL.md` is the other half: the generic rules that hold for any crew, shipped so a
 fresh install has them. `code/AGENTS.md` is now the instance overlay beside the workspace - the
@@ -832,59 +906,12 @@ scraped.
   whether re-running is cheap enough there, or whether that repo wants fewer spaces, more
   sharing, or a cleanup step between jobs.
 
-Nine defects found while using the tool, between 2026-09-25 and 2026-09-29. Recorded here so
-they outlive the conversation; none is fixed by the queue work.
-
-- **A task with no place.** (Fixed.) A step with no job now records the agent's live
-  directory at dispatch, so a report names the folder the work actually ran in rather than the
-  main checkout, and the "commit on no branch" check is no longer skipped. `queue send` also
-  refuses a ship item with neither a job nor a worktree - a queued item carries no worktree, so
-  its job is the only place its save can go - and `queue send --job <id>` gives or corrects that
-  job at send time. The queue never guesses a job from what the agent holds.
-- **One answer per agent, not per task.** (Fixed.) `report` read the last thing an agent
-  said, so a later task by the same agent overwrote an earlier task's answer. Seen: t-0006
-  showed a publish task's text as its own. `read_answer` and `read_usage` now take an
-  `until` cut, and `report` and `inbox` bound a task to `[dispatched_at, next task's
-  dispatched_at)`, so a later task's answer and usage are never read as this one's.
-- **A send preempts an open job.** (Fixed.) A task sent to an agent that already has an open
-  job took the newest message and stopped the older work. Seen: it happened today, and j-0004
-  had to be re-sent. `dispatch` now refuses a send to an agent that holds open work on another
-  job (or no job), or whose space holds an open job the send does not name; `--force` bypasses
-  it. The same-job open-step case stays with the existing guard.
-- **Last-write-wins state.** (Fixed - decision 23.) The state file had no lock, and concurrent
-  commands are normal. Seen: t-0005 was recorded reported, then read back dispatched; a second
-  read fixed it. Later two `report` runs at once left the file as JSON plus a fragment. Now a
-  lock serializes saves, a unique temp per writer stops the torn file, and a stale save is
-  refused rather than written.
-- **A stale base.** A job's base came from the local branch, which is behind after a merge
-  elsewhere, so a stale checkout blocked every new job in the repo even though each agent has
-  its own worktree. Seen: the product main was 7 behind, so no product job could open. Fix:
-  fetch, then fork the branch from the remote ref `origin/<base>`; refuse only a rewritten base.
-- **No landed state.** A merged branch still reads as merely closed, so the board cannot show
-  what has actually landed. Seen: after today's two merges. Fix: a landed state set when the
-  branch's commit is reachable from the base, and shown on the board.
-- **A scout gets a full space.** Reading does not need isolation, yet a read-only scout still
-  gets a checkout of its own. Seen: spaces made for investigation. Fix: give a scout the main
-  checkout or a shared read-only copy, and make a space only for work that changes code.
-- **No load check.** (Fixed.) Nothing checked machine load before a heavy step. Seen: two agents
-  installing or running suites at once is the pattern that crashed this box on 2026-09-25.
-  `dispatch --heavy` marks a step, only one heavy step is open at a time across the crew, and an
-  opt-in `[gates]` threshold adds a check of the machine's own load (memory on Windows, load per
-  CPU on Unix). A load that cannot be read fails open with a warning.
-- **A brief with no bounds on its search.** (Recorded in the front-door skill.) Seen on
-  2026-09-29: a brief asked a worker to "say what else on this machine still holds a copy of the
-  public half". The worker read that as a content search, and ran one over the whole home
-  directory - hidden files, ignore file off, every file's text, a thirty-minute cap. It burned
-  about 24 minutes of CPU. On this machine that is felt as a display fault, not as a slow command:
-  the owner saw dropped pixels and killed it by hand. The lesson is about the brief, not about that
-  worker: a search with no bounds means read everything, and a worker cannot tell a narrow
-  question from a wide one. Fix: the front-door skill states the rule, in "Bounds on a search" -
-  the bounds a search brief must name, the worked pair, and how to declare the step heavy. It is
-  not repeated here, because the skill is the copy a front door reads before it dispatches.
-  Nothing forbids a search: a bounded one is the normal way to answer this kind of question, and
-  the worker still runs it, not the front door. Why it is here: a heavy read on this machine is
-  felt by the owner as a display fault, and one worker's unbounded scan is felt by everyone - the
-  owner and every pane slow down together, so the cost does not land on the worker that spent it.
+A defect is not restated here any more. This section used to carry nine of them, in prose,
+between 2026-09-25 and 2026-09-29; keeping them here as well as in the record is the second copy
+that let one be dropped and come back. From 2026-10-25 a defect has one home, `clowder defects
+list`, and this section names one only by its one line and its id. The nine older ones live in this
+file's git history; whether the front door seeds them into the record is the one open decision in
+the t-0939 report. A second copy is what this rule exists to end.
 
 - AI-Playwright still holds a local copy of the `/diff` viewer and its skill under its
   gitignored `.pi/` (`.pi/extensions/diff.ts`, `.pi/skills/diff-review/SKILL.md`). Clowder's Pi

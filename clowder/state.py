@@ -398,8 +398,12 @@ def _same_path(value: object, path: str | Path) -> bool:
 
 
 @contextlib.contextmanager
-def _file_lock(path: Path) -> Iterator[None]:
-    """One writer at a time across processes. The OS releases it on exit."""
+def file_lock(path: Path) -> Iterator[None]:
+    """One writer at a time across processes. The OS releases it on exit.
+
+    Public because the defects file sits beside the state file and needs the same
+    guarantee: two commands that read, change and write must not interleave.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+b")
     try:
@@ -553,7 +557,7 @@ class StateStore:
     def save(self) -> None:
         self.load()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._thread_lock, _file_lock(self._lock_file()):
+        with self._thread_lock, file_lock(self._lock_file()):
             self._fold_in_other_writers()
             payload = {
                 "schema": SCHEMA_VERSION,

@@ -19,8 +19,20 @@ from functools import partial
 from pathlib import Path
 
 from . import __version__, audit, gitcmd, load
+from . import handover as handover_doc
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
+from .defects import (
+    ACCEPTED,
+    HAS_JOB,
+    DefectStore,
+    matches_line,
+    merge_warning,
+    read_defects,
+    recently_seen,
+    short_date,
+)
+from .defects import STATES as DEFECT_STATES
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
 from .marker import DEFAULT_SENDER, apply_marker
 from .mux import AgentInfo, Mux, MuxResult
@@ -74,6 +86,16 @@ BOARD_REFRESH_MUX_TIMEOUT_S = 3.0
 # carries the body. A line longer than this is refused with the advice to use it,
 # so the board cannot fill with walls of text one item at a time.
 OWNER_ITEM_LIMIT = 120
+
+# Exit code for "the page is drawn, but the defects record could not be read". The
+# commands that draw - `start` and the board - fail open, because one malformed file
+# must not take away the page that says what is happening. `defects list` is the
+# command that refuses, with the error itself. This code says which happened.
+RECORD_UNREADABLE = 4
+
+# How far back `clowder start` shows defects a person has just added. A near-duplicate
+# is caught by eye, not by matching: a reworded line is a new id by design.
+RECENT_DEFECT_DAYS = 7
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -613,6 +635,108 @@ def build_parser() -> argparse.ArgumentParser:
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
+
+    start = sub.add_parser(
+        "start",
+        help="what a fresh front door reads first: the handover, decisions, "
+        "work, queue, defects",
+        parents=[common],
+    )
+    start.add_argument("--json", action="store_true")
+    start.set_defaults(handler=cmd_start)
+
+    defects = sub.add_parser(
+        "defects",
+        help="the one record of known defects, quirks and workarounds",
+        parents=[common],
+    )
+    defects_sub = defects.add_subparsers(dest="defects_command", required=True)
+
+    def defects_parser(name: str, help_text: str) -> argparse.ArgumentParser:
+        return defects_sub.add_parser(name, help=help_text, parents=[common])
+
+    d_add = defects_parser("add", "record one sighting of a defect, or add it")
+    d_add.add_argument(
+        "--line",
+        required=True,
+        metavar="TEXT",
+        help="the defect in one line, in the owner's words (required)",
+    )
+    d_add.add_argument("--job", metavar="ID", help="the job that fixes it, when one is open")
+    # `--state` is the state file on every command, so a defect's own state is
+    # `--status`. The record keeps the field name `state`.
+    d_add.add_argument(
+        "--status",
+        choices=DEFECT_STATES,
+        help="the defect's state: open (default), has-job, fixed, accepted-workaround",
+    )
+    d_add.add_argument(
+        "--reason",
+        metavar="TEXT",
+        help="why it is accepted - required with --status accepted-workaround",
+    )
+    # Seeding: a defect known from an older record, not seen just now. The dates travel
+    # with --status, so a seed always says where it stands today.
+    d_add.add_argument(
+        "--first-seen",
+        metavar="DATE",
+        help="when it was first recorded (a date or ISO timestamp); needs --status",
+    )
+    d_add.add_argument(
+        "--last-seen",
+        metavar="DATE",
+        help="when it was last recorded; needs --first-seen and --status",
+    )
+    d_add.add_argument(
+        "--count",
+        type=int,
+        metavar="N",
+        help="the recorded count of sightings; needs --first-seen",
+    )
+    d_add.add_argument(
+        "--detail",
+        metavar="TEXT",
+        help="the body behind the one line: workaround, citations, what was seen",
+    )
+    d_add.add_argument(
+        "--detail-file",
+        metavar="PATH",
+        help="read the detail body from a file, for a long one",
+    )
+    d_add.add_argument("--json", action="store_true")
+    d_add.set_defaults(handler=cmd_defects_add, refreshes_board=True)
+
+    d_list = defects_parser("list", "every known defect, or only the ones needing action")
+    d_list.add_argument(
+        "--repeated",
+        action="store_true",
+        help="only defects seen twice or more with no open job",
+    )
+    d_list.add_argument(
+        "--like",
+        metavar="WORDS",
+        help="only defects whose line holds every one of these words (exact words; "
+        "a total rephrase is not found, so read the list too)",
+    )
+    d_list.add_argument("--json", action="store_true")
+    d_list.set_defaults(handler=cmd_defects_list)
+
+    d_show = defects_parser("show", "one defect, in full")
+    d_show.add_argument("id", help="defect id, e.g. d-0001")
+    d_show.add_argument("--json", action="store_true")
+    d_show.set_defaults(handler=cmd_defects_show)
+
+    handover = sub.add_parser(
+        "handover", help="write the generated handover a fresh session reads", parents=[common]
+    )
+    handover_sub = handover.add_subparsers(dest="handover_command", required=True)
+    h_write = handover_sub.add_parser(
+        "write",
+        help="compose the handover from the record and name the file it wrote",
+        parents=[common],
+    )
+    h_write.add_argument("--json", action="store_true")
+    h_write.set_defaults(handler=cmd_handover_write)
 
     state = sub.add_parser("state", help="inspect or repair the state file", parents=[common])
     state_sub = state.add_subparsers(dest="state_command", required=True)
@@ -3866,6 +3990,11 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
     tasks = store.all()
     jobs = store.all_jobs()
     jobs_by_id = {job.id: job for job in jobs}
+    # The defects record fails open here: the page is drawn from state, and a note in
+    # the worker section names the file and the fault. `defects list` is the refusing
+    # command, so a broken record never hides the page that says what is happening.
+    defect_entries, defects_note = read_defects(_defect_store(config))
+    open_job_ids = [job.id for job in jobs if job.is_open]
     # A held change whose branch or held ref has moved past the reviewed commit is
     # not ready for the owner's walk: the reviewer checked an older commit. Record
     # the current tip so the board asks for a re-review, with both commits named.
@@ -3925,6 +4054,10 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         rereview=rereview,
         review_unconfirmed=review_unconfirmed,
         dropped=audit.read_actions(store.path, "queue-drop"),
+        repeated_defects=[
+            defect for defect in defect_entries if defect.needs_action(open_job_ids)
+        ],
+        defects_note=defects_note,
     )
 
 
@@ -3935,28 +4068,32 @@ def cmd_board(args: argparse.Namespace) -> int:
     target = Path(args.out).expanduser() if args.out else _board_path(store)
     written = write_board(data, target)
 
+    if data.defects_note:
+        _warn_unreadable_record(data.defects_note)
+
     if args.json:
         _emit_json(
             {
                 "board": str(written),
                 "tasks": len(data.tasks),
                 "open": len(open_tasks(data.tasks)),
-                "jobs": len(data.jobs),
                 "agents": len(data.agents),
+                "jobs": len(data.jobs),
                 "queued": len(data.queued),
                 "live_ok": data.live_ok,
                 "stranded": sorted(data.stranded),
                 "risk_notes": data.risk_notes,
+                "defects_error": data.defects_note,
             }
         )
-        return 0
+        return RECORD_UNREADABLE if data.defects_note else 0
 
     print(written)
     if not data.live_ok and data.note:
         print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
-    return 0
+    return RECORD_UNREADABLE if data.defects_note else 0
 
 
 def _board_agents(config: Config, timeout_s: float = 15.0):
@@ -4074,6 +4211,315 @@ def cmd_state_repair(args: argparse.Namespace) -> int:
     print(f"{INDENT}backup: {backup}")
     print(f"{INDENT}audit: {audit_file}")
     return 0
+
+
+def _defect_store(config: Config) -> DefectStore:
+    """The one defects record for this config."""
+    return DefectStore(config.defects_path)
+
+
+def _open_job_ids(store: StateStore) -> list[str]:
+    return [job.id for job in store.open_jobs()]
+
+
+def cmd_defects_add(args: argparse.Namespace) -> int:
+    """Record one sighting: a new defect, or the same one seen again.
+
+    The same normalised line is the same defect. A second sighting raises the count
+    and moves `last_seen`; it is not cleared by the count going up, so the tool says
+    here, and on the board, that it now needs a job or an accepted workaround.
+    """
+    config, store = _context(args)
+    line = " ".join((args.line or "").split())
+    if not line:
+        raise UsageError("--line is required: the defect in one line")
+    if "\n" in (args.line or ""):
+        raise UsageError(
+            "--line is one line. Split it into separate defects, or keep the detail out "
+            "of the record: a defect is a line, not a report."
+        )
+    state = args.status
+    reason = (args.reason or "").strip() or None
+    if state == ACCEPTED and not reason:
+        raise UsageError(
+            "--state accepted-workaround needs --reason: what the workaround is and what "
+            "it costs, so a later session can judge it."
+        )
+    if state == HAS_JOB and not args.job:
+        raise UsageError("--state has-job needs --job ID")
+    if args.job:
+        store.get_job(args.job)  # refuse an id that names nothing
+    if args.detail and args.detail_file:
+        raise UsageError("pass --detail or --detail-file, not both")
+    # A seed carries a date and a state, and either alone is refused: a seeded entry
+    # must say both when it was recorded and where it stands today, or the record
+    # would quietly claim the defect was seen now, or leave its state to a default.
+    if (args.first_seen or args.last_seen or args.count is not None) and not state:
+        raise UsageError(
+            "a seeded entry needs --status: say where the defect stands today "
+            f"({', '.join(DEFECT_STATES)})."
+        )
+    if args.count is not None and not args.first_seen:
+        raise UsageError("--count needs --first-seen: a recorded count needs its start")
+    if args.last_seen and not args.first_seen:
+        raise UsageError("--last-seen needs --first-seen")
+
+    detail = _owner_detail(args)
+    defects = _defect_store(config)
+    try:
+        defect, created = defects.sighting(
+            line,
+            job=args.job,
+            state=state,
+            reason=reason,
+            detail=detail,
+            first_seen=args.first_seen,
+            last_seen=args.last_seen,
+            count=args.count if args.count is not None else 1,
+        )
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
+
+    if args.json:
+        _emit_json(
+            {
+                "defect": defect.to_dict(),
+                "defect_id": defect.id,
+                "created": created,
+                "repeated": defect.needs_action(_open_job_ids(store)),
+            }
+        )
+        return 0
+    if created:
+        print(f"{defect.id} recorded: {defect.line}")
+    else:
+        print(
+            f"{defect.id} seen again: {defect.count} times, last {short_date(defect.last_seen)}"
+        )
+    warning = merge_warning(defect)
+    if warning:
+        print(warning)
+    return 0
+
+
+def cmd_defects_list(args: argparse.Namespace) -> int:
+    """Every known defect, or the ones a repetition obliges someone to act on."""
+    config, store = _context(args)
+    defects = _defect_store(config)
+    open_jobs = _open_job_ids(store)
+    entries = defects.repeated(open_jobs) if args.repeated else defects.all()
+    if args.like:
+        entries = [defect for defect in entries if matches_line(defect.line, args.like)]
+
+    if args.json:
+        _emit_json(
+            {
+                "defects": [defect.to_dict() for defect in entries],
+                "count": len(entries),
+                "path": str(defects.path),
+                "open_jobs": open_jobs,
+                "like": args.like,
+            }
+        )
+        return 0
+    if not entries:
+        if args.like:
+            print(
+                f"no defect holds every word of {args.like!r}. This is an exact-word "
+                "search: a total rephrase is not found, so read the list before adding a "
+                "new one."
+            )
+        elif args.repeated:
+            print(
+                "no defect has been seen twice with no open job. A second sighting opens "
+                "a job or records an accepted workaround with the reason."
+            )
+        else:
+            print(
+                f"no defect is recorded in {defects.path}. If it is not here, it is not "
+                "known: record one with `clowder defects add --line TEXT`."
+            )
+        return 0
+
+    rows = [["ID", "SEEN", "LAST", "STATE", "JOB", "DEFECT"]]
+    for defect in entries:
+        rows.append(
+            [
+                defect.id,
+                str(defect.count),
+                short_date(defect.last_seen),
+                defect.state,
+                defect.job or "-",
+                _clip(defect.line, 90),
+            ]
+        )
+    print(_column(rows))
+    print(
+        f"\n{len(entries)} defect(s) in {defects.path}. "
+        f"Read one in full with: {PROGRAM} defects show <id>"
+    )
+    if args.like:
+        print(
+            f"Matched on words {args.like!r} only. A reworded defect shares no word and "
+            "will not be found; read the list before adding a new one."
+        )
+    return 0
+
+
+def cmd_defects_show(args: argparse.Namespace) -> int:
+    """One defect in full. This is the only place its detail lives."""
+    config, _ = _context(args)
+    defects = _defect_store(config)
+    defect = defects.get(args.id)
+
+    if args.json:
+        _emit_json({"defect": defect.to_dict(), "path": str(defects.path)})
+        return 0
+    rows = [
+        ["id", defect.id],
+        ["line", defect.line],
+        ["seen", str(defect.count)],
+        ["first seen", short_date(defect.first_seen)],
+        ["last seen", short_date(defect.last_seen)],
+        ["state", defect.state],
+        ["job", defect.job or "(none)"],
+    ]
+    if defect.reason:
+        rows.append(["reason", defect.reason])
+    print(_column(rows))
+    if defect.detail:
+        print()
+        for line in defect.detail.splitlines():
+            print(f"{INDENT}{line}")
+    print(f"\nrecord: {defects.path}")
+    return 0
+
+
+def cmd_handover_write(args: argparse.Namespace) -> int:
+    """Write today's handover from the record, and name the file it wrote."""
+    config, store = _context(args)
+    defects = _defect_store(config)
+    target = handover_doc.target_path(handover_doc.handover_dir(store.path), handover_doc.now())
+    replaced = target.exists() and handover_doc.is_generated(target)
+    path, dropped = handover_doc.write(store, defects)
+
+    if dropped:
+        print(
+            f"{PROGRAM}: warning: {handover_doc.NOTES_NAME} is longer than "
+            f"{handover_doc.NOTES_MAX_LINES} lines; {dropped} line(s) were not written",
+            file=sys.stderr,
+        )
+    if args.json:
+        _emit_json(
+            {
+                "handover": str(path),
+                "replaced": replaced,
+                "notes_lines_dropped": dropped,
+                "defects": len(defects.all()),
+            }
+        )
+        return 0
+    print(f"wrote {path}")
+    if replaced:
+        print(f"{INDENT}replaced the handover already written today")
+    print(f"{INDENT}generated from the record; hand-written section: {handover_doc.NOTES_NAME}")
+    return 0
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    """What a fresh front door reads first, in one command.
+
+    The handover and its age, with stale said plainly; the decisions that wait on
+    the owner; the steps in flight; the queue; the defects seen twice with no job;
+    and the defects added in the last week, so a reworded duplicate is visible to the
+    person who is about to add one. The order is the order to read them in, so a start
+    order is one command instead of a list of files a new session has to remember.
+
+    A malformed defects record fails open: everything else still prints, a loud
+    warning names the file and the parse error, and the exit code says the page was
+    drawn with the record unreadable. `clowder defects list` is the command that
+    refuses, because reading the record is its job.
+    """
+    config, store = _context(args)
+    defects = _defect_store(config)
+    entries, defect_error = read_defects(defects)
+    # Staleness counts a defect sighting as work, but only if the record can be read.
+    latest = handover_doc.latest(store, defects if defect_error is None else None)
+    decisions = handover_doc.owner_lines(store)
+    in_flight = store.select(open_only=True)
+    queued = len(store.all_queued())
+    repeated = [defect for defect in entries if defect.needs_action(_open_job_ids(store))]
+    recent = recently_seen(entries, RECENT_DEFECT_DAYS)
+
+    if args.json:
+        _emit_json(
+            {
+                "handover": str(latest.path) if latest.path else None,
+                "handover_age_days": latest.age_days,
+                "handover_stale": latest.stale,
+                "handover_stale_why": latest.why,
+                "decisions": decisions,
+                "in_flight": [task.id for task in in_flight],
+                "queue": queued,
+                "repeated_defects": [defect.id for defect in repeated],
+                "recent_defects": [defect.id for defect in recent],
+                "defects_error": defect_error,
+            }
+        )
+        return RECORD_UNREADABLE if defect_error is not None else 0
+
+    if latest.path is None:
+        print(f"handover: none - {latest.why}")
+    else:
+        age = f"{latest.age_days} day(s) old" if latest.age_days is not None else "age unknown"
+        state = "STALE" if latest.stale else "current"
+        print(f"handover: {latest.path} | {age} | {state}")
+        if latest.stale:
+            print(f"{INDENT}{latest.why}")
+            print(f"{INDENT}write the next one with: {PROGRAM} handover write")
+
+    print(f"\ndecisions waiting on you: {len(decisions)}")
+    for line in decisions:
+        print(f"{INDENT}- {line}")
+    if not decisions:
+        print(f"{INDENT}(nothing recorded)")
+
+    print(f"\nsteps in flight: {len(in_flight)}")
+    for task in in_flight:
+        print(f"{INDENT}- {task.id} {task.agent}: {_clip(task.question, 70)}")
+    if not in_flight:
+        print(f"{INDENT}(none)")
+
+    print(f"\nqueue: {queued} item(s) waiting to be sent")
+
+    if defect_error is not None:
+        _warn_unreadable_record(defect_error)
+        print("\ndefects: unreadable, so neither list is shown")
+        print(f"{INDENT}read the error with: {PROGRAM} defects list")
+        return RECORD_UNREADABLE
+
+    print(f"\ndefects seen twice with no open job: {len(repeated)}")
+    for defect in repeated:
+        print(f"{INDENT}- {defect.id} {_clip(defect.line, 70)} ({defect.count} times)")
+    if not repeated:
+        print(f"{INDENT}(none)")
+
+    print(f"\ndefects seen in the last {RECENT_DEFECT_DAYS} days: {len(recent)}")
+    for defect in recent:
+        print(f"{INDENT}- {defect.id} {_clip(defect.line, 70)}")
+    if not recent:
+        print(f"{INDENT}(none)")
+    return 0
+
+
+def _warn_unreadable_record(error: str) -> None:
+    """The loud warning both drawing commands print, naming the file and the fault."""
+    print(
+        f"{PROGRAM}: warning: the defects record could not be read: {error}. "
+        "The page is drawn from everything else; "
+        f"`{PROGRAM} defects list` shows the error until it is fixed.",
+        file=sys.stderr,
+    )
 
 
 def cmd_config(args: argparse.Namespace) -> int:

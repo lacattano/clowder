@@ -175,3 +175,9 @@ unknown, passes the known ones to the dataclass, and stores the rest in `extra`.
 - `_same_path(value, path) -> bool` - compares two folder paths the way the
   filesystem does (`normcase` + `abspath`), or `False` on a non-string or an OS
   error.
+
+### Module-level helpers
+
+- `file_lock(path) -> Iterator[None]` - one writer at a time across processes, using
+  the OS lock. Public because the defects file sits beside the state file and needs
+  the same guarantee: a read-modify-write must not interleave with another command.

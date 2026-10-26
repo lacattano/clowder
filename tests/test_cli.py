@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -16,7 +17,7 @@ from clowder import cli, gitcmd, load
 from clowder.board import BoardData, waiting_on_you
 from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
-from clowder.timeutil import now_iso
+from clowder.timeutil import now_iso, to_iso
 from tests.support import (
     clean_env,
     default_usage,
@@ -5553,6 +5554,436 @@ class CliTest(unittest.TestCase):
         self.assertIn(parked.park_commit[:7], err)
         merge.assert_not_called()
         self.assertIsNone(StateStore(self.state).get_job(job_id).merged_at)
+
+    # -- the learning loop: one record, a generated handover, one start command --
+
+    def test_start_names_the_handover_and_its_age_and_marks_it_stale(self) -> None:
+        # A handover that is stale must read as stale. Before this, a handover that
+        # was never written was silently absent, and nobody noticed.
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("handover: none", out)
+        self.assertIn("no handover exists", out)
+
+        days = 3
+        moment = datetime.now(UTC) - timedelta(days=days)
+        path = self.root / f"HANDOVER-{moment.date().isoformat()}.md"
+        path.write_text(
+            f"# Handover - {moment.date().isoformat()}\n\n"
+            f"generated: {to_iso(moment)}\n\nno work recorded since.\n",
+            encoding="utf-8",
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn(str(path), out)
+        self.assertIn(f"{days} day(s) old", out)
+        self.assertIn("current", out)
+
+        # A session ran after it (a dispatch is recorded), and no new handover came.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("STALE", out)
+        self.assertIn("no handover has been written since", out)
+        self.assertIn("clowder handover write", out)
+
+        # And what waits on the front door is named, from the record.
+        self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a step does not close when it reports",
+            env=self.fake_env(),
+        )
+        self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a step does not close when it reports",
+            env=self.fake_env(),
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects seen twice with no open job: 1", out)
+        self.assertIn("d-0001", out)
+        self.assertIn("steps in flight: 1", out)
+        self.assertIn("t-0001", out)
+
+    def test_the_defects_commands_write_and_read_one_record(self) -> None:
+        code, out, err = self.cli(
+            "defects", "add", "--line", "one line only", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001 recorded", out)
+        # The next sighting of the same words is the same defect, punctuation and
+        # case included; a second sighting with no job is the front door's to act on.
+        code, out, err = self.cli(
+            "defects", "add", "--line", "One line only.", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("seen again: 2 times", out)
+        self.assertIn("opens a job or records an accepted workaround", out)
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn("one line only", out)
+
+        code, out, err = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+
+        code, out, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("one line only", out)
+        self.assertIn("2", out)
+
+        code, _, err = self.cli("defects", "show", "d-9999", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("no defect", err)
+
+        # One record, beside the state file. Nothing else stores a defect.
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        self.assertEqual(list(stored["defects"]), ["d-0001"])
+
+    def test_a_defect_needs_one_line_a_reason_for_an_acceptance_and_a_real_job(self) -> None:
+        code, _, err = self.cli("defects", "add", "--line", "one\ntwo", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("one line", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--status",
+            "accepted-workaround",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--reason", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--status",
+            "has-job",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--job", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--job",
+            "j-9999",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("j-9999", err)
+
+    def test_handover_write_names_the_file_and_refuses_a_defect_with_no_id(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        self.cli("defects", "add", "--line", "a quirk found today", env=self.fake_env())
+        code, out, err = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        today = datetime.now(UTC).date().isoformat()
+        path = self.root / f"HANDOVER-{today}.md"
+        self.assertIn(str(path), out, "the command names the file it wrote")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(today, text)
+        self.assertIn("d-0001", text)
+        self.assertIn("a quirk found today", text)
+        self.assertNotIn("## Tool quirks", text, "the old hand-written shape is gone")
+
+        # A hand-edited entry with no id stops it, and the file already there stays.
+        broken = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        broken["defects"]["d-0002"] = {
+            "line": "an entry with no id",
+            "first_seen": "2026-10-25T09:00:00Z",
+            "last_seen": "2026-10-25T09:00:00Z",
+        }
+        (self.root / "defects.json").write_text(json.dumps(broken), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+        code, _, err = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("d-0002", err)
+        self.assertIn("no id", err)
+        self.assertEqual(path.read_text(encoding="utf-8"), before, "nothing was written")
+
+    def test_handover_write_twice_for_one_session_does_not_duplicate(self) -> None:
+        self.cli("defects", "add", "--line", "a quirk found today", env=self.fake_env())
+        first = self.cli("handover", "write", env=self.fake_env())
+        second = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(first[0], 0, first[2])
+        self.assertEqual(second[0], 0, second[2])
+        self.assertIn("replaced the handover already written today", second[1])
+        files = sorted(self.root.glob("HANDOVER-*.md"))
+        self.assertEqual(len(files), 1)
+        text = files[0].read_text(encoding="utf-8")
+        self.assertEqual(text.count("d-0001"), 1)
+        self.assertEqual(text.count("## What waits on the owner"), 1)
+
+    def test_the_board_shows_a_repeated_defect_for_the_front_door(self) -> None:
+        self.cli("defects", "add", "--line", "a quirk with no job", env=self.fake_env())
+        self.cli("defects", "add", "--line", "a quirk with no job", env=self.fake_env())
+        self.cli("board", env=self.fake_env())
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = html.split("Waiting for a worker", 1)[1].split("</section>", 1)[0]
+        needs = html.split("Waiting on you", 1)[1].split("</section>", 1)[0]
+        self.assertIn("seen twice, no job", worker)
+        self.assertIn("d-0001", worker)
+        self.assertNotIn("seen twice, no job", needs, "not the owner's act")
+
+    # -- the reviewer's fixes on the learning loop ---------------------------
+
+    def test_defects_like_finds_the_same_words_and_misses_a_rephrase(self) -> None:
+        # A reworded defect is a new id by design. Word search is the human-scale
+        # mitigation: the same words in another order are found, a total rephrase is
+        # not - and that miss is pinned so it is never silently lost.
+        line = "a step does not close when it reports"
+        self.cli("defects", "add", "--line", line, env=self.fake_env())
+
+        code, out, err = self.cli(
+            "defects", "list", "--like", "reports close step", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn(line, out)
+        self.assertIn("reworded defect shares no word", out)
+
+        code, out, err = self.cli(
+            "defects", "list", "--like", "finished work stays in flight", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("no defect holds every word", out)
+        self.assertIn("a total rephrase is not found", out)
+        self.assertNotIn("d-0001", out)
+
+    def test_start_lists_the_defects_seen_in_the_last_seven_days(self) -> None:
+        # The near-duplicate defence is a person reading the recent lines, so start
+        # has to show them.
+        moment = datetime.now(UTC)
+        (self.root / "defects.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "next": 2,
+                    "defects": {
+                        "d-0001": {
+                            "id": "d-0001",
+                            "line": "a defect recorded two days ago",
+                            "first_seen": to_iso(moment - timedelta(days=2)),
+                            "last_seen": to_iso(moment - timedelta(days=2)),
+                        },
+                        "d-0002": {
+                            "id": "d-0002",
+                            "line": "a defect recorded nine days ago",
+                            "first_seen": to_iso(moment - timedelta(days=9)),
+                            "last_seen": to_iso(moment - timedelta(days=9)),
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects seen in the last 7 days: 1", out)
+        self.assertIn("d-0001 a defect recorded two days ago", out)
+        self.assertNotIn("d-0002", out.split("defects seen in the last 7 days")[1])
+
+    def test_a_corrupt_defects_record_fails_open_on_start_and_the_board(self) -> None:
+        # One malformed file must not take away the page that says what is happening.
+        # `start` and `board` draw from everything else, name the file and the fault,
+        # and say with their exit code that the record was unreadable. The command
+        # whose job is to read the record is the one that refuses.
+        record = self.root / "defects.json"
+        record.write_text("{not json", encoding="utf-8")
+
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        self.assertIn("handover:", out, "the rest of the start output still prints")
+        self.assertIn("queue:", out)
+        self.assertIn("defects: unreadable", out)
+        self.assertIn(str(record), err, "the warning names the file")
+        self.assertIn("not valid JSON", err, "and the parse error")
+
+        code, out, err = self.cli("start", "--json", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        self.assertIn("not valid JSON", json.loads(out)["defects_error"])
+
+        code, out, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, cli.RECORD_UNREADABLE)
+        page = self.root / "board.html"
+        self.assertTrue(page.is_file(), "the page is still written")
+        html = page.read_text(encoding="utf-8")
+        self.assertIn("defects record unreadable", html)
+        self.assertIn("defects.json", html)
+        self.assertIn(str(record), err)
+
+        code, _, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 1, "the reading command refuses")
+        self.assertIn("not valid JSON", err)
+
+    def test_a_corrupt_record_does_not_break_a_command_that_refreshes_the_board(self) -> None:
+        # Every state-changing command rewrites the board. A broken record must not
+        # make that refresh fail, or the page goes stale and says nothing about why.
+        record = self.root / "defects.json"
+        record.write_text("{not json", encoding="utf-8")
+        code, out, err = self.cli("defects", "add", "--line", "x", env=self.fake_env())
+        self.assertEqual(code, 1, "adding still refuses, because it must read the record")
+        self.assertIn("not valid JSON", err)
+
+    # -- seeding the record ---------------------------------------------------
+
+    def seed(self, *args: str, env: dict[str, object] | None = None):
+        """One seeded entry, the way the twelve were written."""
+        return self.cli("defects", "add", *args, env=env or self.fake_env())
+
+    def test_a_seeded_entry_records_its_dates_count_state_and_detail(self) -> None:
+        # The seed path: a defect known from an older record, not seen just now. It
+        # carries when it was first and last recorded, how often, and where it stands.
+        code, out, err = self.seed(
+            "--line",
+            "a pane reset drops the pane to the default model",
+            "--status",
+            "open",
+            "--first-seen",
+            "2026-10-18",
+            "--last-seen",
+            "2026-10-25",
+            "--count",
+            "3",
+            "--detail",
+            "Seen in the handovers of 2026-10-18, 2026-10-22 and 2026-10-25.\n"
+            "The reset warns and audits the change; it does not restore the model.",
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001 recorded", out)
+
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        entry = stored["defects"]["d-0001"]
+        self.assertEqual(entry["state"], "open")
+        self.assertEqual(entry["count"], 3)
+        self.assertEqual(entry["first_seen"], "2026-10-18T00:00:00Z")
+        self.assertEqual(entry["last_seen"], "2026-10-25T00:00:00Z")
+        self.assertIn("does not restore the model", entry["detail"])
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out)
+        self.assertIn("open", out)
+
+        code, out, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("does not restore the model", out, "the detail is shown")
+
+    def test_a_fixed_entry_is_listed_and_not_repeated(self) -> None:
+        # A fixed defect is kept: a return of it is exactly the repetition the record
+        # exists to catch. It is not a repetition now, so it is not in --repeated.
+        code, _, err = self.seed(
+            "--line",
+            "a step that reports left its step open",
+            "--status",
+            "fixed",
+            "--first-seen",
+            "2026-10-25",
+            "--count",
+            "2",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, _, err = self.seed(
+            "--line",
+            "a job awaiting the merge word held its space",
+            "--status",
+            "open",
+            "--first-seen",
+            "2026-10-25",
+            "--count",
+            "2",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+
+        code, out, err = self.cli("defects", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001", out, "a fixed entry stays in the list")
+        self.assertIn("fixed", out)
+        self.assertIn("d-0002", out)
+
+        code, out, err = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0002", out, "seen twice with no job")
+        self.assertNotIn("d-0001", out, "a fixed defect is not a repetition")
+
+    def test_a_seeded_entry_without_a_state_or_a_start_is_refused(self) -> None:
+        # The guard that keeps the next seed honest: a seed says both when it was
+        # recorded and where it stands today. Dates without a state, or a count with no
+        # start, are refused rather than written with a default.
+        code, _, err = self.seed(
+            "--line", "a defect with a date but no state", "--first-seen", "2026-10-25"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("needs --status", err)
+
+        code, _, err = self.seed(
+            "--line",
+            "a defect with a count but no start",
+            "--count",
+            "2",
+            "--status",
+            "open",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--count needs --first-seen", err)
+
+        code, _, err = self.seed(
+            "--line",
+            "a defect that ends before it starts",
+            "--first-seen",
+            "2026-10-25",
+            "--last-seen",
+            "2026-10-18",
+            "--status",
+            "open",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("last seen cannot be before first seen", err)
+
+        self.assertFalse((self.root / "defects.json").exists(), "a refused seed writes nothing")
+
+    def test_start_names_the_seeded_entries_as_seen_in_the_last_seven_days(self) -> None:
+        # The source handovers are within the week, so every seeded entry is in the
+        # recent list once - the near-duplicate defence seeding depends on.
+        for line in ("a seeded defect one", "a seeded defect two"):
+            code, _, err = self.seed(
+                "--line",
+                line,
+                "--status",
+                "open",
+                "--first-seen",
+                "2026-10-18",
+                "--last-seen",
+                "2026-10-25",
+                env=self.fake_env(),
+            )
+            self.assertEqual(code, 0, err)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects seen in the last 7 days: 2", out)
+        self.assertEqual(out.count("d-0001"), 1, "each entry once")
+        self.assertEqual(out.count("d-0002"), 1)
 
 
 if __name__ == "__main__":

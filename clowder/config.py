@@ -82,6 +82,15 @@ class Config:
     heavy_max_memory: float | None = None
     heavy_max_load: float | None = None
 
+    @property
+    def defects_path(self) -> Path:
+        """The one defects record: `defects.json` beside the state file.
+
+        The state file and the defect list are the same record, kept in one place,
+        so a test or a second machine points at one path and gets both.
+        """
+        return self.state_path.with_name("defects.json")
+
     def resolve_repo(self, name: str) -> Path:
         """Turn a repo name into a path.
 
@@ -114,6 +123,7 @@ class Config:
             "mux_prompt_argv": list(self.mux_prompt_argv),
             "sessions_root": str(self.sessions_root),
             "state_path": str(self.state_path),
+            "defects_path": str(self.defects_path),
             "repos": {k: str(v) for k, v in sorted(self.repos.items())},
             "dispatch_marker": self.dispatch_marker,
             "dispatch_input_wait": self.dispatch_input_wait,

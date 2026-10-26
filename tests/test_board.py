@@ -18,6 +18,7 @@ from clowder.board import (
     waiting_on_you,
     write_board,
 )
+from clowder.defects import Defect
 from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
 from clowder.timeutil import now_iso
 
@@ -407,6 +408,25 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 2)
         self.assertIn("choose the colours", " ".join(waiting))
         self.assertIn("your word", " ".join(waiting))
+
+    def test_a_defect_seen_twice_waits_for_the_front_door_not_the_owner(self) -> None:
+        # Opening the job is the front door's act, so this list belongs in the
+        # worker section. One line and an id: the detail stays in the record.
+        defect = Defect(
+            id="d-0001",
+            line="a step does not close when it reports",
+            first_seen="2026-10-24T09:00:00Z",
+            last_seen="2026-10-25T09:00:00Z",
+            count=2,
+            state="open",
+        )
+        page = data(repeated_defects=[defect])
+        self.assertEqual(waiting_on_you(page), [], "none of this is the owner's act")
+        worker = " ".join(waiting_for_worker(page))
+        self.assertIn("seen twice, no job", worker)
+        self.assertIn("d-0001", worker)
+        self.assertIn("a step does not close when it reports", worker)
+        self.assertIn("not enough", worker, "bumping the count is refused as a fix")
 
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])

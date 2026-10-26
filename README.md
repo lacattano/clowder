@@ -82,7 +82,7 @@ you stays at the top and is never filtered away.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 717
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 767
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 

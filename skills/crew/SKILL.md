@@ -79,6 +79,10 @@ A vague ask wastes the peer's turn.
   address fails silently - the job reaches the wrong agent and looks delivered.
 - Never claim a test passed unless the report says it ran and passed.
 - Large output goes to a file. Reply with the path.
+- **Record a defect where you find it.** A quirk, trap or workaround that cost you time goes in
+  the one defects record with `clowder defects add --line "..."`, in one line: it is read every
+  session, where a report is read once. If it is not in that record it is not known, and no
+  other file stores one.
 
 **Sending over the bus.** A pane can send only once the remote-pi Docker service is running and
 the pane is joined with `/remote-pi join`. If `list_peers` says "Not in a session", the pane is

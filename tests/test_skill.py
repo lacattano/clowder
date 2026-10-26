@@ -66,6 +66,15 @@ class SkillTest(unittest.TestCase):
         expected = marker_line("t-0004", "ship", "myrepo", "topcat")
         self.assertIn(expected, read_skill())
 
+    def test_the_skill_names_the_one_defects_record_and_the_generated_handover(self) -> None:
+        text = " ".join(read_skill().split())
+        self.assertIn("clowder handover write", text)
+        self.assertIn("handover-notes.md", text)
+        self.assertIn("capped at ten lines", text)
+        self.assertIn("clowder defects add", text)
+        self.assertIn("clowder defects list --repeated", text)
+        self.assertIn("Bumping the count is not enough", text)
+
     def test_the_skill_records_how_the_front_door_resets_a_context(self) -> None:
         text = " ".join(read_skill().split())
         self.assertIn('herdr agent send-keys NAME "/" n e w enter', text)
@@ -115,33 +124,27 @@ class SkillTest(unittest.TestCase):
         for rule in ("you do not build", "comes first", "heavy run"):
             self.assertIn(rule, text, f"a core rule is missing: {rule}")
 
-    def test_the_skill_opens_with_a_reading_order(self) -> None:
+    def test_the_skill_opens_with_one_start_command(self) -> None:
+        # The reading order is one command, not a list of files a fresh session has
+        # to remember, and the skill says what that command's output means.
         skill = read_skill()
         self.assertIn("## Starting after a refresh", skill)
-        section = skill.split("## Starting after a refresh", 1)[1].split("\n## ", 1)[0]
+        section = skill.split("## Starting after a refresh", 1)[1].split(chr(10) + "## ", 1)[0]
         text = " ".join(section.split())
-        order = [
-            "clowder inbox",
-            "clowder queue list",
-            "clowder tasks --open",
-            "clowder job list",
-            "clowder agents",
-            "DESIGN.md",
-        ]
-        positions = [text.index(item) for item in order]
-        self.assertEqual(positions, sorted(positions), "read in the listed order")
-        self.assertIn("no state in your head", text)
-        for piece in (
-            "clowder job pass",
-            "clowder job word",
-            "clowder job publish",
-            "clowder job merge",
+        self.assertIn("clowder start", text)
+        self.assertNotIn("The Open section of `DESIGN.md`", text, "the file list is gone")
+        for phrase in (
+            "the handover file and its age",
+            "STALE",
+            "the decisions that wait on the owner",
+            "the steps in flight",
+            "the queue count",
+            "the defects seen twice with no job",
         ):
-            self.assertIn(piece, text)
-        self.assertIn("reviewer per repo", text)
-        self.assertIn('"Waiting on you"', text)
-        self.assertIn('"Waiting for a worker"', text)
-        self.assertIn("cannot recover", text)
+            self.assertIn(
+                phrase.lower(), text.lower(), "start output is not explained: " + phrase
+            )
+        self.assertIn("no state in your head", text)
 
     def test_the_shipped_skills_point_at_the_crew_skill(self) -> None:
         # The generic rules ship as a skill. A shipped skill must never point at a
