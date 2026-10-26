@@ -31,9 +31,13 @@ from .state import (
 )
 from .timeutil import elapsed_seconds, human_age, human_duration, to_epoch
 
-# An open step whose agent is idle for longer than this is worth a second look:
-# nothing is running, so nobody may be coming back to it.
-QUIET_AFTER_SECONDS = 120.0
+# An open step that has recorded nothing for this long is worth a flag when the roster
+# was not read live. Sixty minutes: this crew's steps run 10 to 40 minutes routinely
+# (2026-10-26: 5, 7, 20, 38, 57 and 73 minutes; the review step itself took 35), so a
+# two-minute flag fired on every healthy step and was a flag nobody would read by the
+# second day. It sits above any healthy step and below the 24-hour held-change figure
+# below, which is the other quiet bound in this file.
+QUIET_AFTER_SECONDS = 3600.0
 
 # A held change the owner has not walked for this long is worth a flag, so a change
 # cannot sit in the queue unnoticed for days.
@@ -844,7 +848,7 @@ def running_now(data: BoardData) -> list[str]:
         quiet = ""
         if not data.live_ok and task.age_seconds >= QUIET_AFTER_SECONDS:
             quiet = (
-                f" <span class='pill bad'>no update for "
+                f" <span class='pill bad'>nothing recorded for "
                 f"{_e(human_age(task.age_seconds))}</span>"
             )
         lines.append(
@@ -1358,7 +1362,7 @@ def render_board(data: BoardData) -> str:
     else:
         running_note = (
             "These are the open steps in the record. The live state of each worker was "
-            "not read, so a step marked 'no update' has recorded nothing for that long: "
+            "not read, so a step marked 'nothing recorded' has not moved for that long: "
             "it may be working, or it may have stopped."
         )
     running_html += f"<p class='why'>{running_note}</p>"

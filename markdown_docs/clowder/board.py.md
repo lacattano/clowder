@@ -131,8 +131,8 @@ def write_board(data: BoardData, path: str | Path) -> Path
   sections first (For you, Running now, Waiting for a worker, What landed since this
   page was last drawn), then the records. It reloads itself only when a step is in
   flight, and says in one line when nothing has landed since the last draw. The landed
-  section counts landed work only, and a step with no update is marked when the roster
-  was not read live.
+  section counts landed work only, and a step with nothing recorded for 60 minutes is
+  marked when the roster was not read live.
 - `write_board(data, path)` - writes `render_board(data)` to `path` (creating
   parents) and returns the `Path`.
 

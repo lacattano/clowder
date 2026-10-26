@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from clowder.board import (
@@ -21,7 +22,7 @@ from clowder.board import (
 )
 from clowder.defects import Defect
 from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
-from clowder.timeutil import now_iso
+from clowder.timeutil import now_iso, to_iso
 
 
 def task(task_id: str = "t-0001", **overrides: object) -> Task:
@@ -749,7 +750,7 @@ class WaitingTest(unittest.TestCase):
         page = data(tasks=[old], live_ok=False)
         running = running_now(page)
         self.assertEqual(len(running), 1)
-        self.assertIn("no update for", running[0])
+        self.assertIn("nothing recorded for", running[0])
         worker = " ".join(waiting_for_worker(page))
         self.assertIn("not checked live", worker)
         self.assertIn("shipped nothing to the record", worker)
@@ -759,7 +760,37 @@ class WaitingTest(unittest.TestCase):
 
         # A fresh step is not marked.
         fresh = running_now(data(tasks=[task(job=None)], live_ok=False))
-        self.assertNotIn("no update for", fresh[0])
+        self.assertNotIn("nothing recorded for", fresh[0])
+
+    @staticmethod
+    def minutes_ago(minutes: int) -> str:
+        return to_iso(datetime.now(UTC) - timedelta(minutes=minutes))
+
+    def test_a_five_minute_step_is_not_marked(self) -> None:
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(5))], live_ok=False)
+        self.assertNotIn("nothing recorded for", running_now(page)[0])
+
+    def test_a_forty_five_minute_step_is_not_marked(self) -> None:
+        # This crew's steps run 10 to 40 minutes routinely, so 45 is still healthy.
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(45))], live_ok=False)
+        self.assertNotIn("nothing recorded for", running_now(page)[0])
+
+    def test_a_seventy_minute_step_is_marked_and_the_worker_line_names_it(self) -> None:
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(70))], live_ok=False)
+        running = running_now(page)
+        self.assertIn("nothing recorded for", running[0])
+        self.assertIn("1h", running[0], "the quiet time is named")
+        worker = " ".join(waiting_for_worker(page))
+        self.assertIn("not checked live", worker)
+        self.assertIn("shipped nothing to the record for 1h", worker)
+
+    def test_a_live_read_marks_nothing_on_age_alone(self) -> None:
+        # With the roster read live, the page knows the status and must not call an
+        # ordinary long step quiet: a 70-minute step with a working agent is not news.
+        old = task(job=None, dispatched_at="2020-01-01T00:00:00Z")
+        live = data(tasks=[old], agents=[agent("verifier", status="working")], live_ok=True)
+        self.assertNotIn("nothing recorded for", running_now(live)[0])
+        self.assertEqual(waiting_for_worker(live), [], "working is not stuck")
 
     def test_for_you_has_no_ids_and_shows_the_wait(self) -> None:
         # Blocker: his section carried task and job ids, and the wait was buried under

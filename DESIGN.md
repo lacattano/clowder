@@ -776,9 +776,12 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   cheaper one and there is still no server or port to manage.
 - **Not live means "not checked", not "busy" or "idle".** The roster is not read on a normal draw,
   so the page says what it can: a step whose record has not changed for the quiet threshold is
-  marked "no update for 6h" under Running now, and the worker section repeats it as "not checked
-  live - shipped nothing to the record for 6h". A dead worker therefore reads as doubtful instead
-  of running, and nothing is called idle without a live read.
+  marked "nothing recorded for 6h" under Running now, and the worker section repeats it as "not
+  checked live - shipped nothing to the record for 6h". A dead worker therefore reads as doubtful
+  instead of running, and nothing is called idle without a live read. The threshold is 60 minutes:
+  this crew's steps run 10 to 40 minutes routinely (2026-10-26: 5, 7, 20, 38, 57 and 73; the
+  review step took 35), so a two-minute flag fired on every healthy step. It sits above any
+  healthy step and below the 24-hour held-change figure, which is the file's other quiet bound.
 - **Every report carries one line for him.** `For the owner: <two sentences, his words, what this
   changes for him>`. The dispatch marker requires it, `clowder report` shows it first and marks a
   report without it "(incomplete: ...)", and `step report` says so on stderr. The front door
