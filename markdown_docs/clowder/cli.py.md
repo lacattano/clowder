@@ -42,7 +42,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `tasks` | `cmd_tasks` | List tasks and their state. |
 | `inbox` | `cmd_inbox` | Show what has reported since the last look. |
 | `report` | `cmd_report` | Read one task's report (`report <id>`). |
-| `owner` | `cmd_owner` | Record or clear one thing that waits on the owner, against a task. |
+| `owner` | `cmd_owner` | Record or clear one thing that waits on the owner, against a task. `--clear` clears the item only; when a decision on the task is still open it says so and names `--decide`. |
 | `step abandon` | `cmd_step_abandon` | Record a dead step as abandoned and free its job for the next step. |
 | `step close` | `cmd_step_close` | Close a step that can never report, and keep the answer it has. |
 | `step report` | `cmd_step_report` | Close a finished step where it reports: one line, the answer from a file, one audit line. |

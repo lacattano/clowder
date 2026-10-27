@@ -1723,6 +1723,7 @@ def cmd_owner(args: argparse.Namespace) -> int:
         raise UsageError("--detail needs --item: the one line the board shows first")
     if bool(args.item) == bool(args.clear):
         raise UsageError("pass exactly one of --item TEXT or --clear")
+    cleared_item = False
     if args.item:
         text = args.item.strip()
         if not text:
@@ -1745,16 +1746,36 @@ def cmd_owner(args: argparse.Namespace) -> int:
         task.owner_detail = _owner_detail(args)
         note = f"{task.id}: recorded as waiting on the owner"
     else:
+        # Clearing the note is not answering the question. A task can carry both, and
+        # saying "cleared" while an open decision still shows is a false success - the
+        # same class as a dispatch that says sent and did not. Report only what happened.
+        cleared_item = task.owner_item is not None
         task.owner_item = None
         task.owner_item_at = None
         task.owner_detail = None
-        note = f"{task.id}: cleared from what waits on the owner"
+        note = (
+            f"{task.id}: cleared from what waits on the owner"
+            if cleared_item
+            else f"{task.id}: nothing was recorded to clear"
+        )
     store.save()
 
+    still_open = bool(task.decision_is_open)
     if args.json:
-        _emit_json({"task": task.to_dict()})
+        _emit_json(
+            {
+                "task": task.to_dict(),
+                "cleared_item": cleared_item,
+                "decision_still_open": still_open,
+            }
+        )
         return 0
     print(note)
+    if still_open:
+        print(
+            f"{INDENT}the recorded decision is still open, and --clear does not answer "
+            f"it. Answer it with: {PROGRAM} report {task.id} --decide TEXT"
+        )
     return 0
 
 

@@ -6190,6 +6190,7 @@ class CliTest(unittest.TestCase):
         at: str = "2026-10-20T09:00:00Z",
         created_at: str = "2026-10-10T09:00:00Z",
         job: str | None = None,
+        decision: str | None = None,
     ) -> None:
         """A question recorded on a step, whatever its status."""
         store = StateStore(self.state)
@@ -6207,6 +6208,7 @@ class CliTest(unittest.TestCase):
                 created_at=created_at,
                 owner_item=item,
                 owner_item_at=at,
+                open_decision=decision,
             )
         )
         store.save()
@@ -6271,6 +6273,59 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("waiting on you: 0", out)
+
+    # -- --clear must not claim more than it did ------------------------------
+
+    def test_clear_clears_an_owner_item_and_says_so(self) -> None:
+        self.add_owner_item("t-0001", "choose A or B")
+        code, out, err = self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("cleared from what waits on the owner", out)
+        self.assertNotIn("still open", out)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
+
+    def test_clear_leaves_an_open_decision_and_says_so(self) -> None:
+        # The reviewer's case: the item cleared, the line stayed, because the task also
+        # carried an unanswered decision. The command must not say only "cleared".
+        self.add_owner_item(
+            "t-0001", "choose A or B", decision="14 days or 30 for the refund window?"
+        )
+        code, out, err = self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("cleared from what waits on the owner", out)
+        self.assertIn("the recorded decision is still open", out)
+        self.assertIn("report t-0001 --decide", out)
+
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 1", out)
+        self.assertIn("14 days or 30 for the refund window?", out)
+        self.assertNotIn("choose A or B", out, "the item itself is gone")
+
+    def test_decide_removes_the_open_decision(self) -> None:
+        self.add_owner_item(
+            "t-0001", "choose A or B", decision="14 days or 30 for the refund window?"
+        )
+        self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        code, _, err = self.cli("report", "t-0001", "--decide", "14 days", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
+        self.assertNotIn("14 days or 30", out)
+
+    def test_clear_with_nothing_recorded_does_not_claim_a_clear(self) -> None:
+        self.add_owner_item("t-0001", None, decision="14 days or 30?")
+        code, out, err = self.cli("owner", "t-0001", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("nothing was recorded to clear", out)
+        self.assertNotIn("cleared from what waits on the owner", out)
+        self.assertIn("the recorded decision is still open", out)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 1", out)
 
 
 if __name__ == "__main__":

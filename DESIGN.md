@@ -819,9 +819,12 @@ The list is now built once, in `owner.waiting_on_owner(tasks, jobs)`, and every 
   equal output on one fixture.
 - **A recorded question waits whatever the step did.** Seen 2026-10-27, minutes after this
   landed: three owner items sat on closed steps and had vanished from both views the moment their
-  steps closed. A question is cleared with `owner --clear` or answered with `--decide`; the
-  step's own status is irrelevant, so the list no longer checks it. The wait is measured from the
-  item's own moment, not the step's.
+  steps closed. An owner item is cleared with `owner --clear`; an open decision is answered with
+  `report --decide`. `--clear` clears the note only: when a decision on the same task is still
+  open it says so, and names `--decide`, instead of reporting a clear that left the line standing
+  (seen 2026-10-27, the same day: a clear printed "cleared" while the line stayed, and a command
+  that says it did something and did not is a false success). The step's own status is
+  irrelevant, so the list no longer checks it, and the wait is the item's own moment.
 - **One record, one list, one count.** Seen 2026-10-27 on the live page: "38 jobs in the todo
   queue but 40 on the list of waiting for an agent". The section counted the queue plus its
   warnings. It now counts the queued records only - the same number the To Do column shows,

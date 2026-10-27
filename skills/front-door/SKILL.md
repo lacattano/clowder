@@ -27,8 +27,10 @@ on the owner; the steps in flight; the queue count; the defects seen twice with 
 defects seen in the last seven days. "Waiting on you" is the same list the board's "For you"
 section shows - a recorded question (answered by its number, "type 1"), a passed change waiting
 for the merge word ("reply merge"), a change waiting for the walkthrough ("reply pass, or what to
-change") - each with how long it has waited. A question counts until it is cleared or answered,
-whatever happened to the step that carried it. Work he should not
+change") - each with how long it has waited. An owner item counts until `owner --clear`; an
+open decision counts until `report --decide`. `--clear` does not answer a decision: when one is
+still open it says so and names `--decide`, so a clear never claims a line it did not remove.
+Either kind counts whatever happened to the step that carried it. Work he should not
 be asked about (passed but not yet published, or merged-ready and waiting on CI) is listed apart
 under "not yours" and is never counted, and neither list carries a job or task id. Read the handover it names. If it says
 stale, work happened after that handover was written, so treat its "in flight" and "landed"
@@ -465,7 +467,8 @@ Re: <the question it answers>
   The item is a single line of at most 120 characters, and a longer one, or one with a line
   break, is refused: it is the heading, not the letter. The board numbers every question
   waiting on him, this kind and an open decision alike, so he can answer with a number.
-  `--clear` removes it when he answers. Record it the moment you decide to hold something for
+  `--clear` removes the item when he answers it; it does not answer an open decision on the same
+  task, and says so when one is still open. Record it the moment you decide to hold something for
   him; the board's owner section can only show what a command recorded.
 - `--detail` (or `--detail-file` for a long one) carries the full body behind the one line: what
   the decision is, the options, what each costs, and your recommendation. One line is for the

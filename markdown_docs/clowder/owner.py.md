@@ -11,7 +11,8 @@ handover all render it: a count cannot say zero while a line is on the page.
 Three kinds count as waiting on him:
 
 - `decision` - a question recorded on a task (`owner --item`, or `--open-decision`); it
-  counts whatever the step's status, and waits until it is cleared or answered;
+  counts whatever the step's status, and waits until `owner --clear`; a decision waits
+  until `report --decide`;
 - `merge` - a change that is passed, published, and waiting only for his merge word;
 - `walkthrough` - a change whose review is finished and which waits for him to be walked
   through it.
