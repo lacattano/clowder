@@ -792,6 +792,35 @@ No read tracking: the page records when the tool drew it, never when he read it.
 deleted: the old first section keeps its content under "For you", and every record section is
 where it was.
 
+### 38. One answer to "what waits on me"
+
+Seen 2026-10-26: `clowder start` printed "decisions waiting on you: 0" while a change had waited
+for a walkthrough for a day. The board showed it under "For you", so the two views disagreed, and
+the owner stopped trusting either - "anything waiting on me as i can't trust the board at the
+moment". That question is the defect.
+
+The list is now built once, in `owner.waiting_on_owner(tasks, jobs)`, and every view renders it:
+
+- **His list, three kinds.** A decision recorded on a task (`owner --item` or `--open-decision`);
+  a change that is passed, published and waiting only for his merge word; a change whose review
+  is finished and which waits for him to be walked through it. Each line carries the thing in his
+  words, the word that answers it ("reply with your answer", "reply merge", "reply pass, or what
+  to change"), and how long it has waited. No task or job id: the number is the view's own.
+- **Not his, listed apart and never counted.** A passed change that is not yet published (the
+  front door publishes it and CI runs), and one whose word is recorded and is waiting on CI before
+  the front door merges it.
+- **The board's "work at risk" line moved to the front-door section.** Keeping a stranded commit
+  is the front door's act, and it was the only line in "For you" that `start` could not know; with
+  it here, the section's count is exactly his list. Nothing is deleted: the line and its command
+  are unchanged, in the section that waits for the front door.
+- **One count, two views.** `start`, the board's "For you", and the generated handover all call
+  that function, so a count cannot say zero while a line is on the page. A test patches the one
+  function and asserts both views render its output, which is the shared path rather than equal
+  output on one fixture.
+
+The re-review and unconfirmed notes are passed in by the board, which reads the refs; `start`
+passes none, because it does not. Only a note differs, never the count.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from

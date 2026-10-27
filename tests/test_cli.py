@@ -14,7 +14,9 @@ from pathlib import Path
 from unittest import mock
 
 from clowder import cli, gitcmd, load
+from clowder import owner as owner_mod
 from clowder.board import BoardData, waiting_on_you
+from clowder.board import waiting_on_you as board_waiting_on_you
 from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from clowder.timeutil import now_iso, to_iso
@@ -3497,6 +3499,9 @@ class CliTest(unittest.TestCase):
         handed_over_at: str | None = None,
         merged_at: str | None = None,
         closed_at: str | None = None,
+        pass_at: str | None = None,
+        published_at: str | None = None,
+        merge_word_at: str | None = None,
         status: str = OPEN,
     ) -> None:
         store = StateStore(self.state)
@@ -3517,6 +3522,9 @@ class CliTest(unittest.TestCase):
                 handed_over_at=handed_over_at,
                 merged_at=merged_at,
                 closed_at=closed_at,
+                pass_at=pass_at,
+                published_at=published_at,
+                merge_word_at=merge_word_at,
                 status=status,
             )
         )
@@ -3552,8 +3560,9 @@ class CliTest(unittest.TestCase):
         owner = (self.root / "board.html").read_text(encoding="utf-8")
         owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
-        self.assertIn("needs re-review", owner)
-        self.assertNotIn("held for your review", owner)
+        self.assertIn("moved to", owner)
+        self.assertIn("the reviewer must check it again", owner)
+        self.assertNotIn("waiting for your walkthrough", owner)
         self.assertIn(checked[:7], owner, "the checked commit is named")
         self.assertIn(tip[:7], owner, "the current tip is named")
 
@@ -3565,8 +3574,8 @@ class CliTest(unittest.TestCase):
         owner = (self.root / "board.html").read_text(encoding="utf-8")
         owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
-        self.assertIn("held for your review", owner)
-        self.assertNotIn("needs re-review", owner)
+        self.assertIn("waiting for your walkthrough", owner)
+        self.assertNotIn("moved to", owner)
 
     def test_job_list_calls_a_moved_after_review_tip_needs_rereview(self) -> None:
         self.write_held_job("j-0001", "task/stale", moved=True)
@@ -3600,8 +3609,8 @@ class CliTest(unittest.TestCase):
         owner = (self.root / "board.html").read_text(encoding="utf-8")
         owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
-        self.assertIn("review unconfirmed", owner)
-        self.assertNotIn("held for your review", owner)
+        self.assertIn("could not be read", owner)
+        self.assertNotIn("waiting for your walkthrough", owner)
 
     def test_the_board_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
@@ -3610,9 +3619,9 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = html.split("For you", 1)[1].split("Running now", 1)[0]
-        self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
-        self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
+        worker = html.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertIn("t-0002", worker, "a genuinely lost commit is still at risk")
+        self.assertNotIn("t-0001", worker, "a rebased-away commit is not at risk")
 
     def test_a_superseded_step_commit_is_not_flagged(self) -> None:
         # The job's branch moved past the step's commit (an amend or a reversed
@@ -3623,9 +3632,9 @@ class CliTest(unittest.TestCase):
         self.write_pinned_task("t-0001", lost, job="j-0001")
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
-        owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        self.assertNotIn("t-0001", owner, "the job's branch moved past the commit")
+        worker = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = worker.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertNotIn("t-0001", worker, "the job's branch moved past the commit")
 
     def test_a_reported_step_on_a_merged_job_leaves_the_worker_queue(self) -> None:
         # t-0613 and t-0615 on job j-0124: a later rebase orphaned the recorded
@@ -3680,12 +3689,13 @@ class CliTest(unittest.TestCase):
         self.write_pinned_task("t-0001", lost, worktree=str(self.repo_path))
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
-        owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        self.assertIn("t-0001", owner)
-        self.assertIn("on no branch", owner)
-        self.assertIn("To keep it", owner)
-        self.assertIn(f"branch keep-t-0001 {lost}", owner)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        # Keeping the commit is the front door's act, so the warning is in the worker
+        # section and not in his queue.
+        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertIn("t-0001", worker)
+        self.assertIn("on no branch", worker)
+        self.assertIn(f"branch keep-t-0001 {lost}", worker)
 
     def test_two_tasks_sharing_a_commit_cost_one_look(self) -> None:
         # A board write asks about every task that holds a commit, and each look
@@ -3718,17 +3728,17 @@ class CliTest(unittest.TestCase):
 
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
-        owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        self.assertNotIn("t-0001", owner, "on its branch, so not at risk yet")
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertNotIn("t-0001", worker, "on its branch, so not at risk yet")
 
         gitcmd.switch_branch(repo, "main")
         gitcmd.run_git(repo, "branch", "-D", "task/lost")
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
-        owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        self.assertIn("t-0001", owner, "the warm memo did not hide the lost commit")
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertIn("t-0001", worker, "the warm memo did not hide the lost commit")
 
     def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
         old, lost = self.make_rebased_commits()
@@ -6046,6 +6056,120 @@ class CliTest(unittest.TestCase):
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertIn("choose A or B", html)
         self.assertIn("roster from the state file", html)
+
+    # -- what waits on the owner: one list, two views ------------------------
+
+    def add_open_decision(self, task_id: str = "t-0001") -> None:
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id=task_id,
+                question="which refund window?",
+                brief="ship: x",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                status=REPORTED,
+                open_decision="14 days or 30 for the refund window?",
+            )
+        )
+        store.save()
+
+    def test_start_and_the_board_count_the_same_three(self) -> None:
+        # The defect: start said zero while a change waited on a walkthrough. One list
+        # now feeds both, so a passed-unmerged change, a walkthrough and an open
+        # decision are three in both views.
+        self.write_job(
+            "j-0001",
+            branch="task/merge",
+            pass_at="2026-10-26T09:00:00Z",
+            published_at="2026-10-26T10:00:00Z",
+        )
+        self.write_held_job("j-0002", "task/held", moved=False)
+        self.add_open_decision()
+
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 3", out)
+        for text in ("reply merge", "reply pass, or what to change", "reply with your answer"):
+            self.assertIn(text, out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("count'>3</span>", section)
+        self.assertEqual(section.count("<li>"), 3, "three lines, and the count says three")
+
+    def test_start_and_the_board_say_none_when_nothing_waits(self) -> None:
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
+        self.assertIn("(nothing recorded)", out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("count'>0</span>", section)
+        self.assertIn("Nothing is recorded as waiting on you.", section)
+
+    def test_start_counts_a_change_waiting_on_a_walkthrough(self) -> None:
+        # The j-0206 regression, alone: a change handed over, its review finished, and
+        # nobody has walked it. The old start said zero.
+        self.write_held_job("j-0001", "task/held", moved=False)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 1", out)
+        self.assertIn("reply pass, or what to change", out)
+
+    def test_both_views_call_the_one_waiting_list(self) -> None:
+        # The shared path, not equal output on one fixture: patch the one function and
+        # both views must render what it returns.
+        sentinel = owner_mod.Waiting(
+            kind=owner_mod.DECISION,
+            heading="the one shared question",
+            note="your move",
+            action="reply with your answer",
+            since=now_iso(),
+            id="t-9999",
+        )
+        with mock.patch.object(
+            owner_mod, "waiting_on_owner", return_value=([sentinel], [])
+        ) as shared:
+            code, out, err = self.cli("start", env=self.fake_env())
+            self.assertEqual(code, 0, err)
+            self.assertIn("the one shared question", out)
+            data = cli._board_data(cli.load_config(str(self.config)), StateStore(self.state))
+            lines = board_waiting_on_you(data)
+        self.assertGreaterEqual(shared.call_count, 2, "both views asked the one list")
+        self.assertIn("the one shared question", " ".join(lines))
+
+    def test_a_job_awaiting_ci_is_not_counted_for_him(self) -> None:
+        # His word is recorded and the pull request waits on CI: the front door's move,
+        # shown as "not yours" and never counted.
+        self.write_job(
+            "j-0001",
+            branch="task/ci",
+            pass_at="2026-10-26T09:00:00Z",
+            published_at="2026-10-26T10:00:00Z",
+            merge_word_at="2026-10-26T11:00:00Z",
+        )
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
+        self.assertIn("not yours: 1", out)
+        self.assertIn("when CI is green", out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("count'>0</span>", section)
+        worker = html.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        self.assertIn("not yours", worker)
+        self.assertIn("when CI is green", worker)
 
 
 if __name__ == "__main__":

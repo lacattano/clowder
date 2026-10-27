@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import __version__, audit, gitcmd, load
 from . import handover as handover_doc
+from . import owner as owner_mod
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .defects import (
@@ -4566,7 +4567,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     entries, defect_error = read_defects(defects)
     # Staleness counts a defect sighting as work, but only if the record can be read.
     latest = handover_doc.latest(store, defects if defect_error is None else None)
-    decisions = handover_doc.owner_lines(store)
+    # One function decides what waits on him, and the board renders the same list.
+    his, not_his = owner_mod.waiting_on_owner(store.all(), store.all_jobs())
     in_flight = store.select(open_only=True)
     queued = len(store.all_queued())
     repeated = [defect for defect in entries if defect.needs_action(_open_job_ids(store))]
@@ -4579,7 +4581,20 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "handover_age_days": latest.age_days,
                 "handover_stale": latest.stale,
                 "handover_stale_why": latest.why,
-                "decisions": decisions,
+                "waiting": [
+                    {
+                        "kind": item.kind,
+                        "heading": item.heading,
+                        "action": item.action,
+                        "waited": item.waited,
+                        "id": item.id,
+                    }
+                    for item in his
+                ],
+                "not_yours": [
+                    {"heading": item.heading, "note": item.note, "id": item.id}
+                    for item in not_his
+                ],
                 "in_flight": [task.id for task in in_flight],
                 "queue": queued,
                 "repeated_defects": [defect.id for defect in repeated],
@@ -4599,11 +4614,17 @@ def cmd_start(args: argparse.Namespace) -> int:
             print(f"{INDENT}{latest.why}")
             print(f"{INDENT}write the next one with: {PROGRAM} handover write")
 
-    print(f"\ndecisions waiting on you: {len(decisions)}")
-    for line in decisions:
-        print(f"{INDENT}- {line}")
-    if not decisions:
+    print(f"\nwaiting on you: {len(his)}")
+    for number, item in enumerate(his, start=1):
+        print(
+            f"{INDENT}{number}. {_clip(item.heading, 80)} - {item.action}; waited {item.waited}"
+        )
+    if not his:
         print(f"{INDENT}(nothing recorded)")
+    if not_his:
+        print(f"\nnot yours: {len(not_his)}")
+        for other in not_his:
+            print(f"{INDENT}- {_clip(other.heading, 80)} - {other.note}; waited {other.waited}")
 
     print(f"\nsteps in flight: {len(in_flight)}")
     for task in in_flight:

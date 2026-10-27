@@ -290,7 +290,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("decision", waiting[0])
         self.assertIn("14 days or 30?", waiting[0])
-        self.assertIn("type 1", waiting[0], "the number he replies with")
+        self.assertIn("reply with your answer", waiting[0], "the word that answers it")
         self.assertIn("waited", waiting[0], "how long it has waited")
         self.assertNotIn("t-0001", waiting[0], "no task id in his section")
 
@@ -316,7 +316,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("your move", waiting[0])
         self.assertIn("the team-page design is ready", waiting[0])
-        self.assertIn("type 1", waiting[0])
+        self.assertIn("reply with your answer", waiting[0])
         self.assertIn("waited", waiting[0])
         self.assertNotIn("t-0001", waiting[0], "no task id in his section")
         self.assertLess(
@@ -349,7 +349,7 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("owner-detail", waiting[0])
         self.assertIn("A: 14 days, costs X.", waiting[0])
         self.assertIn("costs Y.", waiting[0])
-        self.assertIn("Recommend A. " * 60, waiting[0], "the full detail, not a clip")
+        self.assertIn(("Recommend A. " * 60).strip(), waiting[0], "the full detail, not a clip")
         self.assertIn(
             "costs X." + chr(10) + "B: 30 days",
             waiting[0],
@@ -470,31 +470,45 @@ class WaitingTest(unittest.TestCase):
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
 
-    def test_a_pass_without_a_word_waits_with_no_reviewer(self) -> None:
-        passed = job(pass_at=now_iso())
+    def test_a_pass_without_a_word_waits_once_it_is_published(self) -> None:
+        passed = job(pass_at=now_iso(), published_at=now_iso())
         waiting = waiting_on_you(data(jobs=[passed]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("your word", waiting[0])
+        self.assertIn("reply merge", waiting[0])
         self.assertIn("refund", waiting[0], "named in words, not by job id")
         self.assertNotIn("j-0001", waiting[0])
 
+    def test_a_passed_but_unpublished_change_is_not_his(self) -> None:
+        # There is nothing he can do until the front door publishes it and CI runs.
+        passed = job(pass_at=now_iso())
+        self.assertEqual(waiting_on_you(data(jobs=[passed])), [])
+        worker = " ".join(waiting_for_worker(data(jobs=[passed])))
+        self.assertIn("not yours", worker)
+        self.assertIn("publishes it and CI runs there", worker)
+
     def test_a_reviewed_job_waits_for_the_owner_s_word(self) -> None:
-        reviewed = job(reviewer="verifier", review_commit="a" * 40, pass_at=now_iso())
+        reviewed = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            pass_at=now_iso(),
+            published_at=now_iso(),
+        )
         waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task(status=REPORTED)]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("your word", waiting[0])
+        self.assertIn("reply merge", waiting[0])
         self.assertIn("verifier", waiting[0])
         self.assertIn("the front door merges it", waiting[0])
-        self.assertIn("merge word", waiting[0])
+        self.assertIn("your word", waiting[0])
 
     def test_a_held_change_waits_with_its_age(self) -> None:
         held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
         waiting = waiting_on_you(data(jobs=[held]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("held for your review", waiting[0])
         self.assertIn("refund", waiting[0])
+        self.assertIn("reply pass, or what to change", waiting[0])
         self.assertNotIn("j-0001", waiting[0], "no job id in his section")
-        self.assertIn("verifier", waiting[0])
+        self.assertIn("checked by verifier", waiting[0])
+        self.assertIn("waiting for your walkthrough", waiting[0])
         self.assertIn("waited", waiting[0])
         self.assertNotIn("gone quiet", waiting[0], "a fresh hold is not flagged")
 
@@ -506,7 +520,7 @@ class WaitingTest(unittest.TestCase):
         )
         waiting = waiting_on_you(data(jobs=[held]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("held for your review", waiting[0])
+        self.assertIn("waiting for your walkthrough", waiting[0])
         self.assertIn("gone quiet", waiting[0])
 
     def test_a_held_change_that_moved_after_review_needs_a_rereview(self) -> None:
@@ -515,7 +529,8 @@ class WaitingTest(unittest.TestCase):
         held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
         waiting = waiting_on_you(data(jobs=[held], rereview={held.id: "b" * 40}))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("needs re-review", waiting[0])
+        self.assertIn("moved to", waiting[0])
+        self.assertIn("the reviewer must check it again", waiting[0])
         self.assertNotIn("held for your review", waiting[0])
         self.assertIn("aaaaaaa", waiting[0], "the checked commit is named")
         self.assertIn("bbbbbbb", waiting[0], "the current tip is named")
@@ -598,31 +613,38 @@ class WaitingTest(unittest.TestCase):
         waiting = waiting_on_you(data(jobs=[reviewed], tasks=[task()]))
         self.assertEqual(waiting, [], "the step is still open, so nobody is waiting")
 
-    def test_work_on_no_branch_is_flagged_as_at_risk(self) -> None:
+    def test_work_on_no_branch_is_a_front_door_warning_not_his_queue(self) -> None:
         waiting = waiting_on_you(
             data(
                 tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
                 stranded={"t-0001"},
             )
         )
-        self.assertEqual(len(waiting), 1)
-        self.assertIn("work at risk", waiting[0])
-        self.assertIn("on no branch", waiting[0])
-        self.assertIn("To keep it", waiting[0])
-        self.assertIn("branch keep-t-0001 1a2b3c4", waiting[0])
+        self.assertEqual(waiting, [], "keeping the commit is the front door's act")
+        worker = " ".join(
+            waiting_for_worker(
+                data(
+                    tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
+                    stranded={"t-0001"},
+                )
+            )
+        )
+        self.assertIn("work at risk", worker)
+        self.assertIn("on no branch", worker)
+        self.assertIn("branch keep-t-0001 1a2b3c4", worker)
 
     def test_a_stranded_commit_names_the_change_it_belongs_to(self) -> None:
-        waiting = waiting_on_you(
-            data(
-                tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
-                jobs=[job()],
-                stranded={"t-0001"},
+        worker = " ".join(
+            waiting_for_worker(
+                data(
+                    tasks=[task(worktree="C:/code/myrepo/.worktrees/maker")],
+                    jobs=[job()],
+                    stranded={"t-0001"},
+                )
             )
         )
-        self.assertEqual(len(waiting), 1)
-        self.assertIn("the change refund", waiting[0])
-        self.assertNotIn("j-0001", waiting[0], "no job id in his section")
-        self.assertIn("To keep it", waiting[0])
+        self.assertIn("the change refund", worker)
+        self.assertIn("work at risk", worker)
 
     def test_a_quiet_agent_is_called_out(self) -> None:
         waiting = waiting_for_worker(
@@ -811,12 +833,18 @@ class WaitingTest(unittest.TestCase):
                     created_at="2026-10-26T10:00:00Z",
                 ),
             ],
-            jobs=[job("j-0001", pass_at="2026-10-26T08:00:00Z")],
+            jobs=[
+                job(
+                    "j-0001",
+                    pass_at="2026-10-26T08:00:00Z",
+                    published_at="2026-10-26T09:00:00Z",
+                )
+            ],
         )
         lines = waiting_on_you(page)
         self.assertEqual(len(lines), 3)
         for line in lines:
-            self.assertIn("type ", line)
+            self.assertIn("reply ", line)
             self.assertIn("waited ", line)
             self.assertNotIn("t-000", line, "no task id in his section")
             self.assertNotIn("j-000", line, "no job id in his section")

@@ -113,9 +113,10 @@ def write_board(data: BoardData, path: str | Path) -> Path
 - `changed_for_owner(data, since=...)` - landed work since a moment, one sentence
   each, newest first: the change's effect line or title, never an id or a state word.
 - `stamp_of(moment)` - a recorded moment as the local stamp a person reads.
-- `waiting_on_you(data)` - only what the owner must do: a decision, a review to
-  merge, work at risk. Each line is numbered, carries the number to reply with, and
-  the time it has waited. The front door's own to-do list is not here. An owner item is
+- `waiting_on_you(data)` - only what the owner must do, rendered from
+  `owner.waiting_on_owner` (the same list `clowder start` prints, so the count cannot
+  disagree). Each line is numbered, carries the word that answers it, and the time it
+  has waited. No task or job id. The front door's own to-do list is not here. An owner item is
   rendered as a heading (`owner-title`) with its detail body (`owner-detail`) under
   it, and a job whose merge word is already named by an owner item is not listed a
   second time.

@@ -22,9 +22,13 @@ fresh you needs, in the order to read it:
 clowder start
 ```
 
-It prints: the handover file and its age, and says plainly when it is STALE and why; the
-decisions that wait on the owner; the steps in flight; the queue count; the defects seen twice
-with no job; and the defects seen in the last seven days. Read the handover it names. If it says
+It prints: the handover file and its age, and says plainly when it is STALE and why; what waits
+on the owner; the steps in flight; the queue count; the defects seen twice with no job; and the
+defects seen in the last seven days. "Waiting on you" is the same list the board's "For you"
+section shows - a decision, a passed change waiting for the merge word, a change waiting for the
+walkthrough - each with the word that answers it and how long it has waited. Work he should not
+be asked about (passed but not yet published, or merged-ready and waiting on CI) is listed apart
+under "not yours" and is never counted, and neither list carries a job or task id. Read the handover it names. If it says
 stale, work happened after that handover was written, so treat its "in flight" and "landed"
 sections as out of date and write the next one before the session ends.
 

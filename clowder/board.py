@@ -17,10 +17,10 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+from . import owner as owner_mod
 from .defects import Defect, short_date
 from .report import format_cost, format_tokens
 from .state import (
-    CLOSED,
     FAILED,
     OWNER_GATE_WORDS,
     REPORTED,
@@ -38,10 +38,6 @@ from .timeutil import elapsed_seconds, human_age, human_duration, to_epoch
 # second day. It sits above any healthy step and below the 24-hour held-change figure
 # below, which is the other quiet bound in this file.
 QUIET_AFTER_SECONDS = 3600.0
-
-# A held change the owner has not walked for this long is worth a flag, so a change
-# cannot sit in the queue unnoticed for days.
-HELD_QUIET_AFTER_SECONDS = 86400.0
 
 TITLE = "clowder board"
 
@@ -568,173 +564,28 @@ def front_door_label(data: BoardData) -> str:
     return data.front_door_name or "the front door"
 
 
-def names_the_merge(text: str) -> bool:
-    """Does an owner item name the merge word, so it is the merge decision itself?
-
-    The board derives a "your word" line for a job that waits on the merge word, and
-    an owner item can be the same decision in the front door's words. The two are
-    one decision shown twice, and the item is the one he answers. A word check is
-    the narrowest rule that can tell that apart from an item about something else on
-    the same job: a miss shows a duplicate (noise), a false hit could hide a
-    decision, so only the explicit word counts.
-    """
-    return "merge" in _flat(text).lower()
-
-
 def waiting_on_you(data: BoardData) -> list[str]:
-    """Only what the owner must do: a decision, a review to merge, work at risk.
+    """Only what the owner must do, from the one list both views render.
 
-    One line each: the number he replies with, how long it has waited, and the thing in
-    his words. No task or job id: the number is this page's own numbering, and the
-    handle would only be something else for him to hold. The detail, where there is
-    one, sits under the line, after the number and the wait.
-
-    The front door's own to-do list is not here. A queued item or a step with no
-    answer is chased by the front door, and lives in `waiting_for_worker`.
+    The lines come from `owner.waiting_on_owner`, the same function `clowder start` uses,
+    so the section and the count cannot disagree with it. One line each: the number he
+    replies with, how long it has waited, the thing in his words, and the word that
+    answers it. No task or job id: the number is this page's own.
     """
-    entries: list[tuple[str, str, str, str]] = []  # moment, heading, note, detail
-
-    # Every question the owner must answer is numbered, whether it was recorded
-    # with `owner --item` or as an open decision on a report. One sequence, so a
-    # number names one question on the whole page.
-    questions: list[tuple[str, str, str, str]] = []
-    # A job whose merge word is the only gate left, already named by an owner item.
-    # That item is the line he reads and answers, so the derived merge line below
-    # must not repeat the same decision a second time. Only an item that names the
-    # merge counts: an item about something else on the same job is a different
-    # decision, and suppressing the merge line would hide one he must still give.
-    named_by_item: set[str] = set()
-    for task in data.tasks:
-        if task.owner_item and task.status != CLOSED:
-            if task.job and names_the_merge(task.owner_item):
-                named_by_item.add(task.job)
-            detail = (
-                f"<div class='owner-detail'>{_e(task.owner_detail)}</div>"
-                if task.owner_detail
-                else ""
-            )
-            questions.append(
-                (
-                    task.owner_item_at or task.created_at,
-                    # The item is the heading; the detail is the body under it.
-                    f"<span class='owner-title'>{_full(task.owner_item or '')}</span>",
-                    "your move",
-                    detail,
-                )
-            )
-    for task in data.tasks:
-        if task.open_decision and task.decision_is_open and task.status != CLOSED:
-            questions.append(
-                (
-                    task.created_at,
-                    _full(task.open_decision),
-                    f"decision, asked by {_e(task.agent)} about {_full(task.question)}",
-                    "",
-                )
-            )
-    entries = sorted(questions, key=lambda item: item[0])
-    jobs_by_id = {job.id: job for job in data.jobs}
-    for task in data.tasks:
-        if task.id in data.stranded:
-            job = jobs_by_id.get(task.job or "")
-            belongs = (
-                f"the change {_e(job.name_in_words)}"
-                if job is not None
-                else "a step with no change"
-            )
-            keep = f'git -C "{_e(task.worktree)}" branch keep-{_e(task.id)} {_e(task.commit)}'
-            entries.append(
-                (
-                    task.created_at,
-                    f"<b>work at risk</b> {belongs}",
-                    f"commit {_e((task.commit or '')[:7])} is on no branch",
-                    f"<span class='why'>No later commit supersedes it, and it lives only in "
-                    f"{_e(task.worktree)}, so reusing that space would lose it. To keep "
-                    f"it, run <code>{keep}</code></span>",
-                )
-            )
-
-    # The held changes waiting for him, oldest first. A queue with an age, so a
-    # change cannot sit unnoticed; past a day it is flagged.
-    held = [
-        job
-        for job in data.jobs
-        if job.is_open and job.reviewer and job.review_commit and not job.has_pass
-    ]
-    for job in sorted(held, key=lambda item: item.handed_over_at or item.created_at):
-        if any(task.job == job.id and task.is_open for task in data.tasks):
-            continue  # the review step is still running; not the owner's turn yet
-        tip = data.rereview.get(job.id)
-        moment = job.handed_over_at or job.created_at
-        if tip:
-            checked = (job.review_commit or "")[:7]
-            entries.append(
-                (
-                    moment,
-                    f"<b>needs re-review</b> {_e(job.name_in_words)}",
-                    f"checked at {_e(checked)}, now at {_e(tip[:7])}",
-                    f"<span class='why'>{_e(job.effect_in_words)}; the reviewer must "
-                    "check the new commit before you walk it.</span>",
-                )
-            )
-            continue
-        if job.id in data.review_unconfirmed:
-            checked = (job.review_commit or "")[:7]
-            entries.append(
-                (
-                    moment,
-                    f"<b>review unconfirmed</b> {_e(job.name_in_words)}",
-                    f"checked at {_e(checked)}, and the current commit could not be read",
-                    f"<span class='why'>{_e(job.effect_in_words)}; confirm the branch by "
-                    "hand before you walk it.</span>",
-                )
-            )
-            continue
-        seconds = elapsed_seconds(job.handed_over_at, None)
-        quiet = " - gone quiet" if seconds >= HELD_QUIET_AFTER_SECONDS else ""
-        entries.append(
-            (
-                moment,
-                f"<b>held for your review</b> {_e(job.name_in_words)}",
-                f"handed to {_e(job.reviewer)} {_e(human_age(seconds))}{quiet} ago",
-                f"<span class='why'>{_e(job.effect_in_words)}; walk it in the "
-                "reviewer's space.</span>",
-            )
-        )
-
-    for job in data.jobs:
-        if not job.is_open:
-            continue
-        open_steps = [task for task in data.tasks if task.job == job.id and task.is_open]
-        if (
-            not open_steps
-            and job.has_pass
-            and not job.has_merge_word
-            and job.id not in named_by_item
-        ):
-            reviewed_by = f"reviewed by {_e(job.reviewer)}" if job.reviewer else "passed"
-            entries.append(
-                (
-                    job.published_at or job.created_at,
-                    f"<b>your word</b> {_e(job.name_in_words)}",
-                    reviewed_by,
-                    f"<span class='why'>{_e(job.effect_in_words)}; the front door merges "
-                    "it once you give your merge word and the checks are green.</span>",
-                )
-            )
-
-    # One number per line, in the order above, and the exact word to type: the number.
-    # The wait is measured from the record's own moment, and it sits on the line, not
-    # after a detail block, so he does not have to hunt for it.
+    his, _ = owner_mod.waiting_on_owner(
+        data.tasks,
+        data.jobs,
+        rereview=data.rereview,
+        review_unconfirmed=data.review_unconfirmed,
+    )
     lines: list[str] = []
-    for number, (moment, heading, note, detail) in enumerate(entries, start=1):
-        waited = human_age(elapsed_seconds(moment, None))
+    for number, item in enumerate(his, start=1):
+        detail = f"<div class='owner-detail'>{_e(item.detail)}</div>" if item.detail else ""
         lines.append(
-            f"<b>{number}.</b> {heading} "
-            f"<span class='type'>type {number}</span>"
-            f"<span class='age'>waited {_e(waited)}</span>"
-            + (f" <span class='why'>{note}</span>" if note else "")
-            + detail
+            f"<b>{number}.</b> <span class='owner-title'>{_e(item.heading)}</span> "
+            f"<span class='type'>{_e(item.action)}</span>"
+            f"<span class='age'>waited {_e(item.waited)}</span> "
+            f"<span class='why'>{_e(item.note)}</span>{detail}"
         )
     return lines
 
@@ -749,6 +600,38 @@ def waiting_for_worker(data: BoardData) -> list[str]:
     judged, and a defect seen twice with no job. None of these needs the owner.
     """
     lines: list[str] = []
+
+    # What he may ask about but does not have to move, and a commit on no branch.
+    # Both are the front door's act, so they are here, not in his queue: "not yours"
+    # is a different claim from "waiting on you", and the count must not confuse them.
+    _, not_his = owner_mod.waiting_on_owner(
+        data.tasks,
+        data.jobs,
+        rereview=data.rereview,
+        review_unconfirmed=data.review_unconfirmed,
+    )
+    for item in not_his:
+        lines.append(
+            f"<b>not yours</b> {_e(item.heading)} "
+            f"<span class='why'>{_e(item.note)}; waiting {_e(item.waited)}</span>"
+        )
+    jobs_by_id = {job.id: job for job in data.jobs}
+    for task in data.tasks:
+        if task.id not in data.stranded:
+            continue
+        job = jobs_by_id.get(task.job or "")
+        belongs = (
+            f"the change {_e(job.name_in_words)}"
+            if job is not None
+            else "a step with no change"
+        )
+        keep = f'git -C "{_e(task.worktree)}" branch keep-{_e(task.id)} {_e(task.commit)}'
+        lines.append(
+            f"<b>work at risk</b> {belongs} <span class='id'>{_e(task.id)}</span> "
+            f"<span class='why'>commit {_e((task.commit or '')[:7])} is on no branch, and "
+            f"no later commit supersedes it. It lives only in {_e(task.worktree)}. The "
+            f"front door keeps it with <code>{keep}</code>.</span>"
+        )
 
     if data.defects_note:
         lines.append(

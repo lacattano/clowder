@@ -136,7 +136,7 @@ class SkillTest(unittest.TestCase):
         for phrase in (
             "the handover file and its age",
             "STALE",
-            "the decisions that wait on the owner",
+            "what waits on the owner",
             "the steps in flight",
             "the queue count",
             "the defects seen twice with no job",
