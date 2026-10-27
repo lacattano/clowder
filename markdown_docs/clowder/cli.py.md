@@ -42,7 +42,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `tasks` | `cmd_tasks` | List tasks and their state. |
 | `inbox` | `cmd_inbox` | Show what has reported since the last look. |
 | `report` | `cmd_report` | Read one task's report (`report <id>`). |
-| `owner` | `cmd_owner` | Record or clear one thing that waits on the owner, against a task. |
+| `owner` | `cmd_owner` | Record or clear one thing that waits on the owner, against a task. `--clear` clears the item only; when a decision on the task is still open it says so and names `--decide`. |
 | `step abandon` | `cmd_step_abandon` | Record a dead step as abandoned and free its job for the next step. |
 | `step close` | `cmd_step_close` | Close a step that can never report, and keep the answer it has. |
 | `step report` | `cmd_step_report` | Close a finished step where it reports: one line, the answer from a file, one audit line. |
@@ -66,7 +66,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `queue list` | `cmd_queue_list` | Show what is decided and still waiting to go. |
 | `queue send` | `cmd_queue_send` | Send one queued item, once its block has cleared. |
 | `queue drop` | `cmd_queue_drop` | Drop a queued item, with a reason and a name that stay on the record. |
-| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), the owner's decisions, steps in flight, the queue, repeated defects, and the defects seen in the last seven days. Fails open on an unreadable record, with exit code 4. |
+| `start` | `cmd_start` | What a fresh front door reads first: the handover and its age (stale said plainly), what waits on the owner (from `owner.waiting_on_owner`, the board's list), steps in flight, the queue, repeated defects, and the defects seen in the last seven days. Fails open on an unreadable record, with exit code 4. |
 | `defects add` | `cmd_defects_add` | Record one sighting of a defect, or the same one again. |
 | `defects list` | `cmd_defects_list` | Every known defect, `--repeated` (seen twice with no open job), or `--like WORDS` (an exact-word search). Refuses on an unreadable record. |
 | `defects show` | `cmd_defects_show` | One defect in full; the only place its detail lives. |

@@ -268,7 +268,7 @@ class HandoverTest(unittest.TestCase):
         self.store.save()
         path, _ = handover.write(self.store, self.defects)
         text = path.read_text(encoding="utf-8")
-        self.assertIn("your merge word for refund", text)
+        self.assertIn("refund - reply merge", text)
         self.assertIn("choose A or B", text)
         self.assertIn("does the site need a refund policy?", text)
 

@@ -73,8 +73,10 @@ def write(store, defects, *, at=None) -> tuple[Path, int]
   the day's window instead of dropping what the first write listed.
 - `notes_text(state_path)` - the one hand-written section, cut at ten lines. Returns
   the text and how many lines were dropped.
-- `owner_lines(store)` - what waits on the owner, one line each: owner items, open
-  decisions, and a pass with no merge word and no step in flight.
+- `owner_lines(store)` - what waits on the owner, from `owner.waiting_on_owner` (the
+  same list `clowder start` and the board show), one line each with the word that
+  answers it and the record's id, because the handover is a document a later session
+  reads.
 - `compose(...)` - the document text: six sections, five derived and the notes last.
 - `write(...)` - validates the defects (`broken()` entries stop it), composes, writes
   `HANDOVER-<date>.md`, returns the path and the dropped-note count.

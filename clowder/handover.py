@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import owner as owner_mod
 from .defects import Defect, DefectStore, short_date
 from .errors import StateError
 from .state import StateStore
@@ -270,20 +271,17 @@ def notes_text(state_path: str | Path) -> tuple[str, int]:
 
 
 def owner_lines(store: StateStore) -> list[str]:
-    """Everything that waits on the owner, in his words, one line each."""
-    lines: list[str] = []
-    tasks = store.all()
-    for task in tasks:
-        if task.owner_item and not task.is_closed:
-            lines.append(f"{task.owner_item}  [{task.id}]")
-    for task in tasks:
-        if task.decision_is_open and not task.is_closed:
-            lines.append(f"{task.open_decision}  [{task.id}, asked by {task.agent}]")
-    for job in store.open_jobs():
-        in_flight = any(task.job == job.id and task.is_open for task in tasks)
-        if job.has_pass and not job.has_merge_word and not in_flight:
-            lines.append(f"your merge word for {job.name_in_words}  [{job.id}]")
-    return lines
+    """Everything that waits on the owner, from the one shared list.
+
+    `owner.waiting_on_owner` is the only place that decides this, so the handover, the
+    board and `clowder start` cannot report different numbers. The handover prints the
+    record's handle as well, because it is a document a later session reads.
+    """
+    his, _ = owner_mod.waiting_on_owner(store.all(), store.all_jobs())
+    return [
+        f"{number}. {item.heading} - {owner_mod.answered_by(item, number)}  [{item.id}]"
+        for number, item in enumerate(his, start=1)
+    ]
 
 
 def _in_flight(store: StateStore) -> list[str]:
