@@ -79,6 +79,10 @@ A vague ask wastes the peer's turn.
   address fails silently - the job reaches the wrong agent and looks delivered.
 - Never claim a test passed unless the report says it ran and passed.
 - Large output goes to a file. Reply with the path.
+- **End every report with one line for the owner.** `For the owner: <two sentences, in his
+  words, what this changes for him or for the person using it>.` The front door relays that line
+  verbatim, so it must stand alone: no handles, no crew dialect, no "see above". A report
+  without it is incomplete - `clowder report` says so, and the front door cannot relay it.
 - **Record a defect where you find it.** A quirk, trap or workaround that cost you time goes in
   the one defects record with `clowder defects add --line "..."`, in one line: it is read every
   session, where a report is read once. If it is not in that record it is not known, and no

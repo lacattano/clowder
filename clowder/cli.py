@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import __version__, audit, gitcmd, load
 from . import handover as handover_doc
-from .board import BoardAgent, BoardData, now_stamp, open_tasks, write_board
+from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .defects import (
     ACCEPTED,
@@ -36,7 +36,7 @@ from .defects import STATES as DEFECT_STATES
 from .errors import ClowderError, DispatchError, GitError, MuxError, StateError, UsageError
 from .marker import DEFAULT_SENDER, apply_marker
 from .mux import AgentInfo, Mux, MuxResult
-from .report import INDENT, build_report, usage_breakdown
+from .report import INDENT, build_report, owner_line, usage_breakdown
 from .sessions import Usage, read_answer, read_model, read_usage
 from .state import (
     ABANDONED,
@@ -78,9 +78,10 @@ NEEDS_HUMAN = 3
 DEFAULT_TIMEOUT_S = 60.0
 
 # A board refresh follows a command that already changed state, so it must not
-# hold that command up. The live list is read with this timeout; when it does not
-# answer, the page is written from state alone.
-BOARD_REFRESH_MUX_TIMEOUT_S = 3.0
+# hold that command up. It no longer reads the multiplexer at all: the roster is
+# built from the state file, and only `clowder board --live` (or `clowder agents`)
+# asks the multiplexer. The old refresh timeout is gone with the call.
+BOARD_LIVE_MUX_TIMEOUT_S = 15.0
 
 # An owner item is the heading on the board, not the whole story. The detail field
 # carries the body. A line longer than this is refused with the advice to use it,
@@ -408,6 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="PATH",
         help="where to write it (default: next to the state file)",
+    )
+    board.add_argument(
+        "--live",
+        action="store_true",
+        help="read the live agent roster too (slower: it asks the multiplexer). The "
+        "page is drawn from the state file by default",
     )
     board.add_argument("--open", action="store_true", help="open it in your browser")
     board.add_argument("--json", action="store_true")
@@ -1948,8 +1955,24 @@ def cmd_step_report(args: argparse.Namespace) -> int:
         },
     )
 
+    if owner_line(answer) is None:
+        # Not a refusal: the step is done and the record must say so. But a report
+        # without the line cannot be relayed to the owner, so it is not silent.
+        print(
+            f"{PROGRAM}: note: this report has no 'For the owner:' line, so the front "
+            "door cannot relay what it changes for him. Add one line to the answer.",
+            file=sys.stderr,
+        )
+
     if args.json:
-        _emit_json({"task": task.to_dict(), "closed": True, "audit": str(audit_file)})
+        _emit_json(
+            {
+                "task": task.to_dict(),
+                "closed": True,
+                "audit": str(audit_file),
+                "owner_line": owner_line(answer),
+            }
+        )
         return 0
     print(f"{task.id} closed on its report: {headline}")
     if task.job:
@@ -3983,9 +4006,45 @@ def _work_has_landed(task: Task, job: Job | None) -> bool:
     return bool(job.merged_at)
 
 
-def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) -> BoardData:
-    """Everything the page is drawn from."""
-    agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
+def _page_stamp(path: Path) -> str | None:
+    """When the page this write replaces was drawn, or None if there is none.
+
+    Read from the page itself (`<!-- drawn: ... -->`), so the tool needs no second
+    record to answer "what changed since you last drew it". An older page without the
+    marker reads as None: a first draw, which is honest about knowing nothing.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"<!-- drawn: (.*?) -->", text)
+    return match.group(1).strip() if match else None
+
+
+def _board_data(
+    config: Config,
+    store: StateStore,
+    *,
+    live: bool = False,
+    previous_draw: str | None = None,
+    mux_timeout_s: float = BOARD_LIVE_MUX_TIMEOUT_S,
+) -> BoardData:
+    """Everything the page is drawn from.
+
+    The roster is built from the state file unless `live` is set. That is what makes a
+    board render cheap: the multiplexer read (and a git look per agent) cost seconds,
+    and twenty-six commands rewrite the page on every state change. A state-only
+    roster says so, in `live_ok` and in one line on the page.
+    """
+    if live:
+        agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
+    else:
+        agents = _board_agents_from_state(store)
+        live_ok = False
+        note = (
+            "The agent roster was not read live; this is what the state file records. "
+            f"Run `{PROGRAM} board --live` for the live list."
+        )
 
     tasks = store.all()
     jobs = store.all_jobs()
@@ -4039,6 +4098,7 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
             risk_notes[task.id] = risk
     memo.save()
 
+    activity = handover_doc.last_activity(store)
     return BoardData(
         tasks=tasks,
         jobs=jobs,
@@ -4046,6 +4106,9 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
         agents=agents,
         state_path=str(store.path),
         generated_at=now_stamp(),
+        drawn_at=now_iso(),
+        previous_draw=previous_draw,
+        last_change=stamp_of(activity) if activity is not None else None,
         live_ok=live_ok,
         note=note,
         front_door_name=config.front_door_name,
@@ -4063,9 +4126,8 @@ def _board_data(config: Config, store: StateStore, mux_timeout_s: float = 15.0) 
 
 def cmd_board(args: argparse.Namespace) -> int:
     config, store = _context(args)
-    data = _board_data(config, store)
-
     target = Path(args.out).expanduser() if args.out else _board_path(store)
+    data = _board_data(config, store, live=args.live, previous_draw=_page_stamp(target))
     written = write_board(data, target)
 
     if data.defects_note:
@@ -4089,11 +4151,69 @@ def cmd_board(args: argparse.Namespace) -> int:
         return RECORD_UNREADABLE if data.defects_note else 0
 
     print(written)
-    if not data.live_ok and data.note:
+    # The state-only roster is the normal, cheap page and says so on itself. The note is
+    # worth printing only when a live read was asked for and failed.
+    if args.live and not data.live_ok and data.note:
         print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
     return RECORD_UNREADABLE if data.defects_note else 0
+
+
+def _board_agents_from_state(store: StateStore) -> list[BoardAgent]:
+    """The roster as the state file knows it, with no multiplexer call.
+
+    The record says who work was dispatched to, and which space a job lives in; it does
+    not say whether a pane is running or idle now. Every field the state cannot know is
+    left empty, so the page can show "-" and say the roster was not read live. The
+    newest step to an agent wins its space and pane; an open job fills a gap.
+    """
+    spaces: dict[str, str] = {}
+    panes: dict[str, str] = {}
+    own_checkout: dict[str, bool] = {}
+    for task in store.all():  # oldest first, so the newest step wins
+        if not task.agent:
+            continue
+        if task.worktree:
+            spaces[task.agent] = task.worktree
+            # The state records both folders, so "this is the main checkout" can be
+            # answered without the live list, which is the one thing about the space
+            # that costs nothing to know.
+            own_checkout[task.agent] = bool(task.repo_path) and normalise(
+                task.worktree
+            ) == normalise(task.repo_path)
+        if task.pane_id:
+            panes[task.agent] = task.pane_id
+    for job in store.all_jobs():
+        for name in (job.agent, job.reviewer):
+            if name and job.worktree and name not in spaces:
+                spaces[name] = job.worktree
+
+    agents: list[BoardAgent] = []
+    for name in sorted(spaces):
+        space = spaces[name]
+        holding = next(
+            (
+                job
+                for job in store.open_jobs()
+                if normalise(job.worktree) == normalise(space) and job.agent == name
+            ),
+            None,
+        )
+        agents.append(
+            BoardAgent(
+                name=name,
+                pane_id=panes.get(name),
+                status=None,
+                space=space,
+                branch=holding.branch if holding else None,
+                commit=holding.commit if holding else None,
+                saved=None,
+                main_checkout=own_checkout.get(name, False),
+                detached=False,
+            )
+        )
+    return agents
 
 
 def _board_agents(config: Config, timeout_s: float = 15.0):
@@ -4131,13 +4251,14 @@ def _refresh_board(args: argparse.Namespace) -> None:
     """Rewrite the page after a command that changed state.
 
     Best effort by design: when the page cannot be written it warns on stderr and
-    the command still succeeds. The live list is read with a short timeout, so a
-    slow multiplexer costs a state-only page rather than a slow dispatch.
+    the command still succeeds. It draws from the state file and never asks the
+    multiplexer, so a state change pays for a page, not for a live roster.
     """
     try:
         config, store = _context(args)
-        data = _board_data(config, store, mux_timeout_s=BOARD_REFRESH_MUX_TIMEOUT_S)
-        write_board(data, _board_path(store))
+        target = _board_path(store)
+        data = _board_data(config, store, previous_draw=_page_stamp(target))
+        write_board(data, target)
     except Exception as exc:  # the board must never fail the command it follows
         print(f"{PROGRAM}: could not refresh the board: {exc}", file=sys.stderr)
 

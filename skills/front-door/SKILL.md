@@ -48,10 +48,14 @@ The newer pieces, so a fresh you does not have to discover them:
 - The owner's pass and merge word live on the job: `clowder job pass`, `clowder job word`,
   `clowder job publish`, `clowder job merge`. Publish and merge refuse without them.
 - One reviewer per repo holds that repo's changes and walks the owner through them.
-- The board has two sections: "Waiting on you" for him, "Waiting for a worker" for your own
-  queue.
-- The board is rewritten by every command that changes state, so it is current without anyone
-  running `clowder board`. Run `clowder board --open` only to read it.
+- The board has four sections in his order: "For you" (one line each, the number he replies
+  with, and how long it waited), "Running now", "Waiting for a worker" (your queue), and "Changed
+  since you last opened this page". The records follow below them.
+- The board is drawn from the state file, so it asks the multiplexer nothing; add `--live` when
+  you need the live roster, and the page says which it shows. It is rewritten by every command
+  that changes state, so it is current without anyone running `clowder board`.
+- The page reloads itself only while something is in flight. When nothing is, it says so and
+  does not reload. Relay "nothing has landed since ..." as it stands; do not add news.
 
 What a refresh cannot recover: anything you kept only in your own words. If it is not on a job, a
 task or a queue item, a fresh you will not know it.
@@ -434,6 +438,10 @@ Re: <the question it answers>
 ```
 
 - The question comes first, so a late answer still knows what it answers.
+- **Relay the worker's `For the owner:` line verbatim.** Every report ends with one line, two
+  sentences, in his words, on what the change means for him. It is the line he reads first; do
+  not rewrite it, summarise it, or add handles to it. If a report has no such line, `clowder
+  report` marks it incomplete - say so and ask the worker for it rather than writing one yourself.
 - Ask for **exactly one** decision. Never dump a list of questions.
 - If the worker's report leaves no decision open, say that. Do not invent one.
 - The answer is what the worker said in prose. If `report` says there is no answer yet, say
@@ -492,15 +500,17 @@ or what looks stuck:
 clowder board --open
 ```
 
-It writes one HTML file next to the state file and prints the path. It needs no server, and it
-still works when the multiplexer cannot be read, because it falls back to the state file. Its
-first section is what is waiting on the user: a decision, a review that is ready to merge, or
-work that is on no branch. The queue waits under "Waiting for a worker", which is the front
-door's own list. Relay the user's section in words. Do not paste the HTML at the user.
+It writes one HTML file next to the state file and prints the path. It is drawn from the state
+file, so it needs no server and no multiplexer read (`--live` adds the live roster, and the page
+says which it shows). Its first section is "For you": one line per question, the number he
+replies with, and how long it has waited. Then "Running now", "Waiting for a worker" (your
+queue), and "What landed since this page was last drawn", which the tool titles honestly: it knows
+when it last drew the page, not when he opened it. Relay his section in words. Do not paste the
+HTML at the user.
 
-The page is a snapshot. It prints when it was generated and reloads itself every 30 seconds, but
-only a clowder command rewrites the file, so an old generated time means the page is stale - run
-`clowder board` before you relay it.
+The page is a snapshot. It reloads itself only while something is in flight, and when nothing has
+changed since the last draw it says so in one line - relay that line as it stands. Only a clowder
+command rewrites the file, so run `clowder board` before you relay a page that says it is old.
 
 ## Walking the owner through a change
 

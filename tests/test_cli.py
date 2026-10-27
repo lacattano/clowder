@@ -298,7 +298,7 @@ class CliTest(unittest.TestCase):
             sent.startswith("[clowder job t-0001 | ship | myrepo | from topcat]\n"), sent
         )
         # The tool, not the brief writer, tells the worker to report over the bus.
-        self.assertIn("send its report to topcat over the agent bus", sent)
+        self.assertIn("Send the report to topcat over the agent bus", sent)
         self.assertIn("peer list", sent)
         self.assertIn("clowder inbox", sent)
         self.assertIn("crew skill", sent)
@@ -3236,7 +3236,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["tasks"], 1)
         self.assertEqual(payload["open"], 1)
         self.assertEqual(payload["agents"], 1)
-        self.assertTrue(payload["live_ok"])
+        self.assertFalse(payload["live_ok"], "the page is drawn from the state file")
+        code, out, _ = self.cli("board", "--json", "--live", env=self.fake_env())
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["live_ok"], "--live asks for the real roster")
 
     def test_board_can_be_written_where_you_ask(self) -> None:
         target = self.root / "pages" / "b.html"
@@ -3249,8 +3252,18 @@ class CliTest(unittest.TestCase):
         self.dispatch(
             "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
         )
+        # The default page never asks, so it draws whatever the multiplexer is doing.
         code, out, _ = self.cli("board", env=self.fake_env(CLOWDER_FAKE_LIST_FAIL="1"))
         self.assertEqual(code, 0, "state alone is still worth showing")
+        html = Path(out.strip()).read_text(encoding="utf-8")
+        self.assertIn("t-0001", html)
+        self.assertIn("roster from the state file", html)
+
+        # And `--live` against a failing multiplexer says so, and still draws.
+        code, out, _ = self.cli(
+            "board", "--live", env=self.fake_env(CLOWDER_FAKE_LIST_FAIL="1")
+        )
+        self.assertEqual(code, 0)
         html = Path(out.strip()).read_text(encoding="utf-8")
         self.assertIn("could not be read", html)
         self.assertIn("t-0001", html)
@@ -3537,7 +3550,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
         self.assertIn("needs re-review", owner)
         self.assertNotIn("held for your review", owner)
@@ -3550,7 +3563,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
         self.assertIn("held for your review", owner)
         self.assertNotIn("needs re-review", owner)
@@ -3585,7 +3598,7 @@ class CliTest(unittest.TestCase):
             code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         owner = owner.split("Filters")[0]
         self.assertIn("review unconfirmed", owner)
         self.assertNotIn("held for your review", owner)
@@ -3597,7 +3610,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = html.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertIn("t-0002", owner, "a genuinely lost commit is still at risk")
         self.assertNotIn("t-0001", owner, "a rebased-away commit is not at risk")
 
@@ -3611,7 +3624,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertNotIn("t-0001", owner, "the job's branch moved past the commit")
 
     def test_a_reported_step_on_a_merged_job_leaves_the_worker_queue(self) -> None:
@@ -3627,7 +3640,7 @@ class CliTest(unittest.TestCase):
         worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
         self.assertNotIn("t-0001", worker, "a reported step on a merged job is done")
         self.assertNotIn("merge commit", worker, "no stale merge warning either")
-        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = html.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertNotIn("t-0001", owner, "it is not work at risk for the owner")
 
     def test_an_orphaned_merge_commit_on_an_open_job_still_waits(self) -> None:
@@ -3668,9 +3681,9 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertIn("t-0001", owner)
-        self.assertIn("genuinely stranded", owner)
+        self.assertIn("on no branch", owner)
         self.assertIn("To keep it", owner)
         self.assertIn(f"branch keep-t-0001 {lost}", owner)
 
@@ -3706,7 +3719,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertNotIn("t-0001", owner, "on its branch, so not at risk yet")
 
         gitcmd.switch_branch(repo, "main")
@@ -3714,7 +3727,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("Waiting on you", 1)[1].split("Waiting for a worker")[0]
+        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertIn("t-0001", owner, "the warm memo did not hide the lost commit")
 
     def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
@@ -3771,7 +3784,7 @@ class CliTest(unittest.TestCase):
         html = page.read_text(encoding="utf-8")
         self.assertIn("t-0001", html)
         self.assertIn("add the refund page", html)
-        self.assertIn("Waiting on you", html, "the page keeps its first section")
+        self.assertIn("For you", html, "the page keeps its first section")
 
     def test_a_board_that_cannot_be_written_does_not_fail_the_command(self) -> None:
         with mock.patch.object(cli, "write_board", side_effect=OSError("disk full")):
@@ -3952,7 +3965,7 @@ class CliTest(unittest.TestCase):
     def test_a_queued_item_appears_on_the_board(self) -> None:
         self.queue_add("--agent", "maker")
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        owner, worker = html.split("Waiting on you", 1)[1].split("Waiting for a worker")
+        owner, worker = html.split("For you", 1)[1].split("Waiting for a worker", 1)
         self.assertIn("class='count'>0", owner, "the owner's count stays honest")
         self.assertNotIn("q-0001", owner, "a queued item is the front door's, not the owner's")
         self.assertIn("q-0001", worker)
@@ -5739,7 +5752,7 @@ class CliTest(unittest.TestCase):
         self.cli("board", env=self.fake_env())
         html = (self.root / "board.html").read_text(encoding="utf-8")
         worker = html.split("Waiting for a worker", 1)[1].split("</section>", 1)[0]
-        needs = html.split("Waiting on you", 1)[1].split("</section>", 1)[0]
+        needs = html.split("For you", 1)[1].split("</section>", 1)[0]
         self.assertIn("seen twice, no job", worker)
         self.assertIn("d-0001", worker)
         self.assertNotIn("seen twice, no job", needs, "not the owner's act")
@@ -5984,6 +5997,55 @@ class CliTest(unittest.TestCase):
         self.assertIn("defects seen in the last 7 days: 2", out)
         self.assertEqual(out.count("d-0001"), 1, "each entry once")
         self.assertEqual(out.count("d-0002"), 1)
+
+    # -- the page the owner reads -------------------------------------------
+
+    def test_the_board_renders_from_state_without_asking_the_multiplexer(self) -> None:
+        # The measured cost: a board render used to read the roster (a multiplexer
+        # call plus a git look per agent) on every state change. It is built from the
+        # state file now, and says so rather than pretending the roster is live.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        with mock.patch.object(
+            cli.Mux, "list_agents", side_effect=AssertionError("the board asked the mux")
+        ):
+            code, _, err = self.cli("board", env=self.fake_env())
+            self.assertEqual(code, 0, err)
+            code, _, err = self.cli(
+                "owner", "t-0001", "--item", "choose A or B", env=self.fake_env()
+            )
+            self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("roster from the state file", html)
+        self.assertIn("not read live", html, "the page says the roster is not live")
+        self.assertIn("its state was not read live", html, "no agent is called idle from state")
+
+    def test_board_live_asks_the_multiplexer_once(self) -> None:
+        with mock.patch.object(cli.Mux, "list_agents", return_value=[]) as listed:
+            code, _, err = self.cli("board", "--live", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(listed.call_count, 1, "one live read, not one per agent")
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("roster read live", html)
+        self.assertIn("No agents were found in the live roster.", html)
+
+    def test_the_board_is_rewritten_without_the_multiplexer_on_a_state_change(self) -> None:
+        # Twenty-six commands rewrite the page on every state change. None of them may
+        # pay for a roster read now.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        with mock.patch.object(
+            cli.Mux, "list_agents", side_effect=AssertionError("a state change read the mux")
+        ):
+            code, _, err = self.cli(
+                "owner", "t-0001", "--item", "choose A or B", env=self.fake_env()
+            )
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("choose A or B", html)
+        self.assertIn("roster from the state file", html)
 
 
 if __name__ == "__main__":

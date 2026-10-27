@@ -110,6 +110,38 @@ class BuildReportTest(unittest.TestCase):
         self.assertTrue(second.startswith("    verifier | myrepo |"))
         self.assertEqual(third, "    Yes - the terms page is a placeholder.")
 
+    def test_the_owner_line_is_shown_first_and_only_once(self) -> None:
+        # The one line the front door relays verbatim: two sentences, in his words.
+        # It is part of the answer, so it comes out of it once and sits above the body.
+        answer = (
+            "For the owner: The refund page now answers a customer's first question. "
+            "Nothing else changes for you.\n\nThe terms page was a placeholder."
+        )
+        text = build_report(task(answer=answer), usage(), answer)
+        lines = text.splitlines()
+        self.assertEqual(
+            lines[2],
+            "    For the owner: The refund page now answers a customer's first question. "
+            "Nothing else changes for you.",
+        )
+        self.assertNotIn("For the owner:", "\n".join(lines[3:]), "not repeated below")
+        self.assertIn("The terms page was a placeholder.", text)
+
+    def test_a_placeholder_owner_line_counts_as_missing(self) -> None:
+        # "For the owner: ok" passes a prefix check and says nothing. The floor is a
+        # length and a word count, so a placeholder is visibly incomplete like a missing
+        # line - and `step report` warns on it too, because it asks the same function.
+        text = build_report(task(), usage(), "The refund page is missing.\nFor the owner: ok")
+        self.assertIn("(incomplete: no For the owner: line", text)
+        self.assertNotIn("For the owner: ok", text)
+
+    def test_a_report_without_the_owner_line_is_visibly_incomplete(self) -> None:
+        # Not silently accepted: the answer still prints, and the report says why the
+        # front door cannot relay it.
+        text = build_report(task(), usage(), "The refund page is missing.")
+        self.assertIn("The refund page is missing.", text)
+        self.assertIn("(incomplete: no For the owner: line", text)
+
     def test_open_decision_is_last_and_at_most_one(self) -> None:
         text = build_report(
             task(open_decision="accept 14 days, or wait?"), usage(), "the answer"

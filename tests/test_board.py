@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from clowder.board import (
@@ -14,13 +15,14 @@ from clowder.board import (
     open_tasks,
     recent_answers,
     render_board,
+    running_now,
     waiting_for_worker,
     waiting_on_you,
     write_board,
 )
 from clowder.defects import Defect
 from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
-from clowder.timeutil import now_iso
+from clowder.timeutil import now_iso, to_iso
 
 
 def task(task_id: str = "t-0001", **overrides: object) -> Task:
@@ -138,25 +140,58 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("25b8", html, "no collapsed marker escape")
         self.assertNotIn("25be", html, "no open marker escape")
 
-    def test_the_page_reloads_itself(self) -> None:
-        html = render_board(data())
-        self.assertIn('<meta http-equiv="refresh" content="30">', html)
+    def test_the_page_reloads_only_while_work_is_running(self) -> None:
+        # Idle: no reload, and the page says so. While something is in flight: the
+        # browser re-reads this file every 30s. The box draws nothing between commands,
+        # so an idle reload is pure flicker and a render timer would be pure cost.
+        idle = render_board(data())
+        self.assertNotIn('<meta http-equiv="refresh"', idle)
+        self.assertIn("Nothing is running, so this page does not reload itself.", idle)
+
+        busy = render_board(data(tasks=[task(job=None)]))
+        self.assertIn('<meta http-equiv="refresh" content="30">', busy)
         self.assertIn(
             '<meta http-equiv="refresh" content="30">',
-            html.split("<body>")[0],
+            busy.split("<body>")[0],
             "the reload belongs in the head",
         )
+        self.assertIn("reloads every 30s while work is running", busy)
 
-    def test_the_page_shows_when_it_was_generated(self) -> None:
-        html = render_board(data(generated_at="2026-09-27 10:00"))
-        self.assertIn("Generated 2026-09-27 10:00", html)
-        self.assertIn("stale", html, "an old page says so")
+    def test_the_page_shows_when_it_was_generated_and_when_it_last_changed(self) -> None:
+        html = render_board(
+            data(
+                generated_at="2026-09-27 10:00",
+                drawn_at="2026-09-27T10:00:00",
+                last_change="2026-09-27 09:15",
+            )
+        )
+        self.assertIn("generated 2026-09-27 10:00", html)
+        self.assertIn("last change 2026-09-27 09:15", html)
+
+    def test_a_page_with_nothing_in_flight_shows_no_frozen_age(self) -> None:
+        # Drawn at 10:00, nothing recorded since 09:15: the page says both. "Nothing
+        # has changed since 09:15" is honest; "generated 10:00" alone would read as
+        # fresh when nothing has happened.
+        html = render_board(
+            data(
+                generated_at="2026-09-27 10:00",
+                drawn_at="2026-09-27T10:00:00",
+                # Naive timestamps here: the page stores UTC and shows local, which a
+                # test cannot pin without knowing the machine's zone.
+                previous_draw="2026-09-27T09:15:00",
+                last_change="2026-09-27 09:15",
+            )
+        )
+        self.assertIn("Nothing has landed since 2026-09-27 09:15.", html)
+        self.assertIn("does not reload itself", html)
 
     def test_every_section_is_present_even_when_empty(self) -> None:
         html = render_board(data())
         for heading in (
-            "Waiting on you",
+            "For you",
+            "Running now",
             "Waiting for a worker",
+            "What landed since this page was last drawn",
             "To Do",
             "In Progress",
             "Done",
@@ -206,7 +241,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn(
             "Nothing is recorded as waiting on you.", html, "the owner has nothing to do"
         )
-        owner = html.split("Waiting on you", 1)[1].split("Waiting for a worker", 1)[0]
+        owner = html.split("For you", 1)[1].split("Running now", 1)[0]
         self.assertNotIn("q-0001", owner, "a queued item is not the owner's work")
         todo = html[html.index("rows-todo") : html.index("rows-doing")]
         self.assertIn("q-0001", todo)
@@ -255,7 +290,9 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("decision", waiting[0])
         self.assertIn("14 days or 30?", waiting[0])
-        self.assertIn("t-0001", waiting[0])
+        self.assertIn("type 1", waiting[0], "the number he replies with")
+        self.assertIn("waited", waiting[0], "how long it has waited")
+        self.assertNotIn("t-0001", waiting[0], "no task id in his section")
 
     def test_an_answered_decision_does_not_wait(self) -> None:
         answered = task(
@@ -279,11 +316,13 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("your move", waiting[0])
         self.assertIn("the team-page design is ready", waiting[0])
-        self.assertIn("[t-0001]", waiting[0])
+        self.assertIn("type 1", waiting[0])
+        self.assertIn("waited", waiting[0])
+        self.assertNotIn("t-0001", waiting[0], "no task id in his section")
         self.assertLess(
             waiting[0].index("the team-page design"),
-            waiting[0].index("[t-0001]"),
-            "the name comes before the handle",
+            waiting[0].index("your move"),
+            "the thing comes before the note about it",
         )
 
     def test_a_long_owner_item_is_shown_in_full(self) -> None:
@@ -436,7 +475,8 @@ class WaitingTest(unittest.TestCase):
         waiting = waiting_on_you(data(jobs=[passed]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("your word", waiting[0])
-        self.assertIn("[j-0001]", waiting[0])
+        self.assertIn("refund", waiting[0], "named in words, not by job id")
+        self.assertNotIn("j-0001", waiting[0])
 
     def test_a_reviewed_job_waits_for_the_owner_s_word(self) -> None:
         reviewed = job(reviewer="verifier", review_commit="a" * 40, pass_at=now_iso())
@@ -452,9 +492,10 @@ class WaitingTest(unittest.TestCase):
         waiting = waiting_on_you(data(jobs=[held]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("held for your review", waiting[0])
-        self.assertIn("j-0001", waiting[0])
+        self.assertIn("refund", waiting[0])
+        self.assertNotIn("j-0001", waiting[0], "no job id in his section")
         self.assertIn("verifier", waiting[0])
-        self.assertIn("waiting", waiting[0])
+        self.assertIn("waited", waiting[0])
         self.assertNotIn("gone quiet", waiting[0], "a fresh hold is not flagged")
 
     def test_a_held_change_that_has_sat_is_flagged(self) -> None:
@@ -566,7 +607,6 @@ class WaitingTest(unittest.TestCase):
         )
         self.assertEqual(len(waiting), 1)
         self.assertIn("work at risk", waiting[0])
-        self.assertIn("genuinely stranded", waiting[0])
         self.assertIn("on no branch", waiting[0])
         self.assertIn("To keep it", waiting[0])
         self.assertIn("branch keep-t-0001 1a2b3c4", waiting[0])
@@ -581,7 +621,7 @@ class WaitingTest(unittest.TestCase):
         )
         self.assertEqual(len(waiting), 1)
         self.assertIn("the change refund", waiting[0])
-        self.assertIn("[j-0001]", waiting[0])
+        self.assertNotIn("j-0001", waiting[0], "no job id in his section")
         self.assertIn("To keep it", waiting[0])
 
     def test_a_quiet_agent_is_called_out(self) -> None:
@@ -605,8 +645,14 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("not in the live agent list", waiting[0])
 
     def test_a_vanished_agent_is_not_blamed_when_the_list_is_unreadable(self) -> None:
+        # No live read: the page cannot say "gone" or "idle". It can say the record has
+        # not changed for that long, which is exactly what a dead worker needs.
         waiting = waiting_for_worker(data(tasks=[old_task()], agents=[], live_ok=False))
-        self.assertEqual(waiting, [], "no crying wolf when the list cannot be read")
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("not checked live", waiting[0])
+        self.assertIn("shipped nothing to the record", waiting[0])
+        self.assertNotIn("gone quiet", waiting[0])
+        self.assertNotIn("is idle", waiting[0])
 
     def test_a_fresh_step_does_not(self) -> None:
         self.assertEqual(
@@ -634,6 +680,161 @@ class WaitingTest(unittest.TestCase):
     def test_a_closed_job_never_waits(self) -> None:
         closed = job(status=CLOSED, reviewer="verifier", review_commit="a" * 40)
         self.assertEqual(waiting_on_you(data(jobs=[closed])), [])
+
+    def test_the_four_sections_come_first_in_his_order(self) -> None:
+        # His order of use: what waits on him, what is running, the crew's queue,
+        # then what changed. The records follow, unchanged.
+        html = render_board(
+            data(
+                tasks=[task(job=None)],
+                jobs=[job()],
+                queued=[queued()],
+                agents=[agent()],
+            )
+        )
+        order = [
+            "For you",
+            "Running now",
+            "Waiting for a worker",
+            "What landed since this page was last drawn",
+            "Filters",
+            "To Do",
+            "Agents and spaces",
+            "Answers",
+            "Dropped from the queue",
+        ]
+        positions = [html.index(item) for item in order]
+        self.assertEqual(positions, sorted(positions), "the page reads in his order")
+
+    def test_the_changed_section_is_capped_and_says_so(self) -> None:
+        # The first draw of an old record can hold months of merges. The newest few are
+        # what he can act on; the cut is named so it is never hidden.
+        jobs = [
+            job(
+                f"j-{index:04d}",
+                title=f"change {index}",
+                merged_at=f"2026-10-0{index % 9 + 1}T10:00:00Z",
+            )
+            for index in range(20)
+        ]
+        html = render_board(data(jobs=jobs))
+        section = html.split("What landed since this page was last drawn", 1)[1].split(
+            "</section>", 1
+        )[0]
+        self.assertIn("Showing the newest 12 of 20", section)
+        self.assertEqual(section.count("<li>"), 12, "twelve lines, not twenty")
+        self.assertNotIn("j-0001", section, "no job id in his section")
+
+    def test_the_page_does_not_claim_nothing_changed_while_a_step_runs(self) -> None:
+        # The reviewer's case: a step dispatched at 12:41, page last drawn at 12:40, no
+        # merge. The section counts landed work only and says so; "nothing changed"
+        # would contradict the "Running now" list on the same page.
+        html = render_board(
+            data(
+                tasks=[task(job=None, dispatched_at="2026-10-26T12:41:00")],
+                generated_at="2026-10-26 18:41",
+                drawn_at="2026-10-26T18:41:00",
+                previous_draw="2026-10-26T12:40:00",
+                last_change="2026-10-26 12:41",
+            )
+        )
+        self.assertIn("Nothing has landed since 2026-10-26 12:40.", html)
+        self.assertNotIn("Nothing has changed", html)
+        self.assertIn("Running now", html)
+        self.assertIn("does the site need a refund policy?", html)
+
+    def test_a_quiet_step_is_marked_when_the_roster_is_not_live(self) -> None:
+        # Blocker: a dead worker read as busy. With no live read, the record's age is the
+        # evidence, and the page must use it - in the section and in its wording.
+        old = task(job=None, dispatched_at="2020-01-01T00:00:00Z")
+        page = data(tasks=[old], live_ok=False)
+        running = running_now(page)
+        self.assertEqual(len(running), 1)
+        self.assertIn("nothing recorded for", running[0])
+        worker = " ".join(waiting_for_worker(page))
+        self.assertIn("not checked live", worker)
+        self.assertIn("shipped nothing to the record", worker)
+        self.assertNotIn("is idle", worker)
+        html = render_board(page)
+        self.assertIn("The live state of each worker was not read", html)
+
+        # A fresh step is not marked.
+        fresh = running_now(data(tasks=[task(job=None)], live_ok=False))
+        self.assertNotIn("nothing recorded for", fresh[0])
+
+    @staticmethod
+    def minutes_ago(minutes: int) -> str:
+        return to_iso(datetime.now(UTC) - timedelta(minutes=minutes))
+
+    def test_a_five_minute_step_is_not_marked(self) -> None:
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(5))], live_ok=False)
+        self.assertNotIn("nothing recorded for", running_now(page)[0])
+
+    def test_a_forty_five_minute_step_is_not_marked(self) -> None:
+        # This crew's steps run 10 to 40 minutes routinely, so 45 is still healthy.
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(45))], live_ok=False)
+        self.assertNotIn("nothing recorded for", running_now(page)[0])
+
+    def test_a_seventy_minute_step_is_marked_and_the_worker_line_names_it(self) -> None:
+        page = data(tasks=[task(job=None, dispatched_at=self.minutes_ago(70))], live_ok=False)
+        running = running_now(page)
+        self.assertIn("nothing recorded for", running[0])
+        self.assertIn("1h", running[0], "the quiet time is named")
+        worker = " ".join(waiting_for_worker(page))
+        self.assertIn("not checked live", worker)
+        self.assertIn("shipped nothing to the record for 1h", worker)
+
+    def test_a_live_read_marks_nothing_on_age_alone(self) -> None:
+        # With the roster read live, the page knows the status and must not call an
+        # ordinary long step quiet: a 70-minute step with a working agent is not news.
+        old = task(job=None, dispatched_at="2020-01-01T00:00:00Z")
+        live = data(tasks=[old], agents=[agent("verifier", status="working")], live_ok=True)
+        self.assertNotIn("nothing recorded for", running_now(live)[0])
+        self.assertEqual(waiting_for_worker(live), [], "working is not stuck")
+
+    def test_for_you_has_no_ids_and_shows_the_wait(self) -> None:
+        # Blocker: his section carried task and job ids, and the wait was buried under
+        # the detail. The number is this page's own; the wait is on the line.
+        page = data(
+            tasks=[
+                task(
+                    "t-0001",
+                    job=None,
+                    owner_item="choose A or B",
+                    owner_item_at="2026-10-26T09:00:00Z",
+                    owner_detail="A costs X.",
+                ),
+                task(
+                    "t-0002",
+                    job=None,
+                    open_decision="14 days or 30?",
+                    created_at="2026-10-26T10:00:00Z",
+                ),
+            ],
+            jobs=[job("j-0001", pass_at="2026-10-26T08:00:00Z")],
+        )
+        lines = waiting_on_you(page)
+        self.assertEqual(len(lines), 3)
+        for line in lines:
+            self.assertIn("type ", line)
+            self.assertIn("waited ", line)
+            self.assertNotIn("t-000", line, "no task id in his section")
+            self.assertNotIn("j-000", line, "no job id in his section")
+        self.assertLess(lines[0].index("choose A or B"), lines[0].index("waited"))
+
+    def test_the_render_is_a_smoke_not_a_benchmark(self) -> None:
+        # A generous ceiling, not a measurement: the point is that a page draw stays
+        # interactive now that it reads no multiplexer and no git. A real benchmark
+        # would flake on a loaded box, which is exactly when the page matters.
+        import time
+
+        big = data(
+            tasks=[task(f"t-{index:04d}", job=None) for index in range(400)],
+            jobs=[job(f"j-{index:04d}") for index in range(40)],
+        )
+        started = time.perf_counter()
+        render_board(big)
+        self.assertLess(time.perf_counter() - started, 5.0, "the render is a draw, not a run")
 
 
 class FilterTest(unittest.TestCase):
@@ -691,7 +892,7 @@ class FilterTest(unittest.TestCase):
 
     def test_the_owner_section_is_first_and_is_not_filtered(self) -> None:
         html = render_board(data(tasks=[task()], jobs=[job()]))
-        waiting = html.index("Waiting on you")
+        waiting = html.index("For you")
         self.assertLess(waiting, html.index("Filters"), "what waits on him stays first")
         self.assertLess(waiting, html.index("To Do"))
         # No filterable row, and no empty state, sits in his section.

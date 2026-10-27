@@ -29,7 +29,7 @@ class BoardAgent:
     space: str | None = None
     branch: str | None = None
     commit: str | None = None
-    saved: bool = True
+    saved: bool | None = None  # None: the roster was not read live
     main_checkout: bool = False
     detached: bool = False
 
@@ -66,7 +66,10 @@ class BoardData:
   checkout).
 - `FilterField` - one filterable column: `name` (the data attribute), `label`,
   `control` (`text`, `choice`, `bool`, `age`, `date`), `values` and a help `note`.
-- `BoardData` - everything the page is drawn from. `rereview` maps job id -> the
+- `BoardData` - everything the page is drawn from. `generated_at` is the display
+  stamp; `drawn_at` is the same moment as ISO, written into the page so the next draw
+  can say what changed since; `previous_draw` is that value read back; `last_change`
+  is the newest recorded moment, shown in the footer so the age is never frozen. `rereview` maps job id -> the
   commit tip used for the re-review check; `risk_notes` maps id -> a warning;
   `stranded` is the set of commits on no branch; `dropped` is the audit record of
   queue items that were dropped.
@@ -83,6 +86,10 @@ def model_rollup(data: BoardData) -> list[tuple[str, int, int]]
 def front_door_label(data: BoardData) -> str
 def waiting_on_you(data: BoardData) -> list[str]
 def waiting_for_worker(data: BoardData) -> list[str]
+def running_now(data: BoardData) -> list[str]
+def worker_queue(data: BoardData) -> list[str]
+def changed_for_owner(data: BoardData, *, since: float | None) -> list[str]
+def stamp_of(moment: datetime) -> str
 def render_board(data: BoardData) -> str
 def write_board(data: BoardData, path: str | Path) -> Path
 ```
@@ -100,8 +107,15 @@ def write_board(data: BoardData, path: str | Path) -> Path
   a figure to read, never a gate.
 - `front_door_label(data)` - the front door's configured name, else
   `"the front door"`.
+- `running_now(data)` - what each worker is on, how long, and whether the step is
+  heavy.
+- `worker_queue(data)` - the front door's queue, oldest first.
+- `changed_for_owner(data, since=...)` - landed work since a moment, one sentence
+  each, newest first: the change's effect line or title, never an id or a state word.
+- `stamp_of(moment)` - a recorded moment as the local stamp a person reads.
 - `waiting_on_you(data)` - only what the owner must do: a decision, a review to
-  merge, work at risk. The front door's own to-do list is not here. An owner item is
+  merge, work at risk. Each line is numbered, carries the number to reply with, and
+  the time it has waited. The front door's own to-do list is not here. An owner item is
   rendered as a heading (`owner-title`) with its detail body (`owner-detail`) under
   it, and a job whose merge word is already named by an owner item is not listed a
   second time.
@@ -113,7 +127,12 @@ def write_board(data: BoardData, path: str | Path) -> Path
   not in the owner's section because opening the job is the front door's act. When
   the defects record cannot be read, `BoardData.defects_note` carries the file and
   the fault, and this section shows it instead of the list: the page still draws.
-- `render_board(data)` - the whole page as one self-contained HTML string.
+- `render_board(data)` - the whole page as one self-contained HTML string: four
+  sections first (For you, Running now, Waiting for a worker, What landed since this
+  page was last drawn), then the records. It reloads itself only when a step is in
+  flight, and says in one line when nothing has landed since the last draw. The landed
+  section counts landed work only, and a step with nothing recorded for 60 minutes is
+  marked when the roster was not read live.
 - `write_board(data, path)` - writes `render_board(data)` to `path` (creating
   parents) and returns the `Path`.
 

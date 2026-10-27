@@ -72,7 +72,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `defects show` | `cmd_defects_show` | One defect in full; the only place its detail lives. |
 | `handover write` | `cmd_handover_write` | Compose today's handover from the record and name the file it wrote. |
 | `checkouts` | `cmd_checkouts` | How far behind its remote each checkout is, in one line each. |
-| `board` | `cmd_board` | Write the HTML page of what is queued, underway and waiting. |
+| `board` | `cmd_board` | Write the HTML page: drawn from the state file, with `--live` to add the multiplexer roster. |
 | `config` | `cmd_config` | Show resolved settings and paths. |
 | `state repair` | `cmd_state_repair` | Drop a field no copy knows, with a backup and an audit line. |
 
@@ -80,7 +80,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 with `set_defaults`.
 
 Module constants: `PROGRAM = "clowder"`, `NEEDS_HUMAN = 3`, `DEFAULT_TIMEOUT_S =
-60.0`, `BOARD_REFRESH_MUX_TIMEOUT_S = 3.0`, `OWNER_ITEM_LIMIT = 120`,
+60.0`, `BOARD_LIVE_MUX_TIMEOUT_S = 15.0`, `OWNER_ITEM_LIMIT = 120`,
 `RECORD_UNREADABLE = 4`, `RECENT_DEFECT_DAYS = 7`, `_QUIT_KEYS`, `_RESEED_MARKER`.
 
 ## How It Works (internals)
@@ -104,7 +104,12 @@ plumbing reached by almost every handler.
   smaller `--json` record. An unknown name is refused, not ignored, so a typo
   cannot silently drop a field. Used by `report` and `tasks`.
 - `_refresh_board(args) -> None` - rewrites the board after a state-changing
-  command. Called from `main`; never fails the command.
+  command. Called from `main`; never fails the command, and never asks the
+  multiplexer.
+- `_page_stamp(path) -> str | None` - when the page being replaced was drawn, read
+  from its own `<!-- drawn: ... -->` marker; None for a first draw.
+- `_board_agents_from_state(store) -> list[BoardAgent]` - the roster the state file
+  knows: names, spaces and the open job on each. Every live-only field is left empty.
 - `_defect_store(config) -> DefectStore` - the one defects record for this config,
   beside the state file.
 - `_warn_unreadable_record(error) -> None` - the loud stderr warning both drawing
@@ -259,7 +264,8 @@ plumbing reached by almost every handler.
   different place.
 - `_board_data(config, store, mux_timeout_s=15.0) -> BoardData` - everything the
   page is drawn from.
-- `_board_agents(config, timeout_s=15.0)` - the live agents and their spaces. Best
+- `_board_agents(config, timeout_s=15.0)` - the live agents and their spaces, for
+  `board --live` and `clowder agents`. Best
   effort: the page works with none.
 
 ### Internal utilities
