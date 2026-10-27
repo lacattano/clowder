@@ -10,7 +10,8 @@ handover all render it: a count cannot say zero while a line is on the page.
 
 Three kinds count as waiting on him:
 
-- `decision` - a question recorded on a task (`owner --item`, or `--open-decision`);
+- `decision` - a question recorded on a task (`owner --item`, or `--open-decision`); it
+  counts whatever the step's status, and waits until it is cleared or answered;
 - `merge` - a change that is passed, published, and waiting only for his merge word;
 - `walkthrough` - a change whose review is finished and which waits for him to be walked
   through it.
@@ -57,7 +58,8 @@ def waiting_on_owner(tasks, jobs, *, rereview=None, review_unconfirmed=())
 ```
 
 - `Waiting` - one thing in his queue. `heading` is the thing in his words; `note` is
-  where it stands; `action` is the word that answers it; `since` is the record's moment,
+  where it stands; `action` is the word that answers it (`answered_by(item, number)` gives
+  the number for a decision, "type 1", and the word for the rest); `since` is the record's moment,
   and `waited` turns it into "3h". `id` is the task or job id for the record only - views
   never print it in his section.
 - `NotYours` - work he may ask about and does not have to move.

@@ -278,7 +278,10 @@ def owner_lines(store: StateStore) -> list[str]:
     record's handle as well, because it is a document a later session reads.
     """
     his, _ = owner_mod.waiting_on_owner(store.all(), store.all_jobs())
-    return [f"{item.heading} - {item.action}  [{item.id}]" for item in his]
+    return [
+        f"{number}. {item.heading} - {owner_mod.answered_by(item, number)}  [{item.id}]"
+        for number, item in enumerate(his, start=1)
+    ]
 
 
 def _in_flight(store: StateStore) -> list[str]:

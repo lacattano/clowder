@@ -6092,8 +6092,9 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("waiting on you: 3", out)
-        for text in ("reply merge", "reply pass, or what to change", "reply with your answer"):
+        for text in ("reply merge", "reply pass, or what to change", "type "):
             self.assertIn(text, out)
+        self.assertIn("14 days or 30 for the refund window?", out, "the decision is listed")
 
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
@@ -6131,7 +6132,7 @@ class CliTest(unittest.TestCase):
             kind=owner_mod.DECISION,
             heading="the one shared question",
             note="your move",
-            action="reply with your answer",
+            action="type 1",
             since=now_iso(),
             id="t-9999",
         )
@@ -6143,8 +6144,15 @@ class CliTest(unittest.TestCase):
             self.assertIn("the one shared question", out)
             data = cli._board_data(cli.load_config(str(self.config)), StateStore(self.state))
             lines = board_waiting_on_you(data)
-        self.assertGreaterEqual(shared.call_count, 2, "both views asked the one list")
+            handover = self.cli("handover", "write", env=self.fake_env())
+            self.assertEqual(handover[0], 0, handover[2])
+        self.assertGreaterEqual(shared.call_count, 3, "all three views asked the one list")
         self.assertIn("the one shared question", " ".join(lines))
+        written = next(line for line in handover[1].splitlines() if line.startswith("wrote "))
+        self.assertIn(
+            "the one shared question",
+            Path(written.split(maxsplit=1)[1]).read_text(encoding="utf-8"),
+        )
 
     def test_a_job_awaiting_ci_is_not_counted_for_him(self) -> None:
         # His word is recorded and the pull request waits on CI: the front door's move,
@@ -6170,6 +6178,99 @@ class CliTest(unittest.TestCase):
         worker = html.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
         self.assertIn("not yours", worker)
         self.assertIn("when CI is green", worker)
+
+    # -- an owner item on a closed step, and the queue count ------------------
+
+    def add_owner_item(
+        self,
+        task_id: str,
+        item: str,
+        *,
+        status: str = CLOSED,
+        at: str = "2026-10-20T09:00:00Z",
+        created_at: str = "2026-10-10T09:00:00Z",
+        job: str | None = None,
+    ) -> None:
+        """A question recorded on a step, whatever its status."""
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id=task_id,
+                question="a question for the owner",
+                brief="ship: x",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                status=status,
+                job=job,
+                created_at=created_at,
+                owner_item=item,
+                owner_item_at=at,
+            )
+        )
+        store.save()
+
+    def test_a_closed_step_s_owner_item_shows_in_start_and_on_the_board(self) -> None:
+        # Seen 2026-10-27: three owner items sat on closed steps and disappeared from
+        # both views the moment the step closed. A recorded question waits until it is
+        # cleared or answered.
+        self.add_owner_item("t-0988", "Approve one capture command in llm-benchmarks")
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 1", out)
+        self.assertIn("Approve one capture command", out)
+        self.assertIn("type 1", out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("count'>1</span>", section)
+        self.assertIn("Approve one capture command", section)
+        self.assertIn("type 1", section)
+
+    def test_clearing_a_closed_step_s_item_removes_it_everywhere(self) -> None:
+        self.add_owner_item("t-0988", "Approve one capture command in llm-benchmarks")
+        code, _, err = self.cli("owner", "t-0988", "--clear", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
+        self.assertNotIn("Approve one capture command", out)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertNotIn("Approve one capture command", html)
+
+    def test_the_handover_shows_the_same_closed_step_item(self) -> None:
+        self.add_owner_item("t-0988", "Approve one capture command in llm-benchmarks")
+        code, out, err = self.cli("handover", "write", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        written = next(line for line in out.splitlines() if line.startswith("wrote "))
+        text = Path(written.split(maxsplit=1)[1]).read_text(encoding="utf-8")
+        self.assertIn("Approve one capture command", text)
+        self.assertIn("type 1", text)
+
+    def test_the_three_live_items_are_the_same_fixture_and_go_when_cleared(self) -> None:
+        # The equivalent fixture, not the live file: three questions on closed steps.
+        for task_id, item in (
+            ("t-0988", "Approve one capture command in llm-benchmarks"),
+            ("t-0991", "Re-run or adopt q8 after the cache setting changed"),
+            ("t-0814", "Parked business decisions - RAG at launch"),
+        ):
+            self.add_owner_item(task_id, item)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 3", out)
+        for item in ("Approve one capture", "Re-run or adopt", "Parked business"):
+            self.assertIn(item, out)
+
+        for task_id in ("t-0988", "t-0991", "t-0814"):
+            self.assertEqual(self.cli("owner", task_id, "--clear", env=self.fake_env())[0], 0)
+        code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on you: 0", out)
 
 
 if __name__ == "__main__":

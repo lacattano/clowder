@@ -4617,7 +4617,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     print(f"\nwaiting on you: {len(his)}")
     for number, item in enumerate(his, start=1):
         print(
-            f"{INDENT}{number}. {_clip(item.heading, 80)} - {item.action}; waited {item.waited}"
+            f"{INDENT}{number}. {_clip(item.heading, 80)} - "
+            f"{owner_mod.answered_by(item, number)}; waited {item.waited}"
         )
     if not his:
         print(f"{INDENT}(nothing recorded)")

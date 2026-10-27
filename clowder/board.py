@@ -583,7 +583,7 @@ def waiting_on_you(data: BoardData) -> list[str]:
         detail = f"<div class='owner-detail'>{_e(item.detail)}</div>" if item.detail else ""
         lines.append(
             f"<b>{number}.</b> <span class='owner-title'>{_e(item.heading)}</span> "
-            f"<span class='type'>{_e(item.action)}</span>"
+            f"<span class='type'>{_e(owner_mod.answered_by(item, number))}</span>"
             f"<span class='age'>waited {_e(item.waited)}</span> "
             f"<span class='why'>{_e(item.note)}</span>{detail}"
         )
@@ -1250,19 +1250,25 @@ def render_board(data: BoardData) -> str:
         )
     running_html += f"<p class='why'>{running_note}</p>"
 
-    queue_parts: list[str] = []
-    if queue:
-        queue_parts.append("<ul>" + "".join(f"<li>{line}</li>" for line in queue) + "</ul>")
+    # One record, one list, one count. The queue here is the same list the To Do column
+    # draws from the record, so both say the same number. Warnings are not queued items:
+    # they are shown below with their own count and never added to this one. Seen
+    # 2026-10-27: "38 jobs in the todo queue but 40 on the list of waiting for an agent".
+    queue_html = (
+        "<ul>" + "".join(f"<li>{line}</li>" for line in queue) + "</ul>"
+        if queue
+        else _nothing(
+            f"Nothing is queued for {front_door_label(data)}."
+            if worker
+            else f"Nothing is waiting for {front_door_label(data)}."
+        )
+    )
     if worker:
-        queue_parts.append(
-            "<p class='why'>These wait for a worker, not for you. "
-            f"{_e(front_door_label(data))} chases them.</p>"
+        queue_html += (
+            f"<p class='why'>Also for {front_door_label(data)}: {len(worker)} warning(s). "
+            "These are not queued items, so none of them is in the queue count above.</p>"
             "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
         )
-    if queue_parts:
-        queue_html = "".join(queue_parts)
-    else:
-        queue_html = _nothing(f"Nothing is waiting for {front_door_label(data)}.")
 
     drawn = _display_stamp(data.previous_draw) if data.previous_draw else data.generated_at
     # The section counts landed work only, and says so: a step that started is under
@@ -1417,7 +1423,7 @@ def render_board(data: BoardData) -> str:
 <p class="meta" id="freshness">{_e(freshness)} {_e(reload_line)}</p>
 {_section("For you", len(for_you), needs_html, css="needs")}
 {_section("Running now", len(running), running_html)}
-{_section("Waiting for a worker", len(queue) + len(worker), queue_html)}
+{_section("Waiting for a worker", len(queue), queue_html)}
 {_section("What landed since this page was last drawn", len(changed), changed_html)}
 {filters_html}
 {kanban_html}

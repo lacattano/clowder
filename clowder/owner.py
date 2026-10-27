@@ -46,10 +46,22 @@ WALKTHROUGH = "walkthrough"
 # The word that answers each kind, in his terms. The front door reads this list, so the
 # action has to stand alone without the crew's vocabulary.
 ACTIONS = {
-    DECISION: "reply with your answer",
+    DECISION: "type the number",
     MERGE: "reply merge",
     WALKTHROUGH: "reply pass, or what to change",
 }
+
+
+def answered_by(item: Waiting, number: int) -> str:
+    """The exact words that answer one line.
+
+    A recorded question is answered by its number on the page ("type 1"); the other
+    kinds by their word. Views number their lines, so they call this; nothing else
+    should print `item.action` for a decision.
+    """
+    if item.kind == DECISION:
+        return f"type {number}"
+    return item.action
 
 
 @dataclass(frozen=True)
@@ -125,8 +137,9 @@ def waiting_on_owner(
     his: list[Waiting] = []
     named_by_item: set[str] = set()
     for task in task_list:
-        if task.is_closed:
-            continue
+        # A recorded question waits on him until it is cleared or answered, whatever
+        # happened to the step that carried it. Seen 2026-10-27: three owner items sat
+        # on closed steps and vanished from both views the moment the step closed.
         if task.owner_item:
             if task.job and names_the_merge(task.owner_item):
                 named_by_item.add(task.job)

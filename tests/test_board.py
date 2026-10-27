@@ -259,7 +259,7 @@ class RenderTest(unittest.TestCase):
                 front_door_name="topcat",
             )
         )
-        self.assertIn("topcat chases them", html)
+        self.assertIn("Also for topcat", html)
 
     def test_a_dropped_item_is_history_not_work(self) -> None:
         html = render_board(data(dropped=[dropped()]))
@@ -290,7 +290,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("decision", waiting[0])
         self.assertIn("14 days or 30?", waiting[0])
-        self.assertIn("reply with your answer", waiting[0], "the word that answers it")
+        self.assertIn("type 1", waiting[0], "the number that answers it")
         self.assertIn("waited", waiting[0], "how long it has waited")
         self.assertNotIn("t-0001", waiting[0], "no task id in his section")
 
@@ -316,7 +316,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("your move", waiting[0])
         self.assertIn("the team-page design is ready", waiting[0])
-        self.assertIn("reply with your answer", waiting[0])
+        self.assertIn("type 1", waiting[0])
         self.assertIn("waited", waiting[0])
         self.assertNotIn("t-0001", waiting[0], "no task id in his section")
         self.assertLess(
@@ -844,11 +844,58 @@ class WaitingTest(unittest.TestCase):
         lines = waiting_on_you(page)
         self.assertEqual(len(lines), 3)
         for line in lines:
-            self.assertIn("reply ", line)
+            self.assertTrue(
+                "type " in line or "reply " in line, "a way to answer it is on the line"
+            )
             self.assertIn("waited ", line)
             self.assertNotIn("t-000", line, "no task id in his section")
             self.assertNotIn("j-000", line, "no job id in his section")
         self.assertLess(lines[0].index("choose A or B"), lines[0].index("waited"))
+
+    def test_the_queue_and_the_record_view_show_the_same_count(self) -> None:
+        # "38 jobs in the todo queue but 40 on the list of waiting for an agent": the
+        # queue section counts queued records, and so does the To Do column.
+        page = data(
+            queued=[queued("q-0001"), queued("q-0002"), queued("q-0003")],
+            repeated_defects=[
+                Defect(
+                    id="d-0001",
+                    line="a step does not close when it reports",
+                    first_seen="2026-10-01T09:00:00Z",
+                    last_seen="2026-10-02T09:00:00Z",
+                    count=2,
+                    state="open",
+                )
+            ],
+        )
+        html = render_board(page)
+        worker = html.split("<h2>Waiting for a worker", 1)[1].split("</section>", 1)[0]
+        todo = html.split("To Do", 1)[1].split("In Progress", 1)[0]
+        self.assertIn("count'>3</span>", worker)
+        self.assertIn("count'>3</span>", todo)
+        self.assertIn("Also for", worker)
+        self.assertIn("1 warning(s)", worker, "the defect warning, not a queue item")
+
+    def test_a_warning_is_not_added_to_the_queue_count(self) -> None:
+        page = data(
+            queued=[queued("q-0001"), queued("q-0002")],
+            tasks=[old_task()],
+            agents=[agent("verifier", status="idle")],
+        )
+        html = render_board(page)
+        worker = html.split("<h2>Waiting for a worker", 1)[1].split("</section>", 1)[0]
+        self.assertIn("count'>2</span>", worker, "two queued records, two")
+        self.assertIn("1 warning(s)", worker, "the quiet step is a warning, not a queue item")
+        self.assertIn("not queued items", worker)
+
+    def test_the_two_queue_views_never_disagree(self) -> None:
+        for count in (0, 1, 5):
+            page = data(queued=[queued(f"q-{index:04d}") for index in range(count)])
+            html = render_board(page)
+            worker = html.split("<h2>Waiting for a worker", 1)[1].split("</section>", 1)[0]
+            todo = html.split("To Do", 1)[1].split("In Progress", 1)[0]
+            self.assertIn(f"count'>{count}</span>", worker)
+            self.assertIn(f"count'>{count}</span>", todo)
 
     def test_the_render_is_a_smoke_not_a_benchmark(self) -> None:
         # A generous ceiling, not a measurement: the point is that a page draw stays

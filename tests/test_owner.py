@@ -119,12 +119,69 @@ class WaitingOnOwnerTest(unittest.TestCase):
         )
         self.assertEqual(self.kinds(his), [DECISION, MERGE])
 
-    def test_a_closed_task_waits_for_nobody(self) -> None:
+    def test_an_owner_item_on_a_closed_step_still_waits(self) -> None:
+        # Seen 2026-10-27: three owner items sat on closed steps and vanished from both
+        # views. A recorded question waits until it is cleared or answered; the step's
+        # own status is irrelevant.
         his, _ = waiting_on_owner(
-            [task(status=CLOSED, owner_item="choose A or B", open_decision="14 days or 30?")],
+            [task(status=CLOSED, owner_item="choose A or B", owner_item_at=now_iso())],
+            [],
+        )
+        self.assertEqual(self.kinds(his), [DECISION])
+        self.assertIn("choose A or B", his[0].heading)
+
+    def test_an_answered_decision_on_a_closed_step_waits_for_nobody(self) -> None:
+        his, _ = waiting_on_owner(
+            [
+                task(
+                    status=CLOSED,
+                    open_decision="14 days or 30?",
+                    decision_answer="14 days",
+                    decision_answered_at=now_iso(),
+                )
+            ],
             [],
         )
         self.assertEqual(his, [])
+
+    def test_the_age_is_the_item_s_age_not_the_step_s(self) -> None:
+        # The step may be a week old; the question was asked two days ago, and the wait
+        # he reads is the question's.
+        his, _ = waiting_on_owner(
+            [
+                task(
+                    status=CLOSED,
+                    created_at="2026-10-17T09:00:00Z",
+                    owner_item="choose A or B",
+                    owner_item_at="2026-10-25T09:00:00Z",
+                )
+            ],
+            [],
+        )
+        self.assertEqual(his[0].since, "2026-10-25T09:00:00Z")
+
+    def test_an_owner_item_on_an_open_step_appears_once(self) -> None:
+        for status in (DISPATCHED, REPORTED, CLOSED):
+            his, _ = waiting_on_owner(
+                [task(status=status, owner_item="choose A or B", owner_item_at=now_iso())],
+                [],
+            )
+            self.assertEqual(len(his), 1, f"{status}: one item, one line")
+            self.assertEqual(his[0].kind, DECISION)
+
+    def test_clearing_or_deciding_removes_it(self) -> None:
+        cleared = task(status=CLOSED, owner_item=None, owner_item_at=None)
+        his, _ = waiting_on_owner([cleared], [])
+        self.assertEqual(his, [], "cleared: nothing waits")
+
+        decided = task(
+            status=CLOSED,
+            open_decision="14 days or 30?",
+            decision_answer="14 days",
+            decision_answered_at=now_iso(),
+        )
+        his, _ = waiting_on_owner([decided], [])
+        self.assertEqual(his, [], "decided: nothing waits")
 
     def test_the_oldest_waits_first(self) -> None:
         his, _ = waiting_on_owner(
@@ -138,7 +195,7 @@ class WaitingOnOwnerTest(unittest.TestCase):
 
     def test_every_line_carries_what_he_types_and_how_long(self) -> None:
         his, _ = waiting_on_owner([task(open_decision="14 days or 30?")], [])
-        self.assertEqual(his[0].action, owner.ACTIONS[DECISION])
+        self.assertEqual(owner.answered_by(his[0], 3), "type 3")
         self.assertTrue(his[0].waited, "the wait is measured from the record")
 
     def test_the_review_notes_come_from_the_caller(self) -> None:
