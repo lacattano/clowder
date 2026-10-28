@@ -299,6 +299,32 @@ branch name on it. The writer keeps its branch and can carry on.
 4. **What to report** - and what to ignore.
 5. **What not to do** - in particular: do not start a heavy run without an explicit go-ahead.
 
+### Messages to the owner, and the one page he reads
+
+One message: one decision or report, three lines of context at most, and the word that answers it
+(`reply merge`, `reply pass`). A worker's report goes in the record; only its decision reaches him.
+
+- bad - "The worker ran the suite, then fixed the query compare, then re-ran it, then reworded
+  two messages to the owner; nothing is broken."
+- good - "The refund page is ready for your merge word. It adds the policy and one test; CI has
+  two minutes left. Reply merge when you have read it."
+
+He said this on 2026-10-25: "again you need to work on your explanaitions
+there are so many points in this statement that need context. its like you start the statement
+knowing that i don't know what you are talking about and then go into more detail anyway". What
+he was sent: "One thing: the accept path. When the tool and the browser disagree about the page,
+you can still say the browser is right and change the story. The corrected shape is about the
+interaction - you see the story line, the step before the check, a replay of that click, and where
+it landed. Accepting re-runs the step; you never type a URL. One-click accept in the UI, or a
+story edit you make yourself?"
+
+So: open with the situation in his terms, before any detail; explain a crew word (story, step,
+replay, accept, gate) in one clause at first use; a question stands alone, with no document open.
+
+One state file per day under `.clowder/` - what shipped, what needs him, what runs unattended,
+what is parked - rewritten when state changes, never appended. The chat and the board are not the
+record; the state file is.
+
 ### Bounds on a search
 
 A brief that asks for a search must state its bounds. A search with no bounds means read
@@ -347,11 +373,10 @@ clowder dispatch <agent> <repo> "<the brief>" --job <job-id> --cost suite
 ```
 
 `--heavy` still works and means `--cost suite`, so an older brief costs the same as it always did.
-The gate compares the class with what the box has free at that moment, minus what the steps
-already running hold: two suites may start together when the headroom covers both, and a suite
-next to a model leg is refused with the numbers. A refusal names the free memory, the held
-figure and the floor it compared, and `clowder box` prints the whole readout. `model` is the one
-class that takes the box alone. A step with no stated cost is never refused; `--force` sends
+The gate subtracts what the running steps hold from what the box has free: two suites may start
+together when the headroom covers both, and a suite next to a model leg is refused with the
+numbers. A refusal names the free memory, the held figure and the floor; `clowder box` prints the
+readout. `model` takes the box alone. A step with no stated cost is never refused; `--force` sends
 anything and records that it did.
 
 `clowder box` is the one readout: the RAM fitted and the GPU's share of it, the GPU side, and the

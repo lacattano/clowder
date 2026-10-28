@@ -285,8 +285,13 @@ does not need them. So the front door translates, and three rules keep the trans
    under "waiting on you".
 
 The board and the report shape already separate what waits on him. This rule covers the prose
-around them, which no test can reach, so it lives in the skill and is guarded there only by the
-examples it must carry.
+around them. Part of it is checkable now: the skill states one message - one decision or report,
+three lines of context at most, and the word that answers it - and it carries his own words of
+2026-10-25, with the message he was sent, as the worked bad case. The same section keeps the one
+page of record: one state file per day under `.clowder/`, holding what shipped, what needs him,
+what runs unattended and what is parked, rewritten when state changes and never appended, because
+the chat is not the record and the board is not the record. `tests/test_skill.py` holds the shape,
+his words, the page and a 25-line cap on the section, so the discipline cannot become an essay.
 
 ### 21. The owner's pass and merge word are recorded, and the gates read them
 
