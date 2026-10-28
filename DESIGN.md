@@ -287,11 +287,15 @@ does not need them. So the front door translates, and three rules keep the trans
 The board and the report shape already separate what waits on him. This rule covers the prose
 around them. Part of it is checkable now: the skill states one message - one decision or report,
 three lines of context at most, and the word that answers it - and it carries his own words of
-2026-10-25, with the message he was sent, as the worked bad case. The same section keeps the one
-page of record: one state file per day under `.clowder/`, holding what shipped, what needs him,
-what runs unattended and what is parked, rewritten when state changes and never appended, because
-the chat is not the record and the board is not the record. `tests/test_skill.py` holds the shape,
-his words, the page and a 25-line cap on the section, so the discipline cannot become an essay.
+2026-10-25, with the message he was sent, as the worked bad case. The same section names the
+record behind the messages, and only the files that exist: `state.json` under `.clowder/` is the
+cumulative one, rewritten on every change and never appended, with the audit lines beside it;
+`HANDOVER-<date>.md` is composed from it by `clowder handover write`, so it holds no second copy
+of a fact; `handover-notes.md` is the only hand-written part, capped at ten lines. The chat and
+the board are not the record. `tests/test_skill.py` holds the shape, his words, the three files
+and a 586-line cap on the whole skill - not on the section alone - so the discipline cannot
+become an essay. The first wording of this rule named a per-day state file that no command wrote
+(defect d-0040); the test now refuses that claim by name.
 
 ### 21. The owner's pass and merge word are recorded, and the gates read them
 

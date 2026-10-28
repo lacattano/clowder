@@ -299,7 +299,7 @@ branch name on it. The writer keeps its branch and can carry on.
 4. **What to report** - and what to ignore.
 5. **What not to do** - in particular: do not start a heavy run without an explicit go-ahead.
 
-### Messages to the owner, and the one page he reads
+### Messages to the owner, and the record behind them
 
 One message: one decision or report, three lines of context at most, and the word that answers it
 (`reply merge`, `reply pass`). A worker's report goes in the record; only its decision reaches him.
@@ -309,21 +309,21 @@ One message: one decision or report, three lines of context at most, and the wor
 - good - "The refund page is ready for your merge word. It adds the policy and one test; CI has
   two minutes left. Reply merge when you have read it."
 
-He said this on 2026-10-25: "again you need to work on your explanaitions
-there are so many points in this statement that need context. its like you start the statement
-knowing that i don't know what you are talking about and then go into more detail anyway". What
-he was sent: "One thing: the accept path. When the tool and the browser disagree about the page,
-you can still say the browser is right and change the story. The corrected shape is about the
-interaction - you see the story line, the step before the check, a replay of that click, and where
-it landed. Accepting re-runs the step; you never type a URL. One-click accept in the UI, or a
-story edit you make yourself?"
+He said this on 2026-10-25: "again you need to work on your explanaitions there are so many points
+in this statement that need context. its like you start the statement knowing that i don't know what
+you are talking about and then go into more detail anyway". What he was sent: "One thing: the accept
+path. When the tool and the browser disagree about the page, you can still say the browser is right
+and change the story. The corrected shape is about the interaction - you see the story line, the
+step before the check, a replay of that click, and where it landed. Accepting re-runs the step; you
+never type a URL. One-click accept in the UI, or a story edit you make yourself?"
 
 So: open with the situation in his terms, before any detail; explain a crew word (story, step,
 replay, accept, gate) in one clause at first use; a question stands alone, with no document open.
 
-One state file per day under `.clowder/` - what shipped, what needs him, what runs unattended,
-what is parked - rewritten when state changes, never appended. The chat and the board are not the
-record; the state file is.
+The record is not the chat and not the board. It is `state.json` under `.clowder/`, cumulative
+and rewritten on every change, never appended: every task, job and queued item, with the audit
+lines beside it. `HANDOVER-<date>.md` is composed from it by `clowder handover write` and holds
+no second copy of a fact; `handover-notes.md` is the only hand-written part, capped at ten lines.
 
 ### Bounds on a search
 
