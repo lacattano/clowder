@@ -90,8 +90,14 @@ class Task:
     # nothing here can refuse a dispatch or block a pass.
     model: str | None = None
     provider: str | None = None
-    # A step that installs, builds or runs a suite. Only one runs at a time across
-    # the crew, and the optional [gates] load check runs before it starts.
+    # The step's cost class: none, read, suite, install, browser or model. It is the
+    # one place a step says what it will take from the box, and the class gate
+    # compares its footprint with the machine's headroom before the step sends.
+    # Empty means the record was written before classes existed, so `heavy` says it.
+    cost: str = ""
+    # The old one-boolean spelling, kept so a state file written by this version is
+    # still read by one that only knows `heavy`. It is true for a suite, which is
+    # what `--heavy` always meant.
     heavy: bool = False
     # Fields a newer copy wrote that this code does not know. Kept, never dropped,
     # so a newer copy can still read them.
@@ -342,8 +348,10 @@ class Queued:
     shape: str = "ship"
     question: str | None = None
     job: str | None = None
-    # A step that installs, builds or runs a suite. It travels to the task on send,
-    # so the heavy gate applies to a queued step too.
+    # The cost class, as a Task's. It travels to the task on send, so the class gate
+    # applies to a queued step too. `heavy` is the old spelling, kept for the same
+    # reason as on a Task.
+    cost: str = ""
     heavy: bool = False
     # Reserved tag families the board colours by prefix: `sev:` and `phase:`.
     labels: list[str] = field(default_factory=list)

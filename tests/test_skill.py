@@ -198,8 +198,9 @@ class SkillTest(unittest.TestCase):
         ):
             self.assertIn(question, text, f"a walkthrough question is missing: {question}")
         for rule in (
-            "Never overlap heavy runs",
-            "A verifier must not start a heavy run",
+            "Declare what a run costs, and let the box answer",
+            "a model leg takes the box alone",
+            "A verifier must not start a costly run",
             "You cannot spawn agents",
             "Do not close panes",
             "leave the ones you did create",

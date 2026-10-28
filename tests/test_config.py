@@ -231,19 +231,42 @@ class LoadConfigTest(unittest.TestCase):
             load_config(path)
         self.assertIn("git.email", str(caught.exception))
 
-    def test_gates_default_to_off(self) -> None:
+    def test_the_gib_floors_default_to_the_measured_numbers(self) -> None:
+        # On by default: the old percent threshold was opt-in and unset, so nothing
+        # measured the box at all. 4 GiB free, 6 GiB of commit headroom, 2 GiB of GPU.
         config = load_config(self.config_path)
-        self.assertIsNone(config.heavy_max_memory)
+        self.assertEqual(config.heavy_min_free_gib, 4.0)
+        self.assertEqual(config.heavy_min_commit_gib, 6.0)
+        self.assertEqual(config.heavy_min_gpu_gib, 2.0)
         self.assertIsNone(config.heavy_max_load)
+        self.assertEqual(config.floors.min_free_gib, 4.0)
 
-    def test_gates_thresholds_are_read(self) -> None:
+    def test_the_gib_floors_are_read(self) -> None:
         path = write_config(
             self.root / "gates.toml",
-            gates={"heavy_max_memory": 80, "heavy_max_load": 1.5},
+            gates={"heavy_min_free_gib": 6, "heavy_min_commit_gib": 8, "heavy_max_load": 1.5},
         )
         config = load_config(path)
-        self.assertEqual(config.heavy_max_memory, 80.0)
+        self.assertEqual(config.heavy_min_free_gib, 6.0)
+        self.assertEqual(config.heavy_min_commit_gib, 8.0)
         self.assertEqual(config.heavy_max_load, 1.5)
+
+    def test_a_floor_of_null_switches_that_check_off(self) -> None:
+        path = self.root / "gates-null.toml"
+        path.write_text("[gates]\nheavy_min_gpu_gib = 0\n", encoding="utf-8")
+        config = load_config(path)
+        self.assertEqual(config.heavy_min_gpu_gib, 0.0)
+
+    def test_the_retired_percent_threshold_names_its_replacement(self) -> None:
+        # A config still holding it would otherwise be read as "no gate at all", which
+        # is the confusion this key caused. It is refused with the new keys named.
+        path = write_config(self.root / "gates-old.toml", gates={"heavy_max_memory": 80})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        message = str(caught.exception)
+        self.assertIn("gates.heavy_max_memory is retired", message)
+        self.assertIn("gates.heavy_min_free_gib", message)
+        self.assertIn("gates.heavy_min_commit_gib", message)
 
     def test_an_unknown_gates_key_is_refused(self) -> None:
         path = write_config(self.root / "gatesbad.toml", gates={"heavy_max": 80})
@@ -252,10 +275,10 @@ class LoadConfigTest(unittest.TestCase):
         self.assertIn("unknown gates keys", str(caught.exception))
 
     def test_a_gates_threshold_must_be_a_number(self) -> None:
-        path = write_config(self.root / "gatesstr.toml", gates={"heavy_max_memory": "high"})
+        path = write_config(self.root / "gatesstr.toml", gates={"heavy_min_free_gib": "high"})
         with self.assertRaises(ConfigError) as caught:
             load_config(path)
-        self.assertIn("gates.heavy_max_memory", str(caught.exception))
+        self.assertIn("gates.heavy_min_free_gib", str(caught.exception))
 
     def test_a_negative_gates_threshold_is_refused(self) -> None:
         path = write_config(self.root / "gatesneg.toml", gates={"heavy_max_load": -1})
@@ -266,7 +289,7 @@ class LoadConfigTest(unittest.TestCase):
     def test_a_non_finite_gates_threshold_is_refused(self) -> None:
         # `nan` compares false against every load, so it would refuse every heavy
         # step; `inf` is not a threshold. Both are config errors, not numbers.
-        for key, literal in (("heavy_max_memory", "nan"), ("heavy_max_load", "inf")):
+        for key, literal in (("heavy_min_free_gib", "nan"), ("heavy_max_load", "inf")):
             path = self.root / f"gates-{literal}.toml"
             path.write_text(f"[gates]\n{key} = {literal}\n", encoding="utf-8")
             with self.assertRaises(ConfigError) as caught:
