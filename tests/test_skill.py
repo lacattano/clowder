@@ -650,22 +650,23 @@ class MessageDisciplineTest(unittest.TestCase):
     def test_the_record_is_the_files_that_exist_and_the_chat_is_not_one(self) -> None:
         # Defect d-0040: the first wording named "one state file per day ... never appended",
         # and no command wrote or read such a file - a rule about a trustworthy record that
-        # pointed at nothing. The three files below are the ones the tool really keeps, each
-        # with the job it does, and every claim is scoped to this section so deleting the
-        # section fails here.
+        # pointed at nothing. These four files are the ones the tool really keeps, each with
+        # the job it does, and every claim is scoped to this section so deleting the section
+        # fails here.
         area = self.area()
         text = self.flat(area)
-        self.assertIn("The record is not the chat and not the board", text)
-        self.assertIn("`state.json` under `.clowder/`, cumulative", text)
+        self.assertIn("Not the chat, not the board", text)
+        self.assertIn("`state.json` under `.clowder/` is cumulative", text)
         self.assertIn("rewritten on every change, never appended", text)
         self.assertIn("every task, job and queued item", text)
-        self.assertIn("with the audit", text, "the audit lines sit beside the state file")
         self.assertIn(
             "`HANDOVER-<date>.md` is composed from it by `clowder handover write`", text
         )
-        self.assertIn("no second copy of a fact", text)
+        self.assertIn("no second copy", text)
+        self.assertIn("`handover-notes.md` is hand-written, capped at ten lines", text)
+        # The fourth file: one home for what cost time, and the command that writes it.
         self.assertIn(
-            "`handover-notes.md` is the only hand-written part, capped at ten lines", text
+            "`defects.json` holds what cost time, written by `clowder defects add`", text
         )
         # The retired claim cannot come back: there is no per-day state file.
         self.assertNotIn("one state file per day", text.lower())

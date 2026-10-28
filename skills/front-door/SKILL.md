@@ -320,10 +320,10 @@ never type a URL. One-click accept in the UI, or a story edit you make yourself?
 So: open with the situation in his terms, before any detail; explain a crew word (story, step,
 replay, accept, gate) in one clause at first use; a question stands alone, with no document open.
 
-The record is not the chat and not the board. It is `state.json` under `.clowder/`, cumulative
-and rewritten on every change, never appended: every task, job and queued item, with the audit
-lines beside it. `HANDOVER-<date>.md` is composed from it by `clowder handover write` and holds
-no second copy of a fact; `handover-notes.md` is the only hand-written part, capped at ten lines.
+Not the chat, not the board. `state.json` under `.clowder/` is cumulative - every task, job and
+queued item - rewritten on every change, never appended. `HANDOVER-<date>.md` is composed from it by
+`clowder handover write`, no second copy; `handover-notes.md` is hand-written, capped at ten lines;
+`defects.json` holds what cost time, written by `clowder defects add`.
 
 ### Bounds on a search
 
