@@ -568,6 +568,115 @@ class PackageTest(unittest.TestCase):
         self.assertIn("file by file", low)
 
 
+class MessageDisciplineTest(unittest.TestCase):
+    """The front door's own behaviour, made checkable.
+
+    His complaint, 2026-10-25: messages arrive without context, or get lost, and he reads a
+    wall of text. The skill now states the shape of a message and the one page of record; these
+    tests hold both, and hold the section to a length.
+    """
+
+    @staticmethod
+    def area() -> str:
+        """The brief-writing area: `### The brief` through `### Bounds on a search`."""
+        skill = read_skill()
+        start = skill.index("### The brief")
+        end = skill.index("### Bounds on a search")
+        return skill[start:end]
+
+    @staticmethod
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    def test_the_message_section_sits_in_the_brief_writing_area(self) -> None:
+        # Not at the end of the file as an appendix: it is what the front door writes, next to
+        # the five parts of a brief.
+        area = self.area()
+        self.assertIn("### Messages to the owner", area)
+        self.assertIn("One message: one decision or report", self.flat(area))
+
+    def test_the_template_names_the_three_lines_the_word_and_no_narration(self) -> None:
+        text = self.flat(self.area())
+        self.assertIn("three lines of context at most", text)
+        self.assertIn("`reply merge`", text)
+        self.assertIn("`reply pass`", text)
+        self.assertIn("A worker's report goes in the record", text)
+        self.assertIn("only its decision reaches him", text)
+
+    def test_the_worked_pair_is_a_worker_narration_against_a_decision(self) -> None:
+        area = self.area()
+        self.assertIn("- bad -", area)
+        self.assertIn("- good -", area)
+        bad = area.split("- bad -", 1)[1].split("- good -", 1)[0]
+        good = area.split("- good -", 1)[1].split("He said this", 1)[0]
+        # The bad one narrates what a worker did, and offers nothing to answer.
+        self.assertIn("The worker ran", bad)
+        self.assertNotIn("reply", bad)
+        # The good one says the decision, why it matters, what it costs, and what to reply.
+        self.assertIn("ready for your merge word", good)
+        self.assertIn("It adds the policy and one test", good)
+        self.assertIn("CI has", good)
+        self.assertIn("Reply merge", good)
+
+    def test_the_owner_s_words_are_quoted_verbatim(self) -> None:
+        # Verbatim, including the misspelling: it is evidence, not prose to tidy.
+        words = (
+            "again you need to work on your explanaitions there are so many points in this "
+            "statement that need context. its like you start the statement knowing that i "
+            "don't know what you are talking about and then go into more detail anyway"
+        )
+        self.assertIn(words, self.flat(read_skill()))
+
+    def test_the_message_he_complained_about_is_quoted_in_full(self) -> None:
+        # First words and last words both, so a later edit cannot truncate it.
+        text = self.flat(read_skill())
+        self.assertIn(
+            'What he was sent: "One thing: the accept path. When the tool and the browser '
+            "disagree about the page",
+            text,
+        )
+        self.assertIn(
+            "One-click accept in the UI, or a story edit you make yourself?",
+            text,
+        )
+
+    def test_the_rule_it_produces_is_stated(self) -> None:
+        text = self.flat(self.area())
+        self.assertIn("open with the situation in his terms, before any detail", text)
+        self.assertIn("explain a crew word", text)
+        self.assertIn("in one clause at first use", text)
+        self.assertIn("a question stands alone", text)
+
+    def test_the_record_is_the_files_that_exist_and_the_chat_is_not_one(self) -> None:
+        # Defect d-0040: the first wording named "one state file per day ... never appended",
+        # and no command wrote or read such a file - a rule about a trustworthy record that
+        # pointed at nothing. The three files below are the ones the tool really keeps, each
+        # with the job it does, and every claim is scoped to this section so deleting the
+        # section fails here.
+        area = self.area()
+        text = self.flat(area)
+        self.assertIn("The record is not the chat and not the board", text)
+        self.assertIn("`state.json` under `.clowder/`, cumulative", text)
+        self.assertIn("rewritten on every change, never appended", text)
+        self.assertIn("every task, job and queued item", text)
+        self.assertIn("with the audit", text, "the audit lines sit beside the state file")
+        self.assertIn(
+            "`HANDOVER-<date>.md` is composed from it by `clowder handover write`", text
+        )
+        self.assertIn("no second copy of a fact", text)
+        self.assertIn(
+            "`handover-notes.md` is the only hand-written part, capped at ten lines", text
+        )
+        # The retired claim cannot come back: there is no per-day state file.
+        self.assertNotIn("one state file per day", text.lower())
+
+    def test_the_section_did_not_turn_the_skill_into_an_essay(self) -> None:
+        # 561 lines before this section, 586 with it: about 25 lines, which is the whole
+        # point. The number is a cap, not a target; a later section that earns a line moves
+        # this number in the same commit.
+        self.assertLessEqual(len(read_skill().splitlines()), 586)
+
+
 class AsciiTest(unittest.TestCase):
     def test_every_text_file_in_the_repo_is_ascii(self) -> None:
         offenders: list[str] = []
