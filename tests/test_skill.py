@@ -650,31 +650,39 @@ class MessageDisciplineTest(unittest.TestCase):
     def test_the_record_is_the_files_that_exist_and_the_chat_is_not_one(self) -> None:
         # Defect d-0040: the first wording named "one state file per day ... never appended",
         # and no command wrote or read such a file - a rule about a trustworthy record that
-        # pointed at nothing. The three files below are the ones the tool really keeps, each
-        # with the job it does, and every claim is scoped to this section so deleting the
-        # section fails here.
+        # pointed at nothing. These four files are the ones the tool really keeps, each with
+        # the job it does, and every claim is scoped to this section so deleting the section
+        # fails here.
         area = self.area()
         text = self.flat(area)
-        self.assertIn("The record is not the chat and not the board", text)
-        self.assertIn("`state.json` under `.clowder/`, cumulative", text)
-        self.assertIn("rewritten on every change, never appended", text)
+        self.assertIn("The record is not the chat and not the board.", text)
+        self.assertIn("`state.json` under `.clowder/` is cumulative", text)
         self.assertIn("every task, job and queued item", text)
-        self.assertIn("with the audit", text, "the audit lines sit beside the state file")
+        self.assertIn("rewritten on every change, never appended", text)
+        # The j-0223 blocker: audit.py's own rule is that a record edited with no trace is
+        # not a record, and the state repair, abandon and report rules all lean on the audit
+        # file. A record list that leaves it out reads as a record with no trace.
+        self.assertIn("with `state.json.audit` beside it", text)
         self.assertIn(
             "`HANDOVER-<date>.md` is composed from it by `clowder handover write`", text
         )
-        self.assertIn("no second copy of a fact", text)
+        self.assertIn("no second copy", text)
         self.assertIn(
             "`handover-notes.md` is the only hand-written part, capped at ten lines", text
+        )
+        # The fourth file: one home for what cost time, and the command that writes it.
+        self.assertIn(
+            "`defects.json` holds what cost time, written by `clowder defects add`", text
         )
         # The retired claim cannot come back: there is no per-day state file.
         self.assertNotIn("one state file per day", text.lower())
 
     def test_the_section_did_not_turn_the_skill_into_an_essay(self) -> None:
-        # 561 lines before this section, 586 with it: about 25 lines, which is the whole
-        # point. The number is a cap, not a target; a later section that earns a line moves
-        # this number in the same commit.
-        self.assertLessEqual(len(read_skill().splitlines()), 586)
+        # 561 lines before this section, 587 with it. The budget moved by one when the audit
+        # clause came back from the j-0223 review: a fact was restored, not padding added.
+        # The number is a cap, not a target; a later section that earns a line moves this
+        # number in the same commit.
+        self.assertLessEqual(len(read_skill().splitlines()), 587)
 
 
 class AsciiTest(unittest.TestCase):
