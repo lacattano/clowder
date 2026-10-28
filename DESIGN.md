@@ -194,7 +194,8 @@ are the install) and also the risk (they can be yesterday's artifacts). Four rul
 
 - A job starts from a clean space. Dirt is refused, with the file names.
 - One open job per space.
-- One open step per job, so two heavy runs cannot start at once.
+- One open step per job, so two runs cannot start at once in one space. Across spaces the cost
+  class and the box's headroom decide, and a model leg takes the box alone (section 39).
 - A branch is kept when a job closes, and deleted only when git agrees it is merged. The branch
   is the record of the work; the folder is not.
 
@@ -601,7 +602,7 @@ there are two intakes, and either closes the step:
 Either way the record is what `report` would have written - the answer, the usage window, the
 model, the commit - and one audit line, action `step-report`, with the same fields as a
 `step-close` line. The status becomes `closed` with `reported_at` set, so `is_open` is false, the
-one-open-step, heavy-slot and reset guards free themselves, and the board's Done column stops
+one-open-step, class-slot and reset guards free themselves, and the board's Done column stops
 calling finished work "in progress". A closed step that has an answer reads `answered`, not
 `closed, no answer came`.
 
@@ -755,7 +756,8 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   A 0.62s figure quoted earlier was a run where every memo answer still held - a best case, not the
   number. That check is the next target; it is untouched here.
 - **The order is his.** "For you" (one line per question, the number he replies with, and how
-  long it has waited), "Running now" (each worker, what it is on, how long, heavy or not),
+  long it has waited), "Running now" (each worker, what it is on, how long, what it costs the
+  box), plus one line of what the box has left and what the gate would decide now,
   "Waiting for a worker" (the front door's queue, oldest first, with its own warnings), then
   "What landed since this page was last drawn". The records follow, unchanged: the filterable
   cards, agents and spaces, answers, dropped items, the model rollup.
@@ -833,6 +835,65 @@ The list is now built once, in `owner.waiting_on_owner(tasks, jobs)`, and every 
 
 The re-review and unconfirmed notes are passed in by the board, which reads the refs; `start`
 passes none, because it does not. Only a note differs, never the count.
+
+### 39. A step states its cost, and the gate is a headroom measurement
+
+Seen 2026-10-27, in his words: "it seems random what you consider heavy". It was. `--heavy` was
+one boolean the front door set by feel, held from dispatch to report. On 2026-10-26 and again on
+2026-10-27 a worker that was only editing files held the crew's only heavy slot for twenty
+minutes and blocked a genuine one-hour measurement, while a step that reads a large repository
+cost nothing and was never marked. The two machine gates existed (`heavy_max_memory`,
+`heavy_max_load`) and were unset, so nothing measured the box at all.
+
+The numbers this rests on were measured on this box on 2026-10-27 (t-0986): 64.00 GiB fitted,
+31.78 GiB visible because 32.00 GiB is carved out for the GPU; `dwMemoryLoad` at 72-79 percent
+of the visible half, moved not at all by a resident 25.35 GiB model. The honest figures are
+`\Memory\Available MBytes` (free plus standby), commit limit minus committed bytes, GPU adapter
+dedicated usage, and the page file's own use.
+
+- **A class, not a flag.** `--cost none|read|suite|install|browser|model`. `--heavy` is kept as
+  the old name for `suite`, so every brief, script and state file written before this reads the
+  same way. A task and a queue item carry the class; a record that carries only `heavy` is read
+  as a suite, and the `heavy` field is still written true for a suite so an older copy reads it.
+- **A stated footprint per class, in one place** (`clowder/box.py`, with the comment that holds
+  this table): `none` 0 GiB; `read` 1 GiB; `suite` 3 GiB, 7 minutes (the clowder suite); `install`
+  2 GiB, minutes and disk; `browser` 6 GiB and 3 GiB of the GPU, about an hour (a 113-story leg);
+  `model` 4 GiB host side and 26 GiB of the GPU (the 27B resident is 25.35 GiB), about an hour.
+  The model's host share is small because its weights sit on the card: charging 25 GiB to the CPU
+  pool as well would refuse every model leg on a box that runs one perfectly well.
+- **The gate is a subtraction.** Free memory (the metric `load` already reads) minus what the
+  running steps hold, compared with the new step's class; the commit headroom and the GPU's
+  carved-out memory are compared the same way. Floors keep the box usable after the step starts:
+  4 GiB free, 6 GiB of commit headroom, 2 GiB of the GPU. The floors are the defaults and are
+  set in `[gates]` in GiB. `heavy_max_memory` is retired and refused with its replacement named,
+  because a config holding it would otherwise read as "no gate at all".
+- **What that allows.** Two suites start together when the room covers both. A suite and a model
+  leg are refused with the free figure, the held figure and the floor named. A step with no
+  stated cost is never refused, and a box that cannot be read fails open with a warning - a
+  broken probe must not block work.
+- **The state gate that survives is the model's.** The GPU counter costs seconds, so it cannot go
+  in a gate; the crew cannot measure two model legs against each other, and `model` is the class
+  that takes the box alone. This is the old one-heavy-step gate, kept where it is still true.
+- **The numbers are shown where the decision is made.** `start` and the board print each
+  in-flight step's class and one line of what the box has left; a refusal prints the checks it
+  compared instead of a percentage; `clowder box` prints the whole readout - the RAM fitted and
+  the GPU's share, the GPU side with the process holding it, the CPU side with the page file,
+  and what the gate would decide now. Each line names the metric it came from. It is `box`, not
+  `capacity`: the crew already says "the box", and "capacity" suggests a configured limit where
+  this is a live reading.
+- **The readout may shell out; the gate may not.** GPU use and page-file use come from
+  `typeperf` and take seconds, so `read(with_gpu=True)` is only for `clowder box`.
+  `GlobalMemoryStatusEx` already fills `ullAvailPhys`, so free memory needs no second call, and
+  the GPU's carved-out size is read once from the registry and kept.
+- **`--force` still sends, and says so.** The measurement is taken even under `--force`; when it
+  refused, the send overrides it and appends one `dispatch-forced` audit line carrying the class
+  and the refusal, so the record never shows a step the box refused for no reason.
+- **`load.py`'s `except OSError, AttributeError, ValueError:`** is PEP 758 syntax: valid on 3.14
+  and above, and required by nothing. `pyproject.toml` requires 3.15, so it is legal here, and it
+  is not portable to 3.13 and below. It is not normalised, because it cannot be: `ruff format`
+  under `target-version = "py315"` rewrites the bracketed form back, so the portable spelling
+  fails the format gate. The choice was made on 2026-10-05 (see the comment in `pyproject.toml`)
+  and this change keeps it: the tool targets 3.15 and the formatter owns the spelling.
 
 ## What step 1 built
 

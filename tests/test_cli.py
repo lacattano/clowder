@@ -13,10 +13,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from clowder import cli, gitcmd, load
+from clowder import audit, box, cli, gitcmd
 from clowder import owner as owner_mod
 from clowder.board import BoardData, waiting_on_you
 from clowder.board import waiting_on_you as board_waiting_on_you
+from clowder.config import load_config
 from clowder.mux import MuxResult
 from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
 from clowder.timeutil import now_iso, to_iso
@@ -28,6 +29,28 @@ from tests.support import (
     write_fake_state,
     write_session,
 )
+
+
+def reading(
+    *,
+    available_gib: float = 20.0,
+    commit_gib: float = 40.0,
+    carveout_gib: float | None = 32.0,
+) -> box.BoxReading:
+    """A machine reading a test can state, so the gate never asks the real box.
+
+    The numbers are GiB on purpose: the gate compares GiB, and a test that asserts
+    on a refusal has to name the same unit the message does.
+    """
+    return box.BoxReading(
+        read_at="today",
+        installed_bytes=int(64 * box.GIB),
+        total_bytes=int(32 * box.GIB),
+        available_bytes=int(available_gib * box.GIB),
+        commit_limit_bytes=int(96 * box.GIB),
+        commit_headroom_bytes=int(commit_gib * box.GIB),
+        carveout_bytes=None if carveout_gib is None else int(carveout_gib * box.GIB),
+    )
 
 
 def _start_error(code: str, message: str) -> MuxResult:
@@ -1075,9 +1098,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("needs a place", err)
 
-    def test_a_heavy_dispatch_is_refused_while_another_heavy_is_open(self) -> None:
-        # The one-open-step guard is per job, so only this state gate stops a
-        # heavy step on job X and one on job Y from starting together.
+    def test_two_suites_start_together_when_the_box_has_room(self) -> None:
+        # The old flag refused the second suite whatever the machine was doing. The
+        # class gate compares footprints, so two suites fit when the box can hold
+        # both - and the room is measured, not guessed.
         self.seed_agents("myrepo-maker", "myrepo-verifier")
         code, _, err = self.cli(
             "dispatch",
@@ -1090,9 +1114,29 @@ class CliTest(unittest.TestCase):
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
+        with mock.patch.object(box, "read", return_value=reading(available_gib=20.0)):
+            code, out, err = self.cli(
+                "dispatch",
+                "myrepo-verifier",
+                "myrepo",
+                "scout: run the suite",
+                "--shape",
+                "scout",
+                "--heavy",
+                env=self.state_env(),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-verifier", out)
+        self.assertEqual(len(self.load_state()["tasks"]), 2)
+
+    def test_a_suite_and_a_model_leg_are_refused_with_the_numbers(self) -> None:
+        # The case the class table exists for. A suite is running, the box has 8 GiB
+        # free, and a browser leg needs its own share plus the 4 GiB floor - so the
+        # refusal names the free memory, the held figure and the floor, not a percent.
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
         code, _, err = self.cli(
             "dispatch",
-            "myrepo-verifier",
+            "myrepo-maker",
             "myrepo",
             "scout: run the suite",
             "--shape",
@@ -1100,13 +1144,66 @@ class CliTest(unittest.TestCase):
             "--heavy",
             env=self.state_env(),
         )
+        self.assertEqual(code, 0, err)
+        with mock.patch.object(box, "read", return_value=reading(available_gib=8.0)):
+            code, _, err = self.cli(
+                "dispatch",
+                "myrepo-verifier",
+                "myrepo",
+                "scout: run the 27B over the stories",
+                "--shape",
+                "scout",
+                "--cost",
+                "browser",
+                env=self.state_env(),
+            )
         self.assertEqual(code, 2)
-        self.assertIn("heavy step is already open", err)
+        self.assertIn("browser", err)
+        self.assertIn("8.0 GiB free", err)
+        self.assertIn("3.0 GiB held", err)
+        self.assertIn("6.0 GiB this browser step needs", err)
+        self.assertIn("4.0 GiB must stay free", err)
+        self.assertIn("clowder box", err)
+        self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
+
+    def test_a_model_leg_takes_the_box_alone(self) -> None:
+        # The one state gate that survives, and the reason it does: the GPU counter is
+        # too slow for a gate, so two model legs cannot be measured against each other.
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        with mock.patch.object(box, "read", return_value=reading(available_gib=30.0)):
+            code, _, err = self.cli(
+                "dispatch",
+                "myrepo-maker",
+                "myrepo",
+                "scout: run the 27B",
+                "--shape",
+                "scout",
+                "--cost",
+                "model",
+                env=self.state_env(),
+            )
+            self.assertEqual(code, 0, err)
+            # A step that states a cost waits. An unmarked one does not: a step with
+            # no stated cost is never blocked by the box.
+            code, _, err = self.cli(
+                "dispatch",
+                "myrepo-verifier",
+                "myrepo",
+                "scout: read the history",
+                "--shape",
+                "scout",
+                "--cost",
+                "read",
+                env=self.state_env(),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("takes the box alone", err)
         self.assertIn("t-0001", err)
         self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
 
-    def test_a_reported_or_abandoned_heavy_step_does_not_block(self) -> None:
-        # The gate is state, so it clears itself the moment the heavy step stops.
+    def test_a_reported_or_abandoned_step_does_not_hold_a_class(self) -> None:
+        # The gate is state plus one reading, so it clears itself the moment the
+        # measured step stops.
         store = StateStore(self.state)
         for task_id, status in (("t-0001", REPORTED), ("t-0002", ABANDONED)):
             store.add(
@@ -1118,12 +1215,16 @@ class CliTest(unittest.TestCase):
                     agent="maker",
                     repo="myrepo",
                     repo_path=str(self.repo_path),
+                    cost="suite",
                     heavy=True,
                     status=status,
                 )
             )
         store.save()
-        cli._refuse_heavy_overlap(store)  # no raise: neither is open
+        config = load_config(self.config)
+        with mock.patch.object(box, "read", return_value=reading(available_gib=20.0)):
+            refusal = cli._headroom_refusal(config, "suite", store, "maker")
+        self.assertIsNone(refusal)
 
     def test_a_light_dispatch_is_not_blocked_by_a_heavy_step(self) -> None:
         self.seed_agents("myrepo-maker", "myrepo-verifier")
@@ -1150,45 +1251,52 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("sent to myrepo-verifier", out)
 
-    def test_a_heavy_step_is_refused_when_the_machine_is_loaded(self) -> None:
-        # The load metric is opt-in through [gates]. The probe is patched so the
-        # test does not depend on the machine it runs on.
-        self.config = write_config(
-            self.root / "gates.toml",
-            workspace={"root": str(self.workspace)},
-            mux={"bin": str(self.launcher)},
-            state={"path": str(self.state)},
-            gates={"heavy_max_memory": 50, "heavy_max_load": 0.5},
-        )
-        with mock.patch.object(load, "current", return_value=("load", 2.0)):
+    def test_an_unmarked_step_is_never_refused_by_the_box(self) -> None:
+        # `--cost none` is the default, and it is what a step that only edits files
+        # states. It must never be refused for memory: a step with no stated cost
+        # costs nothing to the box.
+        self.seed_agents("myrepo-maker", "myrepo-verifier")
+        with mock.patch.object(box, "read", return_value=reading(available_gib=0.1)):
+            code, out, err = self.cli(
+                "dispatch",
+                "myrepo-maker",
+                "myrepo",
+                "ship: add the refund page",
+                "--worktree",
+                str(self.repo_path),
+                env=self.state_env(),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to myrepo-maker", out)
+
+    def test_a_heavy_step_is_refused_when_the_box_cannot_cover_it(self) -> None:
+        # The reading is patched so the test does not depend on the machine it runs on.
+        with mock.patch.object(box, "read", return_value=reading(available_gib=5.0)):
             code, _, err = self.cli(
                 "dispatch",
                 "maker",
                 "myrepo",
-                "scout: build the image",
+                "scout: run the suite",
                 "--shape",
                 "scout",
                 "--heavy",
                 env=self.fake_env(),
             )
         self.assertEqual(code, 2)
-        self.assertIn("heavy", err)
-        self.assertIn("load 2.00 per CPU", err)
+        self.assertIn("5.0 GiB free", err)
+        self.assertIn("3.0 GiB this suite step needs", err)
+        self.assertIn("4.0 GiB must stay free", err)
 
-    def test_a_heavy_step_fails_open_when_the_load_cannot_be_read(self) -> None:
-        self.config = write_config(
-            self.root / "gates.toml",
-            workspace={"root": str(self.workspace)},
-            mux={"bin": str(self.launcher)},
-            state={"path": str(self.state)},
-            gates={"heavy_max_memory": 50, "heavy_max_load": 0.5},
-        )
-        with mock.patch.object(load, "current", return_value=None):
+    def test_a_class_step_fails_open_when_the_box_cannot_be_read(self) -> None:
+        # A broken probe must never block work, so the gate says it could not measure
+        # and lets the step go.
+        empty = box.BoxReading(read_at="today")
+        with mock.patch.object(box, "read", return_value=empty):
             code, out, err = self.cli(
                 "dispatch",
                 "maker",
                 "myrepo",
-                "scout: build the image",
+                "scout: run the suite",
                 "--shape",
                 "scout",
                 "--heavy",
@@ -1196,86 +1304,115 @@ class CliTest(unittest.TestCase):
             )
         self.assertEqual(code, 0, err)
         self.assertIn("sent to maker", out)
-        self.assertIn("cannot read the machine's load", err)
+        self.assertIn("was not measured", err)
 
-    def test_force_bypasses_the_heavy_refusal(self) -> None:
-        self.seed_agents("myrepo-maker", "myrepo-verifier")
+    def test_force_sends_and_records_that_it_did(self) -> None:
+        with mock.patch.object(box, "read", return_value=reading(available_gib=1.0)):
+            code, out, err = self.cli(
+                "dispatch",
+                "maker",
+                "myrepo",
+                "scout: run the suite",
+                "--shape",
+                "scout",
+                "--heavy",
+                "--force",
+                env=self.fake_env(),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("sent to maker", out)
+        self.assertIn("--force sent it anyway", err)
+        forced = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "dispatch-forced"
+        ]
+        self.assertEqual(len(forced), 1)
+        self.assertEqual(forced[0]["cost"], "suite")
+        self.assertTrue(forced[0]["forced"])
+        self.assertIn("must stay free", str(forced[0]["refused"]))
+
+    def test_heavy_is_the_old_name_for_a_suite(self) -> None:
         code, _, err = self.cli(
             "dispatch",
-            "myrepo-maker",
-            "myrepo",
-            "scout: build the image",
-            "--shape",
-            "scout",
-            "--heavy",
-            env=self.state_env(),
-        )
-        self.assertEqual(code, 0, err)
-        code, out, err = self.cli(
-            "dispatch",
-            "myrepo-verifier",
+            "maker",
             "myrepo",
             "scout: run the suite",
             "--shape",
             "scout",
+            "--worktree",
+            str(self.repo_path),
             "--heavy",
-            "--force",
-            env=self.state_env(),
+            env=self.fake_env(),
         )
         self.assertEqual(code, 0, err)
-        self.assertIn("sent to myrepo-verifier", out)
+        task = self.only_task()
+        self.assertEqual(task["cost"], "suite")
+        self.assertTrue(task["heavy"], "the old marker still reads as a suite")
 
-    def test_two_heavy_jobs_on_two_agents_are_refused(self) -> None:
-        # The case the DESIGN claim misses: the one-open-step guard is per job.
-        repo = self.repo_path
+    def test_two_cost_words_at_once_are_refused(self) -> None:
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: run the suite",
+            "--shape",
+            "scout",
+            "--worktree",
+            str(self.repo_path),
+            "--heavy",
+            "--cost",
+            "browser",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--heavy is the old name for --cost suite", err)
+
+    def test_box_prints_the_three_pools_with_their_sources(self) -> None:
+        with mock.patch.object(box, "read", return_value=reading(available_gib=20.0)):
+            code, out, err = self.cli("box", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("memory: 64.0 GiB installed", out)
+        self.assertIn("32.0 GiB is set aside for the GPU", out)
+        self.assertIn("GPU side:", out)
+        self.assertIn("CPU side: 32.0 GiB visible, 20.0 GiB free", out)
+        self.assertIn("GlobalMemoryStatusEx ullAvailPhys", out)
+        self.assertIn("gate now, a suite step: sends", out)
+
+    def test_box_json_names_every_pool_and_the_gate(self) -> None:
+        with mock.patch.object(box, "read", return_value=reading(available_gib=5.0)):
+            code, out, err = self.cli("box", "--json", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["available_gib"], 5.0)
+        self.assertEqual(payload["installed_gib"], 64.0)
+        self.assertEqual(payload["gpu_carveout_gib"], 32.0)
+        self.assertEqual(payload["floors"]["min_free_gib"], 4.0)
+        self.assertTrue(payload["suite"]["allowed"] is False)
+        self.assertIn("must stay free", " ".join(payload["suite"]["lines"]))
+
+    def test_start_shows_each_step_s_class_and_what_the_box_has_left(self) -> None:
         store = StateStore(self.state)
-        for job_id, agent in (("j-0001", "maker"), ("j-0002", "verifier")):
-            store.add_job(
-                Job(
-                    id=job_id,
-                    label=job_id,
-                    repo="myrepo",
-                    repo_path=str(repo),
-                    worktree=str(repo / ".worktrees" / agent),
-                    branch=f"task/{agent}",
-                    base="main",
-                    agent=agent,
-                )
-            )
         store.add(
             Task(
                 id="t-0001",
                 question="q",
-                brief="ship: one",
-                shape="ship",
+                brief="b",
+                shape="scout",
                 agent="maker",
                 repo="myrepo",
-                repo_path=str(repo),
-                job="j-0001",
-                worktree=str(repo / ".worktrees" / "maker"),
+                repo_path=str(self.repo_path),
+                cost="suite",
                 heavy=True,
             )
         )
         store.save()
-        self.seed_mux(
-            [
-                {"name": "maker", "cwd": str(repo / ".worktrees" / "maker")},
-                {"name": "verifier", "cwd": str(repo / ".worktrees" / "verifier")},
-            ]
-        )
-        code, _, err = self.cli(
-            "dispatch",
-            "verifier",
-            "myrepo",
-            "ship: two",
-            "--job",
-            "j-0002",
-            "--heavy",
-            env=self.state_env(),
-        )
-        self.assertEqual(code, 2)
-        self.assertIn("heavy step is already open", err)
-        self.assertIn("t-0001", err)
+        with mock.patch.object(box, "read", return_value=reading(available_gib=20.0)):
+            code, out, err = self.cli("start", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("- t-0001 maker [suite]: q", out)
+        self.assertIn("box: 20.0 GiB free", out)
+        self.assertIn("3.0 GiB held by 1 running step(s)", out)
 
     def test_a_no_job_send_to_an_agent_holding_open_work_is_refused(self) -> None:
         # A send lands in the pane and the newest message wins, so a second send
@@ -3893,19 +4030,22 @@ class CliTest(unittest.TestCase):
         code, _, err = self.queue_add("--agent", "maker", "--heavy")
         self.assertEqual(code, 0, err)
         item = json.loads(self.state.read_text(encoding="utf-8"))["queued"]["q-0001"]
+        self.assertEqual(item["cost"], "suite")
         self.assertTrue(item["heavy"])
 
     def test_a_heavy_queued_step_sends_heavy(self) -> None:
-        # The mark travels with the item, so the task it becomes is heavy too.
+        # The class travels with the item, so the task it becomes costs the same.
         self.queue_scout("--agent", "maker", "--heavy")
-        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        with mock.patch.object(box, "read", return_value=reading(available_gib=20.0)):
+            code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
         self.assertEqual(code, 0, err)
         task = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]["t-0001"]
+        self.assertEqual(task["cost"], "suite")
         self.assertTrue(task["heavy"])
 
-    def test_a_heavy_queued_send_is_gated_like_a_dispatch(self) -> None:
-        # The hole the gate exists to close: a heavy step sent through the queue
-        # must not overlap another heavy step.
+    def test_a_queued_send_is_gated_by_the_box_like_a_dispatch(self) -> None:
+        # The hole the gate exists to close: a step sent through the queue is measured
+        # the same way, so its class cannot slip past the box's headroom.
         self.seed_agents("myrepo-maker", "myrepo-verifier")
         code, _, err = self.cli(
             "dispatch",
@@ -3918,10 +4058,13 @@ class CliTest(unittest.TestCase):
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
-        self.queue_scout("--agent", "myrepo-verifier", "--heavy", env=self.state_env())
-        code, _, err = self.cli("queue", "send", "q-0001", env=self.state_env())
+        self.queue_scout(
+            "--agent", "myrepo-verifier", "--cost", "browser", env=self.state_env()
+        )
+        with mock.patch.object(box, "read", return_value=reading(available_gib=10.0)):
+            code, _, err = self.cli("queue", "send", "q-0001", env=self.state_env())
         self.assertEqual(code, 2)
-        self.assertIn("heavy step is already open", err)
+        self.assertIn("6.0 GiB this browser step needs", err)
         payload = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn("q-0001", payload["queued"], "a refused send stays queued")
 

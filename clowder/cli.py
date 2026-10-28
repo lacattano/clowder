@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from . import __version__, audit, gitcmd, load
+from . import __version__, audit, box, gitcmd, load
 from . import handover as handover_doc
 from . import owner as owner_mod
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write_board
@@ -142,9 +142,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--shape", choices=SHAPES, default="ship", help="default: ship")
     send.add_argument(
+        "--cost",
+        choices=box.COSTS,
+        metavar="CLASS",
+        help="what the step costs the box: "
+        + ", ".join(box.COSTS)
+        + " (default: none). The gate compares the class footprint with what the "
+        "box has free",
+    )
+    send.add_argument(
         "--heavy",
         action="store_true",
-        help="a step that installs, builds or runs a suite; only one runs at a time",
+        help="the old spelling of --cost suite: a step that installs, builds or runs a suite",
     )
     send.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, metavar="SECONDS")
     send.add_argument(
@@ -596,9 +605,17 @@ def build_parser() -> argparse.ArgumentParser:
     q_add.add_argument("--question", metavar="TEXT")
     q_add.add_argument("--shape", choices=SHAPES, default="ship")
     q_add.add_argument(
+        "--cost",
+        choices=box.COSTS,
+        metavar="CLASS",
+        help="what the step costs the box: "
+        + ", ".join(box.COSTS)
+        + " (default: none); travels with the item to the dispatch",
+    )
+    q_add.add_argument(
         "--heavy",
         action="store_true",
-        help="a step that installs, builds or runs a suite; only one runs at a time",
+        help="the old spelling of --cost suite: a step that installs, builds or runs a suite",
     )
     # `queue add` has no branch label, so both names work here; `--tag` matches
     # `job open`, where `--label` is already the branch name.
@@ -643,6 +660,21 @@ def build_parser() -> argparse.ArgumentParser:
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
     paths.set_defaults(handler=cmd_config)
+
+    box_cmd = sub.add_parser(
+        "box",
+        help="what this machine has, and what the steps in flight cost it",
+        parents=[common],
+        description=(
+            "The three pools in plain words: the RAM fitted and the GPU's share of it, "
+            "the GPU side, and the CPU side with the page file. Each line names the "
+            "metric it came from. It ends with what the cost gate would decide now. "
+            "`clowder capacity` would suggest a configured limit; this is a live "
+            "reading of the box the crew runs on."
+        ),
+    )
+    box_cmd.add_argument("--json", action="store_true")
+    box_cmd.set_defaults(handler=cmd_box)
 
     start = sub.add_parser(
         "start",
@@ -904,16 +936,27 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         bus_peers_argv=config.bus_peers_argv,
     )
 
+    cost = _cost_of_args(args)
     agent_info = None
     if not args.force and not args.dry_run:
         agent_info = _lookup_agent(mux, args.agent)
         _refuse_cross_repo(args, agent_info, repo_path)
         _refuse_open_work(args, agent_info, store, job)
-        if args.heavy:
-            _refuse_heavy_overlap(store)
+        if cost != box.COST_NONE:
             _refuse_high_load(config, args)
         if job is not None:
             _refuse_outside_job(args, agent_info, job, store)
+
+    # The cost gate is measured even under --force, so a forced send can say in the
+    # audit line what it overrode. A step with no stated cost is not measured at all:
+    # an unmarked step must never be blocked by a machine check.
+    overridden: str | None = None
+    if not args.dry_run and cost != box.COST_NONE:
+        refusal = _headroom_refusal(config, cost, store, args.agent)
+        if refusal is not None:
+            if not args.force:
+                raise DispatchError(refusal)
+            overridden = refusal
 
     # A fix step on a handed-over job must run on the branch, not the base the
     # writer's space was released to. This is a fix, not a guard, so --force does
@@ -932,7 +975,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         worktree=worktree,
         pane_id=agent_info.pane_id if agent_info else None,
         agent_session=agent_info.session_path if agent_info else None,
-        heavy=args.heavy,
+        cost=cost,
+        heavy=box.heavy_flag(cost),
     )
     if job is not None:
         task.job = job.id
@@ -994,6 +1038,29 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
 
     store.add(task)
     store.save()
+
+    if overridden is not None:
+        # A forced send is a person overruling a measurement, so the record says so.
+        # Without this line the state would show a step that the box refused to take,
+        # and no reason why it went anyway.
+        audit_file = audit.append_audit(
+            store.path,
+            {
+                "action": "dispatch-forced",
+                "at": task.dispatched_at,
+                "task": task.id,
+                "agent": task.agent,
+                "cost": cost,
+                "forced": True,
+                "refused": overridden,
+            },
+        )
+        print(
+            f"{PROGRAM}: warning: the box refused this step and --force sent it anyway "
+            f"({audit_file.name})",
+            file=sys.stderr,
+        )
+        print(overridden, file=sys.stderr)
 
     if args.json:
         _emit_json({"task": task.to_dict(), "ok": result.ok})
@@ -1158,7 +1225,7 @@ def _refuse_outside_job(args: argparse.Namespace, agent, job, store: StateStore)
         raise DispatchError(
             f"{job.id} already has an open step: {listed}. Wait for it to report "
             "before sending another; two steps at once in one checkout is how two "
-            "heavy runs start at once."
+            "costly runs start at once in one space."
         )
 
 
@@ -1189,56 +1256,104 @@ def _restore_writer_branch(job, agent, args: argparse.Namespace) -> None:
         ) from exc
 
 
-def _refuse_heavy_overlap(store: StateStore) -> None:
-    """Only one heavy step is open at a time, across the whole crew.
+def _cost_of_args(args: argparse.Namespace) -> str:
+    """The class this dispatch asks for, with `--heavy` read as `suite`.
 
-    The one-open-step guard is per job, so a heavy step on job X and one on job Y
-    could start together - the pattern that crashed the box on 2026-09-25. This
-    is pure state, so it clears itself when the other heavy step reports or is
-    abandoned.
+    `--heavy` is kept as the alias it always meant, so a brief or a script that
+    says `--heavy` costs exactly what a suite costs. Naming both is a mistake, not a
+    tie to break: `--heavy --cost browser` says two different things.
     """
-    others = [task for task in store.select(open_only=True) if task.heavy]
-    if not others:
-        return
-    listed = ", ".join(f"{task.id} ({task.agent}, {task.job or 'no job'})" for task in others)
-    raise DispatchError(
-        f"a heavy step is already open: {listed}. Only one heavy step runs at a time, "
-        "so two installs or suites cannot start together. Wait for it to report, or "
-        "pass --force."
+    stated = getattr(args, "cost", None)
+    heavy = bool(getattr(args, "heavy", False))
+    if stated and heavy and stated != box.COST_SUITE:
+        raise UsageError(
+            f"--heavy is the old name for --cost {box.COST_SUITE}, so it cannot also "
+            f"be --cost {stated}. Pass one: `--cost {stated}`."
+        )
+    if stated:
+        return str(stated)
+    return box.COST_SUITE if heavy else box.COST_NONE
+
+
+def _headroom_refusal(config: Config, cost: str, store: StateStore, agent: str) -> str | None:
+    """What the box has to say about this step: the measured refusal, or None.
+
+    Two checks, and both say the numbers they compared:
+
+    - the class footprint against the machine's headroom, minus the steps already
+      running. That is what lets two suites start together and stops a suite next to
+      a model leg: the same comparison, different footprints.
+    - the one class that takes the box alone. It is a state gate on purpose: the GPU
+      counter is too slow for a gate, so two model legs cannot be measured against
+      each other, and the record keeps one at a time.
+
+    A machine that cannot be read refuses nothing. A broken probe must never block
+    work, so the gate says it could not measure and lets the step go.
+    """
+    running = box.steps_in_flight(store.select(open_only=True))
+    reading = box.read()
+    decision = box.decide(cost, running, reading, config.floors)
+    if decision.unmeasured:
+        print(
+            f"{PROGRAM}: warning: {decision.reason}; the {cost} step was not measured",
+            file=sys.stderr,
+        )
+        return None
+
+    klass = box.COST_CLASSES[cost]
+    if klass.alone:
+        others = [step for step in running if step.cost != box.COST_NONE]
+        if others:
+            listed = ", ".join(f"{step.id} ({step.cost})" for step in others)
+            return (
+                f"a {cost} step takes the box alone, and {listed} is running. The GPU "
+                "counter is too slow to put in a gate, so the crew keeps one model leg "
+                "at a time by the record. Wait for it to report, or pass --force.\n"
+                f"  {box.summary(reading, running, config.floors)}"
+            )
+    elif any(box.COST_CLASSES[step.cost].alone for step in running):
+        holder = next(step for step in running if box.COST_CLASSES[step.cost].alone)
+        return (
+            f"a {cost} step cannot start while {holder.id} ({holder.cost}) runs: that "
+            "class takes the box alone. Wait for it to report, or pass --force.\n"
+            f"  {box.summary(reading, running, config.floors)}"
+        )
+
+    if decision.allowed:
+        return None
+    lines = "\n".join(f"  {line}" for line in decision.lines)
+    return (
+        f"{agent}'s {cost} step did not send: {decision.reason}.\n"
+        f"{lines}\n"
+        f"  Let it finish, send it as a cheaper class, or pass --force to send it "
+        f"anyway. `{PROGRAM} box` prints the whole readout."
     )
 
 
 def _refuse_high_load(config: Config, args: argparse.Namespace) -> None:
-    """Refuse a heavy step when the machine is already loaded.
+    """Unix only: refuse when the 1-minute load per CPU is at or above the limit.
 
-    The metric is opt-in through [gates]: no threshold for this platform's metric
-    means no check. A metric that cannot be read fails open with a warning, so a
-    broken probe never blocks work.
+    Windows has no load average, and its memory is the GiB floors the class gate
+    compares. This is kept for the other platform: the config key is still the way a
+    Linux box says "not while it is this busy".
     """
-    if config.heavy_max_memory is None and config.heavy_max_load is None:
+    if config.heavy_max_load is None or load.metric_name() != load.METRIC_LOAD:
         return
     reading = load.current()
     if reading is None:
         print(
-            f"{PROGRAM}: warning: cannot read the machine's load, so the heavy gate "
+            f"{PROGRAM}: warning: cannot read the machine's load, so the load gate "
             "did not check it",
             file=sys.stderr,
         )
         return
-    name, value = reading
-    limit = config.heavy_max_memory if name == load.METRIC_MEMORY else config.heavy_max_load
-    if limit is None:
+    _, value = reading
+    if value < config.heavy_max_load:
         return
-    if value < limit:
-        return
-    shown = (
-        f"{value:.0f}% of memory in use"
-        if name == load.METRIC_MEMORY
-        else f"load {value:.2f} per CPU"
-    )
     raise DispatchError(
-        f"{args.agent}'s step is heavy and the machine is at {shown}, at or above the "
-        f"{limit:g} limit. Let it settle, or pass --force."
+        f"{args.agent}'s step costs the box and the machine is at load {value:.2f} "
+        f"per CPU, at or above the {config.heavy_max_load:g} limit. Let it settle, or "
+        "pass --force."
     )
 
 
@@ -3027,6 +3142,7 @@ def cmd_queue_add(args: argparse.Namespace) -> int:
     if not why:
         raise UsageError("--why must say why the item is not sent yet")
     config.resolve_repo(args.repo)  # refuse a bad repo now, not at send time
+    cost = _cost_of_args(args)
 
     item = Queued(
         id=store.next_queue_id(),
@@ -3038,7 +3154,8 @@ def cmd_queue_add(args: argparse.Namespace) -> int:
         why=why,
         shape=args.shape,
         job=args.job,
-        heavy=args.heavy,
+        cost=cost,
+        heavy=box.heavy_flag(cost),
         labels=list(args.labels),
     )
     store.add_queued(item)
@@ -3231,7 +3348,8 @@ def _queued_dispatch_args(
         force=force,
         dry_run=dry_run,
         json=json,
-        heavy=item.heavy,
+        cost=box.cost_of(item),
+        heavy=box.heavy_flag(box.cost_of(item)),
     )
 
 
@@ -4122,6 +4240,7 @@ def _board_data(
 
     activity = handover_doc.last_activity(store)
     return BoardData(
+        capacity=box.summary(box.read(), box.steps_in_flight(open_tasks(tasks)), config.floors),
         tasks=tasks,
         jobs=jobs,
         queued=store.all_queued(),
@@ -4569,6 +4688,67 @@ def cmd_handover_write(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_box(args: argparse.Namespace) -> int:
+    """Print the machine's three pools, and what the gate would decide right now.
+
+    The reading is taken once, so every figure on the page is from the same moment,
+    and the slow counters (GPU use, page file use) are read here and nowhere else:
+    `clowder box` may take a few seconds, a gate may not.
+    """
+    config, store = _context(args)
+    running = box.steps_in_flight(store.select(open_only=True))
+    reading = box.read(with_gpu=True)
+    decision_suite = box.decide(box.COST_SUITE, running, reading, config.floors)
+    decision_model = box.decide(box.COST_MODEL, running, reading, config.floors)
+
+    if args.json:
+        _emit_json(
+            {
+                "read_at": reading.read_at,
+                "installed_gib": _gib_value(reading.installed_bytes),
+                "visible_gib": _gib_value(reading.total_bytes),
+                "available_gib": _gib_value(reading.available_bytes),
+                "commit_limit_gib": _gib_value(reading.commit_limit_bytes),
+                "commit_headroom_gib": _gib_value(reading.commit_headroom_bytes),
+                "pagefile_gib": _gib_value(reading.pagefile_bytes),
+                "pagefile_percent": reading.pagefile_percent,
+                "gpu_carveout_gib": _gib_value(reading.carveout_bytes),
+                "gpu_used_gib": _gib_value(reading.gpu_used_bytes),
+                "gpu_free_gib": _gib_value(reading.gpu_free_bytes),
+                "gpu_adapter": reading.gpu_adapter,
+                "gpu_holder": reading.gpu_holder,
+                "unread": list(reading.unread),
+                "running": [{"id": step.id, "cost": step.cost} for step in running],
+                "floors": {
+                    "min_free_gib": config.floors.min_free_gib,
+                    "min_commit_gib": config.floors.min_commit_gib,
+                    "min_gpu_gib": config.floors.min_gpu_gib,
+                },
+                "suite": {
+                    "allowed": decision_suite.allowed,
+                    "reason": decision_suite.reason,
+                    "lines": decision_suite.lines,
+                },
+                "model": {
+                    "allowed": decision_model.allowed,
+                    "reason": decision_model.reason,
+                    "lines": decision_model.lines,
+                },
+            }
+        )
+        return 0
+
+    print(f"{PROGRAM} box")
+    for line in box.readout(reading, running, config.floors):
+        print(f"{INDENT}{line}")
+    return 0
+
+
+def _gib_value(value: int | None) -> float | None:
+    """Bytes as GiB, one decimal, or None. The one conversion a reader can check."""
+    return None if value is None else round(value / box.GIB, 1)
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """What a fresh front door reads first, in one command.
 
@@ -4617,6 +4797,10 @@ def cmd_start(args: argparse.Namespace) -> int:
                     for item in not_his
                 ],
                 "in_flight": [task.id for task in in_flight],
+                "in_flight_cost": [
+                    {"id": task.id, "cost": box.cost_of(task)} for task in in_flight
+                ],
+                "box": box.summary(box.read(), box.steps_in_flight(in_flight), config.floors),
                 "queue": queued,
                 "repeated_defects": [defect.id for defect in repeated],
                 "recent_defects": [defect.id for defect in recent],
@@ -4649,10 +4833,16 @@ def cmd_start(args: argparse.Namespace) -> int:
             print(f"{INDENT}- {_clip(other.heading, 80)} - {other.note}; waited {other.waited}")
 
     print(f"\nsteps in flight: {len(in_flight)}")
+    steps = box.steps_in_flight(in_flight)
     for task in in_flight:
-        print(f"{INDENT}- {task.id} {task.agent}: {_clip(task.question, 70)}")
+        cost = box.cost_of(task)
+        klass = "" if cost == box.COST_NONE else f" [{cost}]"
+        print(f"{INDENT}- {task.id} {task.agent}{klass}: {_clip(task.question, 70)}")
     if not in_flight:
         print(f"{INDENT}(none)")
+    # What the box has left, so a step that waits says why. This is the same line the
+    # board carries; `clowder box` prints the numbers behind it.
+    print(f"{INDENT}{box.summary(box.read(), steps, config.floors)}")
 
     print(f"\nqueue: {queued} item(s) waiting to be sent")
 

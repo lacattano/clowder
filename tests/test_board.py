@@ -806,6 +806,31 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("not checked live", worker)
         self.assertIn("shipped nothing to the record for 1h", worker)
 
+    def test_a_running_step_shows_its_cost_class(self) -> None:
+        # The class is what the gate compares, so the page that says why a step waits
+        # must show it instead of the old one-word "heavy".
+        page = data(
+            tasks=[
+                task("t-0001", cost="suite", heavy=True),
+                task("t-0002", cost="model"),
+                task("t-0003"),
+            ]
+        )
+        running = " ".join(running_now(page))
+        self.assertIn("<span class='pill'>suite</span>", running)
+        self.assertIn("<span class='pill'>model</span>", running)
+        self.assertEqual(running.count("class='pill'"), 2, "an unmarked step has no pill")
+        self.assertNotIn(">heavy<", running)
+
+    def test_the_page_carries_what_the_box_has_left(self) -> None:
+        page = data(
+            tasks=[task(job=None, cost="suite", heavy=True)],
+            capacity="box: 20.0 GiB free; a suite step would send right now.",
+        )
+        html = render_board(page)
+        self.assertIn("box: 20.0 GiB free", html)
+        self.assertIn("the pill is what the step costs the box", html.lower())
+
     def test_a_live_read_marks_nothing_on_age_alone(self) -> None:
         # With the roster read live, the page knows the status and must not call an
         # ordinary long step quiet: a 70-minute step with a working agent is not news.

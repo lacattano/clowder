@@ -18,6 +18,7 @@ from html import escape
 from pathlib import Path
 
 from . import owner as owner_mod
+from .box import COST_NONE, cost_of
 from .defects import Defect, short_date
 from .report import format_cost, format_tokens
 from .state import (
@@ -454,6 +455,10 @@ class BoardData:
     # draws: one malformed file must not take away what tells the owner what is
     # happening. The line in the worker section names the file and the fault.
     defects_note: str | None = None
+    # What the box has left, in one line, with what a suite and a model step would do
+    # right now. Filled by whoever builds this data; an empty page draws without it
+    # rather than reading a machine from inside a render.
+    capacity: str | None = None
 
 
 def _e(value: object) -> str:
@@ -716,18 +721,22 @@ def waiting_for_worker(data: BoardData) -> list[str]:
 
 
 def running_now(data: BoardData) -> list[str]:
-    """What each worker is on, how long, and whether the step is heavy.
+    """What each worker is on, how long, and what the step costs the box.
 
     Without a live read this is "open steps", not "busy workers": the record cannot say
     whether the pane is working, so a step that has recorded nothing for a while is
     marked. The owner must be able to tell a running step from one that was dispatched
     hours ago, and this page must not call the second one running in silence.
+
+    The class is shown rather than "heavy" because it is the thing the gate compares:
+    `read` says why nothing was refused, and `model` says why a second step waits.
     """
     lines: list[str] = []
     for task in sorted(
         open_tasks(data.tasks), key=lambda task: task.dispatched_at or task.created_at
     ):
-        heavy = " <span class='pill'>heavy</span>" if task.heavy else ""
+        cost = cost_of(task)
+        klass = "" if cost == COST_NONE else f" <span class='pill'>{_e(cost)}</span>"
         quiet = ""
         if not data.live_ok and task.age_seconds >= QUIET_AFTER_SECONDS:
             quiet = (
@@ -735,7 +744,7 @@ def running_now(data: BoardData) -> list[str]:
                 f"{_e(human_age(task.age_seconds))}</span>"
             )
         lines.append(
-            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{heavy}{quiet} "
+            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{klass}{quiet} "
             f"<span class='age'>{_e(human_age(task.age_seconds))}</span>"
         )
     return lines
@@ -1239,8 +1248,9 @@ def render_board(data: BoardData) -> str:
     )
     if data.live_ok:
         running_note = (
-            "A step is one worker's turn. Heavy means it may install or run a suite, and "
-            "only one heavy step runs at a time."
+            "A step is one worker's turn. The pill is what the step costs the box - "
+            "none, read, suite, install, browser or model - and a step starts only when "
+            "the box has that much free after the steps already running."
         )
     else:
         running_note = (
@@ -1249,6 +1259,8 @@ def render_board(data: BoardData) -> str:
             "it may be working, or it may have stopped."
         )
     running_html += f"<p class='why'>{running_note}</p>"
+    if data.capacity:
+        running_html += f"<p class='why'>{_e(data.capacity)}</p>"
 
     # One record, one list, one count. The queue here is the same list the To Do column
     # draws from the record, so both say the same number. Warnings are not queued items:

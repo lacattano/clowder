@@ -61,7 +61,7 @@ must never share a checkout - a second change to one repo uses its own space.
 2. **The job** - the exact command, the working directory, and the test that says it passed.
 3. **Who receives the answer** - the dispatcher by default; say so when the user is the reader.
 4. **What to report** - and what to ignore.
-5. **What not to do** - in particular, do not start a heavy run.
+5. **What not to do** - in particular, do not start a costly run.
 
 A vague ask wastes the peer's turn.
 
@@ -199,8 +199,10 @@ assume it, and do not change a pane's model mid-task.
 
 ## Hard safety rules
 
-- **Never overlap heavy runs.** No test suite, eval or pipeline run while another agent runs one.
-- A verifier must not start a heavy run without an explicit go-ahead.
+- **Declare what a run costs, and let the box answer.** A test suite, an install, a browser leg
+  and a model leg each have a footprint. Two of the same cheap class may run together when the
+  box has the room; a model leg takes the box alone. `clowder box` prints what is free.
+- A verifier must not start a costly run without an explicit go-ahead.
 - You cannot spawn agents. Only talk to ones the user started.
 - Do not close panes, tabs or workspaces you did not create, and leave the ones you did create
   in place too: a worker that has reported can still answer a follow-up. Never kill the

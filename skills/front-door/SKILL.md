@@ -107,7 +107,7 @@ clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
 clowder job park <job-id> [--by NAME]
 clowder job close <job-id> [--delete-branch]
-clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--heavy] [--from NAME]
+clowder dispatch <agent> <repo> <brief...> [--job ID] [--shape ship|scout] [--worktree PATH] [--cost CLASS] [--heavy] [--from NAME]
 clowder tasks [--open] [--agent A] [--repo R]
 clowder inbox [--json]
 clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
@@ -118,6 +118,7 @@ clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id> [--job ID]
 clowder start [--json]
+clowder box [--json]
 clowder defects add --line TEXT [--job ID] [--status open|has-job|fixed|accepted-workaround] [--reason TEXT]
 clowder defects list [--repeated] [--like WORDS]
 clowder defects show <id>
@@ -328,18 +329,34 @@ The worked pair, for the same question:
   folders, no content read, and a cap
 
 The second brief asks a smaller question and answers the same one. If the answer needs contents,
-say so in the brief, with the directory and the cap, and let it be a heavy step.
+say so in the brief, with the directory and the cap, and state its cost.
 
-A heavy step is declared, not left to the worker to notice:
+A step states what it costs the box, with `--cost`:
+
+| class | what it is | this box |
+|---|---|---|
+| `none` | an answer, an edit, a report (the default) | nothing |
+| `read` | reads a large repository or its history | about 1 GiB |
+| `suite` | runs a test suite | 3 GiB, 7 minutes |
+| `install` | installs or builds | 2 GiB, minutes, disk |
+| `browser` | drives a browser | 6 GiB, about an hour |
+| `model` | runs the 27B model | 26 GiB of the GPU's 32 GiB |
 
 ```
-clowder dispatch <agent> <repo> "<the brief>" --job <job-id> --heavy
+clowder dispatch <agent> <repo> "<the brief>" --job <job-id> --cost suite
 ```
 
-`--heavy` says the step installs, builds or runs a suite. Only one heavy step is open at a time
-across the whole crew, so a second one is refused and names the step that holds it. The optional
-`[gates] heavy_max_memory` and `heavy_max_load` thresholds add a check of the machine's own load
-before a heavy step starts, and a load that cannot be read fails open with a warning.
+`--heavy` still works and means `--cost suite`, so an older brief costs the same as it always did.
+The gate compares the class with what the box has free at that moment, minus what the steps
+already running hold: two suites may start together when the headroom covers both, and a suite
+next to a model leg is refused with the numbers. A refusal names the free memory, the held
+figure and the floor it compared, and `clowder box` prints the whole readout. `model` is the one
+class that takes the box alone. A step with no stated cost is never refused; `--force` sends
+anything and records that it did.
+
+`clowder box` is the one readout: the RAM fitted and the GPU's share of it, the GPU side, and the
+CPU side with the page file, each line labelled with the metric it came from, then what the gate
+would decide right now. Run it when the owner asks why something is waiting.
 
 The tool adds a marker line to every brief, so the worker can tell a peer job from the user
 typing:

@@ -82,17 +82,20 @@ email = "94532220+lacattano@users.noreply.github.com"
 # It complements the identity above; it does not replace it.
 
 [gates]
-# Optional checks before a heavy step starts. A heavy step is dispatched with
-# `--heavy` (an install, a build, a suite). Only one heavy step is open at a time
-# across the whole crew, always; the thresholds here add a check of the machine's
-# own load. With no [gates] table the load check is off, and a load that cannot
-# be read fails open with a warning.
+# What must still be free after a step of a stated cost starts, in GiB. A step
+# states its cost with `--cost` (none, read, suite, install, browser or model;
+# `--heavy` means suite), and the gate subtracts the steps already running before
+# it compares. These are the defaults, so leaving the table out is the same as
+# writing them; set a floor to `0` to switch that one check off, or drop the key
+# to take the default.
 #
-# Windows reads the percent of physical memory in use; Unix reads the 1-minute
-# load average divided by the CPU count. Set the threshold for the metric this
-# machine reports.
-# heavy_max_memory = 80    # Windows: percent of physical memory in use
-# heavy_max_load = 1.0     # Unix: 1-minute load average per CPU
+# Why not a percent: the old `heavy_max_memory` was a percentage of a total that
+# leaves out the memory the GPU reserves, so a resident 25 GiB model moved it not
+# at all. That key is retired and refused with this message, not ignored.
+# heavy_min_free_gib = 4     # free memory a step must leave behind
+# heavy_min_commit_gib = 6   # commit headroom it must leave behind
+# heavy_min_gpu_gib = 2      # of the memory the GPU reserves, for browser/model
+# heavy_max_load = 1.0       # Unix only: 1-minute load average per CPU
 
 [repos]
 my-app = 'D:\work\my-app'

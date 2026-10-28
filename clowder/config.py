@@ -13,6 +13,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import box
 from .errors import ConfigError
 
 DEFAULT_MUX_BIN = "herdr"
@@ -76,11 +77,29 @@ class Config:
     delivery_mode: str = "local-only"
     git_name: str = DEFAULT_GIT_NAME
     git_email: str = DEFAULT_GIT_EMAIL
-    # The optional [gates] load thresholds. None means the metric is off. The
-    # heavy-step state gate (one at a time) is always on; these only add a check
-    # of the machine's own load before a heavy step starts.
-    heavy_max_memory: float | None = None
+    # The [gates] floors the class gate compares against, in GiB: what must still be
+    # free after a step of a stated cost starts. None switches that floor off. They
+    # replace the retired `heavy_max_memory`, a percent of a total that left out the
+    # memory the GPU reserves - so a resident 25 GiB model moved it not at all.
+    heavy_min_free_gib: float | None = 4.0
+    heavy_min_commit_gib: float | None = 6.0
+    heavy_min_gpu_gib: float | None = 2.0
+    # Unix only: the 1-minute load average per CPU. Windows has no such metric, and
+    # its memory is already covered by the GiB floors above.
     heavy_max_load: float | None = None
+
+    @property
+    def floors(self) -> box.Floors:
+        """The gate floors, as the box module compares them.
+
+        The config holds the three numbers; `box` owns what they mean, so a test or a
+        second command cannot compare them a different way.
+        """
+        return box.Floors(
+            min_free_gib=self.heavy_min_free_gib,
+            min_commit_gib=self.heavy_min_commit_gib,
+            min_gpu_gib=self.heavy_min_gpu_gib,
+        )
 
     @property
     def defects_path(self) -> Path:
@@ -137,7 +156,9 @@ class Config:
             "delivery_mode": self.delivery_mode,
             "git_name": self.git_name,
             "git_email": self.git_email,
-            "heavy_max_memory": self.heavy_max_memory,
+            "heavy_min_free_gib": self.heavy_min_free_gib,
+            "heavy_min_commit_gib": self.heavy_min_commit_gib,
+            "heavy_min_gpu_gib": self.heavy_min_gpu_gib,
             "heavy_max_load": self.heavy_max_load,
         }
 
@@ -284,11 +305,31 @@ def load_config(explicit: str | Path | None = None) -> Config:
         os.environ.get("CLOWDER_GIT_EMAIL") or git.get("email") or DEFAULT_GIT_EMAIL
     )
 
-    unknown_gates = set(gates) - {"heavy_max_memory", "heavy_max_load"}
+    if "heavy_max_memory" in gates:
+        raise ConfigError(
+            f"{source}: gates.heavy_max_memory is retired. It was a percent of a total "
+            "that left out the memory the GPU reserves, so a resident model moved it "
+            "not at all. Use gates.heavy_min_free_gib (default 4) and "
+            "gates.heavy_min_commit_gib (default 6): the GiB that must still be free "
+            "after a step of a stated cost starts."
+        )
+    known_gates = {
+        "heavy_min_free_gib",
+        "heavy_min_commit_gib",
+        "heavy_min_gpu_gib",
+        "heavy_max_load",
+    }
+    unknown_gates = set(gates) - known_gates
     if unknown_gates:
         raise ConfigError(f"{source}: unknown gates keys: {sorted(unknown_gates)}")
-    heavy_max_memory = _opt_number(
-        gates.get("heavy_max_memory"), "gates.heavy_max_memory", source
+    heavy_min_free_gib = _opt_number(
+        gates.get("heavy_min_free_gib", 4.0), "gates.heavy_min_free_gib", source
+    )
+    heavy_min_commit_gib = _opt_number(
+        gates.get("heavy_min_commit_gib", 6.0), "gates.heavy_min_commit_gib", source
+    )
+    heavy_min_gpu_gib = _opt_number(
+        gates.get("heavy_min_gpu_gib", 2.0), "gates.heavy_min_gpu_gib", source
     )
     heavy_max_load = _opt_number(gates.get("heavy_max_load"), "gates.heavy_max_load", source)
 
@@ -313,7 +354,9 @@ def load_config(explicit: str | Path | None = None) -> Config:
         delivery_mode=delivery,
         git_name=git_name,
         git_email=git_email,
-        heavy_max_memory=heavy_max_memory,
+        heavy_min_free_gib=heavy_min_free_gib,
+        heavy_min_commit_gib=heavy_min_commit_gib,
+        heavy_min_gpu_gib=heavy_min_gpu_gib,
         heavy_max_load=heavy_max_load,
     )
 

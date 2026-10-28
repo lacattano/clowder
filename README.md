@@ -44,7 +44,10 @@ A job is one branch, so a dependency install is paid once per agent instead of o
 
 The tool refuses a job on a dirty space, refuses to switch branches in the main checkout, and
 keeps the branch when a job closes. One job is a whole chain - research, spec, change, tests,
-eval, docs - with one step open at a time, so two heavy runs cannot start together.
+eval, docs - with one step open at a time. A step states what it costs the box (`--cost none`,
+`read`, `suite`, `install`, `browser`, `model`), and a step starts only when the machine has
+that much free after the steps already running, so two cheap runs may overlap and a model leg
+never does. `clowder box` prints what the machine has and what the gate would decide now.
 
 Every agent gets a space of its own that keeps its install, so it is reused instead of rebuilt.
 `clowder agents` shows what each space holds, so you can tell them apart. When a writer has
@@ -86,7 +89,7 @@ changed since a given time. It needs no server.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 817
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 858
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
