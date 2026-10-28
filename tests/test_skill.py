@@ -655,15 +655,21 @@ class MessageDisciplineTest(unittest.TestCase):
         # fails here.
         area = self.area()
         text = self.flat(area)
-        self.assertIn("Not the chat, not the board", text)
+        self.assertIn("The record is not the chat and not the board.", text)
         self.assertIn("`state.json` under `.clowder/` is cumulative", text)
-        self.assertIn("rewritten on every change, never appended", text)
         self.assertIn("every task, job and queued item", text)
+        self.assertIn("rewritten on every change, never appended", text)
+        # The j-0223 blocker: audit.py's own rule is that a record edited with no trace is
+        # not a record, and the state repair, abandon and report rules all lean on the audit
+        # file. A record list that leaves it out reads as a record with no trace.
+        self.assertIn("with `state.json.audit` beside it", text)
         self.assertIn(
             "`HANDOVER-<date>.md` is composed from it by `clowder handover write`", text
         )
         self.assertIn("no second copy", text)
-        self.assertIn("`handover-notes.md` is hand-written, capped at ten lines", text)
+        self.assertIn(
+            "`handover-notes.md` is the only hand-written part, capped at ten lines", text
+        )
         # The fourth file: one home for what cost time, and the command that writes it.
         self.assertIn(
             "`defects.json` holds what cost time, written by `clowder defects add`", text
@@ -672,10 +678,11 @@ class MessageDisciplineTest(unittest.TestCase):
         self.assertNotIn("one state file per day", text.lower())
 
     def test_the_section_did_not_turn_the_skill_into_an_essay(self) -> None:
-        # 561 lines before this section, 586 with it: about 25 lines, which is the whole
-        # point. The number is a cap, not a target; a later section that earns a line moves
-        # this number in the same commit.
-        self.assertLessEqual(len(read_skill().splitlines()), 586)
+        # 561 lines before this section, 587 with it. The budget moved by one when the audit
+        # clause came back from the j-0223 review: a fact was restored, not padding added.
+        # The number is a cap, not a target; a later section that earns a line moves this
+        # number in the same commit.
+        self.assertLessEqual(len(read_skill().splitlines()), 587)
 
 
 class AsciiTest(unittest.TestCase):

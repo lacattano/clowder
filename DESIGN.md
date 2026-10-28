@@ -293,7 +293,7 @@ cumulative one, rewritten on every change and never appended, with the audit lin
 `HANDOVER-<date>.md` is composed from it by `clowder handover write`, so it holds no second copy
 of a fact; `handover-notes.md` is the only hand-written part, capped at ten lines. The chat and
 the board are not the record. `tests/test_skill.py` holds the shape, his words, the three files
-and a 586-line cap on the whole skill - not on the section alone - so the discipline cannot
+and a 587-line cap on the whole skill - not on the section alone - so the discipline cannot
 become an essay. The first wording of this rule named a per-day state file that no command wrote
 (defect d-0040); the test now refuses that claim by name.
 
