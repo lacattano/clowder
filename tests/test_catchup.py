@@ -86,6 +86,69 @@ class ItemTest(unittest.TestCase):
         self.assertIn("not sent yet: the space is busy", queued[0].text)
 
 
+class FirstReadTest(unittest.TestCase):
+    def items(self) -> list[catchup.Item]:
+        return [
+            catchup.Item("landed:old", catchup.LANDED, "2026-10-01T09:00:00Z", "old landing"),
+            catchup.Item("landed:new", catchup.LANDED, "2026-10-29T09:00:00Z", "new landing"),
+            catchup.Item("risk:old", catchup.RISK, "2026-09-01T09:00:00Z", "old risk"),
+            catchup.Item(
+                "waiting:merge:j-1", catchup.WAITING, "2026-01-01T09:00:00Z", "old wait"
+            ),
+        ]
+
+    def test_a_first_read_is_bounded_to_the_window(self) -> None:
+        from datetime import UTC, datetime
+
+        kept, hidden = catchup.bounded_first_read(
+            self.items(), at=datetime(2026, 10, 30, tzinfo=UTC)
+        )
+        self.assertEqual([item.key for item in kept], ["landed:new", "waiting:merge:j-1"])
+        self.assertEqual(hidden, 2, "the old landing and the old risk are counted")
+
+    def test_an_old_thing_he_must_act_on_is_never_aged_out(self) -> None:
+        from datetime import UTC, datetime
+
+        kept, _ = catchup.bounded_first_read(
+            self.items(), at=datetime(2026, 10, 30, tzinfo=UTC)
+        )
+        self.assertIn("waiting:merge:j-1", [item.key for item in kept])
+
+    def test_the_note_says_it_is_a_first_read_and_names_the_window(self) -> None:
+        note = catchup.first_read_note(2, 5)
+        self.assertIn("First read", note)
+        self.assertIn("last 7 days", note)
+        self.assertIn("5 older thing(s) are not shown", note)
+        self.assertIn("--all", note)
+        self.assertNotIn("older", catchup.first_read_note(3, 0))
+
+
+class LandedNameTest(unittest.TestCase):
+    def test_a_title_shows_instead_of_a_label(self) -> None:
+        titled = job(
+            label="arrival-keys", title="the arrival keys are checked first", effect=""
+        )
+        self.assertEqual(len(catchup.landed([titled])), 1)
+        self.assertIn(
+            "Now live: the arrival keys are checked first", catchup.landed([titled])[0].text
+        )
+
+    def test_a_job_with_no_title_lands_with_its_label(self) -> None:
+        plain = job(label="arrival-keys", title="", effect="")
+        self.assertEqual(catchup.landed([plain])[0].text, "Now live: arrival-keys")
+
+    def test_an_effect_line_is_the_fullest_sentence(self) -> None:
+        both = job(
+            label="arrival-keys",
+            title="the arrival keys are checked first",
+            effect="a customer sees where the keys go before paying",
+        )
+        self.assertEqual(
+            catchup.landed([both])[0].text,
+            "Now live: a customer sees where the keys go before paying",
+        )
+
+
 class PlainQuestionTest(unittest.TestCase):
     def test_a_handle_and_a_shape_word_are_not_his_nouns(self) -> None:
         self.assertEqual(

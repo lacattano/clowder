@@ -964,6 +964,14 @@ shows it first and marks a report without it incomplete. Those stayed.
   usable `For the owner:` line, with `--force` to close anyway and the report then reading
   incomplete. That is the step where the meaning used to leak: the worker wrote it, the front door
   paraphrased it. The front door now relays it verbatim (section 20).
+- **A first read is bounded, and says so.** With no mark to read from, every past landing
+  counts as new: the owner's own state listed 244 lines on 2026-10-29. A first read shows the
+  last seven days of what landed and what is at risk, says it is a first read and names the
+  window, and marks the whole picture read so the old history cannot flood the next read. Waiting,
+  running and queued are never aged out: an old thing he must act on is still his.
+- **A landed line uses the title he would recognise.** `job open --title` already recorded one;
+  `catchup` now prefers the effect line, then the title, and falls back to the label only when
+  neither was recorded - the old behaviour, not a new guess.
 - **A save carries what it does not know.** The read marks live in the state file, so a copy that
   rebuilt the payload from the keys it knew would delete them. Unknown top-level keys are kept and
   written back, exactly as an unknown field on a task is.

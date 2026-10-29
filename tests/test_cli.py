@@ -5453,7 +5453,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Queued next:", out)
         self.assertIn("not sent yet: the space holds an open job", out)
-        self.assertIn("1 new since you last looked", out)
+        self.assertIn("First read", out, "the first read says what it is")
+        self.assertIn("last 7 days", out)
         # Read once: the next run has nothing new.
         code, out, err = self.cli("catchup", env=self.fake_env())
         self.assertEqual(code, 0, err)
@@ -5519,7 +5520,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(json.loads(out)["new"], 1, "still unread after a machine read")
         # The human run marks it read, and then the machine read agrees.
         code, out, err = self.cli("catchup", env=self.fake_env())
-        self.assertIn("1 new since you last looked", out)
+        self.assertIn("First read", out)
+        self.assertIn("1 thing(s)", out)
         code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
         payload = json.loads(out)
         self.assertEqual(payload["new"], 0)
@@ -5566,6 +5568,99 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("t-1016", out, "no handle in a line he reads")
         self.assertNotIn("ship (", out)
 
+    def test_a_first_read_is_bounded_and_says_so(self) -> None:
+        # The owner's own state listed 244 past landings on the first read. A first
+        # read is the last seven days, and it says that.
+        store = StateStore(self.state)
+        recent = Job(
+            id="j-0001",
+            label="recent",
+            repo="myrepo",
+            repo_path=str(self.repo_path),
+            worktree=str(self.repo_path),
+            branch="task/recent",
+            base="main",
+            agent="maker",
+            title="the refund page",
+            effect="a customer can read the policy before paying",
+            merged_at=now_iso(),
+            status=CLOSED,
+        )
+        store.add_job(recent)
+        store.add_job(
+            Job(
+                id="j-0002",
+                label="ancient",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                worktree=str(self.repo_path),
+                branch="task/ancient",
+                base="main",
+                agent="maker",
+                title="the old page",
+                merged_at="2026-01-01T09:00:00Z",
+                status=CLOSED,
+            )
+        )
+        store.save()
+
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("First read", out)
+        self.assertIn("last 7 days", out)
+        self.assertIn("Now live: a customer can read the policy before paying", out)
+        self.assertNotIn(
+            "Now live: the old page", out, "history older than a week is not listed"
+        )
+        self.assertIn("1 older thing(s) are not shown", out)
+        # The history it did not list is marked read, so it cannot flood the next read.
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing new", out)
+        self.assertNotIn("Now live: the old page", out)
+        # --all still shows the whole standing picture.
+        code, out, err = self.cli("catchup", "--all", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Now live: the old page", out)
+
+    def test_a_landed_line_uses_the_title_not_the_label(self) -> None:
+        job_id, _ = self.open_a_job(
+            "arrival-keys", extra=("--title", "the arrival keys are checked first")
+        )
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Now live: the arrival keys are checked first", out)
+        self.assertNotIn("Now live: arrival-keys", out)
+
+    def test_a_job_with_no_title_lands_with_its_label(self) -> None:
+        job_id, _ = self.open_a_job("arrival-keys")
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Now live: arrival-keys", out)
+
+    def test_a_later_read_is_unchanged_by_the_first_read_bound(self) -> None:
+        code, _, err = self.cli("catchup", env=self.fake_env())  # the first read
+        self.assertEqual(code, 0, err)
+        job_id, _ = self.open_a_job(
+            "arrival-keys", extra=("--title", "the arrival keys are checked first")
+        )
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("First read", out, "a later read is a normal read")
+        self.assertIn("Now live: the arrival keys are checked first", out)
+
     def test_the_board_opens_with_the_catch_up_text(self) -> None:
         self.cli(
             "queue",
@@ -5585,7 +5680,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("not sent yet: busy", html)
         # Drawing the page does not mark his read: only catchup does.
         code, out, _ = self.cli("catchup", env=self.fake_env())
-        self.assertIn("1 new since you last looked", out)
+        self.assertIn("First read", out)
+        self.assertIn("not sent yet: busy", out)
 
     def test_a_step_report_without_the_owner_line_is_refused(self) -> None:
         job_id, _ = self.open_a_job()

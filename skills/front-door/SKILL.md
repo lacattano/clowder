@@ -101,7 +101,7 @@ Two more mechanisms, so one fact lives in one place:
 
 ```
 clowder ensure <repo> [--role maker|verifier|teacher|researcher] [--name AGENT] [--no-create]
-clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT] [--defect ID]
+clowder job open <repo> --label <what the work is> [--title TEXT] [--role maker] [--name AGENT] [--defect ID]
 clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
