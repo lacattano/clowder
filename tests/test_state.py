@@ -197,6 +197,34 @@ class StateStoreTest(unittest.TestCase):
         saved = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(saved["tasks"]["t-0001"]["surprise"], 7)
 
+    def test_an_unknown_top_level_key_survives_a_save(self) -> None:
+        # Blocker from the j-0231 review: a save rebuilt the payload without top-level
+        # keys it did not know, so an older copy dropped `seen` and `catchup_at`. A key
+        # this copy does not know is carried through like a field on a record.
+        store = StateStore(self.path)
+        store.add(make_task())
+        store.save()
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        raw["a_newer_copy"] = {"kept": True}
+        self.path.write_text(json.dumps(raw), encoding="utf-8")
+
+        later = StateStore(self.path)
+        later.add(make_task("t-0002"))
+        later.save()
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["a_newer_copy"], {"kept": True})
+        self.assertIn("t-0002", saved["tasks"], "the save still worked")
+
+    def test_the_read_picture_survives_a_round_trip(self) -> None:
+        store = StateStore(self.path)
+        store.record_read(
+            {"landed:j-1": "2026-10-29T09:00:00Z|merged"}, at="2026-10-29T10:00:00Z"
+        )
+        store.save()
+        again = StateStore(self.path)
+        self.assertEqual(again.seen(), {"landed:j-1": "2026-10-29T09:00:00Z|merged"})
+        self.assertEqual(again.catchup_at, "2026-10-29T10:00:00Z")
+
     def test_drop_unknown_fields_removes_the_named_field_everywhere(self) -> None:
         task = make_task("t-0001")
         task.extra = {"surprise": 1}

@@ -5496,7 +5496,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("Now live: evidence", out)
         self.assertNotIn("never", out, "not the first read any more")
 
-    def test_catchup_json_marks_what_is_new(self) -> None:
+    def test_catchup_json_marks_nothing_read(self) -> None:
+        # A machine read is not the owner reading. The JSON view reports and marks
+        # nothing, so a relay cannot eat the line before he sees it.
         self.cli(
             "queue",
             "add",
@@ -5514,10 +5516,55 @@ class CliTest(unittest.TestCase):
         self.assertTrue(payload["items"][0]["new"])
         self.assertEqual(payload["items"][0]["kind"], "queued")
         code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
+        self.assertEqual(json.loads(out)["new"], 1, "still unread after a machine read")
+        # The human run marks it read, and then the machine read agrees.
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertIn("1 new since you last looked", out)
+        code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
         payload = json.loads(out)
-        self.assertEqual(payload["count"], 0)
         self.assertEqual(payload["new"], 0)
         self.assertIn("last_read", payload)
+
+    def test_a_risk_that_returns_is_shown_again(self) -> None:
+        # The reviewer's case: read the risk, the job link hides it, the job closes
+        # without merging and it comes back with the same last_seen. It must be news.
+        for _ in range(2):
+            self.cli(
+                "defects",
+                "add",
+                "--line",
+                "a bundle carries a machine name",
+                env=self.fake_env(),
+            )
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Still happening: a bundle carries a machine name", out)
+
+        job_id, _ = self.open_a_job("evidence", extra=("--defect", "d-0001"))
+        # While the job holds it, it is not a risk. Checked without a catch-up run, so
+        # nothing between the two reads can hide the returning line.
+        code, out, _ = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertNotIn("d-0001", out, "in flight, so not a risk")
+
+        code, _, err = self.cli("job", "close", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Still happening: a bundle carries a machine name", out)
+
+    def test_the_running_line_is_in_his_nouns(self) -> None:
+        self.dispatch(
+            "maker",
+            "myrepo",
+            "ship (t-1016): make the board tell him what changed",
+            "--worktree",
+            str(self.repo_path),
+        )
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("make the board tell him what changed", out)
+        self.assertNotIn("t-1016", out, "no handle in a line he reads")
+        self.assertNotIn("ship (", out)
 
     def test_the_board_opens_with_the_catch_up_text(self) -> None:
         self.cli(

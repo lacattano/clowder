@@ -964,6 +964,15 @@ shows it first and marks a report without it incomplete. Those stayed.
   usable `For the owner:` line, with `--force` to close anyway and the report then reading
   incomplete. That is the step where the meaning used to leak: the worker wrote it, the front door
   paraphrased it. The front door now relays it verbatim (section 20).
+- **A save carries what it does not know.** The read marks live in the state file, so a copy that
+  rebuilt the payload from the keys it knew would delete them. Unknown top-level keys are kept and
+  written back, exactly as an unknown field on a task is.
+- **Only his read is a read.** `catchup --json` reports and marks nothing: a machine read is not
+  the owner reading, and a relay must not eat the line before he sees it.
+- **A returning line is news, and the line is in his nouns.** A read replaces the picture rather
+  than growing it, so an item that left and came back is not "already read"; a defect put back to
+  open by a job that closed without merging carries the moment it became actionable again; and a
+  running line drops the shape word and any job or task handle the brief's first line carried.
 
 ## What step 1 built
 

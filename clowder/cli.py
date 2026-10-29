@@ -5055,10 +5055,6 @@ def cmd_catchup(args: argparse.Namespace) -> int:
     new = catchup_mod.unseen(items, seen)
     shown = items if args.all else new
     read_at = now_iso()
-    # A look is a look even when nothing is new: the moment he looked is what a later
-    # "nothing new since ..." names.
-    store.mark_seen(catchup_mod.moments(shown), at=read_at)
-    store.save()
     note = catchup_mod.summary_note(len(new), len(items), last_read)
 
     if args.json:
@@ -5085,6 +5081,21 @@ def cmd_catchup(args: argparse.Namespace) -> int:
             }
         )
         return 0
+
+    # Only this run marks read: a machine read is not the owner reading. The picture
+    # replaces the last one, so an item that left and came back is not "already read".
+    picture = (
+        catchup_mod.moments(items)
+        if args.all
+        else {
+            **{
+                key: value for key, value in seen.items() if key in {item.key for item in items}
+            },
+            **catchup_mod.moments(shown),
+        }
+    )
+    store.record_read(picture, at=read_at)
+    store.save()
 
     print(f"catchup: read at {catchup_mod.read_at(read_at)}")
     print(f"{INDENT}{note}")

@@ -21,6 +21,7 @@ the word that answers it), what runs now, and what is queued next.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -62,6 +63,14 @@ class Item:
     at: str
     text: str
     answer: str | None = None
+    # What it is doing now: merged, open, dispatched, queued. A line read in one state
+    # and found in another is new again, even when its moment has not moved.
+    state: str = ""
+
+    @property
+    def token(self) -> str:
+        """What he saw: the moment, and the state it was in."""
+        return f"{self.at}|{self.state}"
 
     @property
     def line(self) -> str:
@@ -86,6 +95,7 @@ def landed(jobs: Iterable[Job]) -> list[Item]:
             kind=LANDED,
             at=_moment(job.merged_at),
             text=f"Now live: {job.effect or job.name_in_words}",
+            state="merged",
         )
         for job in jobs
         if job.merged_at
@@ -95,19 +105,26 @@ def landed(jobs: Iterable[Job]) -> list[Item]:
 
 def at_risk(defects: Sequence[Defect], open_jobs: Sequence[str]) -> list[Item]:
     """Defects biting again with nothing in flight, newest first."""
-    items = [
-        Item(
-            key=f"risk:{defect.id}:{defect.last_seen}",
-            kind=RISK,
-            at=defect.last_seen,
-            text=(
-                f"Still happening: {defect.line} "
-                f"(seen {defect.count} time{'s' if defect.count != 1 else ''})"
-            ),
+    items: list[Item] = []
+    for defect in defects:
+        if not defect.needs_action(open_jobs):
+            continue
+        # A defect put back to open by a job that closed without merging is news
+        # again, even though nobody saw it happen: the moment it was reopened is
+        # later than the read that dropped it.
+        moment = max(defect.last_seen, defect.reopened_at or "")
+        items.append(
+            Item(
+                key=f"risk:{defect.id}:{moment}",
+                kind=RISK,
+                at=moment,
+                text=(
+                    f"Still happening: {defect.line} "
+                    f"(seen {defect.count} time{'s' if defect.count != 1 else ''})"
+                ),
+                state=defect.state_now(open_jobs),
+            )
         )
-        for defect in defects
-        if defect.needs_action(open_jobs)
-    ]
     return sorted(items, key=lambda item: item.at, reverse=True)
 
 
@@ -123,6 +140,7 @@ def waiting(tasks: Iterable[Task], jobs: Iterable[Job]) -> list[Item]:
                 at=entry.since,
                 text=entry.heading,
                 answer=owner_mod.answered_by(entry, number),
+                state=entry.kind,
             )
         )
     return items
@@ -136,9 +154,10 @@ def running(tasks: Iterable[Task]) -> list[Item]:
             kind=RUNNING,
             at=task.dispatched_at or task.created_at,
             text=(
-                f"{task.question} - {task.agent}, "
+                f"{plain_question(task.question)} - {task.agent}, "
                 f"{human_age(elapsed_seconds(task.dispatched_at or task.created_at, None))}"
             ),
+            state=task.status,
         )
         for task in sorted(
             (task for task in tasks if task.is_open),
@@ -154,7 +173,8 @@ def queued(items: Iterable[Queued]) -> list[Item]:
             key=f"queued:{item.id}",
             kind=QUEUED,
             at=item.created_at,
-            text=f"{item.question or item.brief} - not sent yet: {item.why}",
+            text=f"{plain_question(item.question or item.brief)} - not sent yet: {item.why}",
+            state="queued",
         )
         for item in sorted(items, key=lambda item: item.created_at)
     ]
@@ -174,14 +194,32 @@ def build(store: StateStore, defects: Sequence[Defect]) -> list[Item]:
     ]
 
 
+HANDLE = re.compile(r"[jtqd]-\d{3,}", re.IGNORECASE)
+SHAPE = re.compile(r"^(ship|scout)[:\s-]*", re.IGNORECASE)
+EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]")
+
+
+def plain_question(text: str) -> str:
+    """A worker's question in his nouns: no shape word, no handle, no stray brackets.
+
+    `question` is the brief's first line, so it can carry the crew's dialect - "ship
+    (t-1016): ..." - and a handle in a line he reads is a lookup he did not ask for.
+    """
+    cleaned = HANDLE.sub("", text or "")
+    cleaned = SHAPE.sub("", cleaned.strip())
+    cleaned = EMPTY_BRACKETS.sub("", cleaned)
+    cleaned = " ".join(cleaned.replace("()", "").replace("[]", "").split())
+    return cleaned.strip(" :-,") or "a step in flight"
+
+
 def unseen(items: Sequence[Item], seen: dict[str, str]) -> list[Item]:
-    """The items he has not been shown, or whose moment has moved since he was."""
-    return [item for item in items if seen.get(item.key) != item.at]
+    """The items he has not been shown, or whose moment or state has moved since."""
+    return [item for item in items if seen.get(item.key) != item.token]
 
 
 def moments(items: Sequence[Item]) -> dict[str, str]:
-    """The key-and-moment record `mark_seen` stores for these items."""
-    return {item.key: item.at for item in items}
+    """The key-and-token record a read stores for these items."""
+    return {item.key: item.token for item in items}
 
 
 def groups(items: Sequence[Item]) -> list[tuple[str, list[Item]]]:

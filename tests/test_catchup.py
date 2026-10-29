@@ -86,6 +86,25 @@ class ItemTest(unittest.TestCase):
         self.assertIn("not sent yet: the space is busy", queued[0].text)
 
 
+class PlainQuestionTest(unittest.TestCase):
+    def test_a_handle_and_a_shape_word_are_not_his_nouns(self) -> None:
+        self.assertEqual(
+            catchup.plain_question("ship (t-1016): make the board show what changed"),
+            "make the board show what changed",
+        )
+        self.assertEqual(
+            catchup.plain_question("scout: read the terms page"),
+            "read the terms page",
+        )
+        self.assertEqual(
+            catchup.plain_question("add the refund page, t-0001"),
+            "add the refund page",
+        )
+
+    def test_a_question_that_is_only_a_handle_says_something(self) -> None:
+        self.assertEqual(catchup.plain_question("t-1016"), "a step in flight")
+
+
 class SeenTest(unittest.TestCase):
     def test_a_line_is_new_until_it_is_read(self) -> None:
         items = [
@@ -94,6 +113,24 @@ class SeenTest(unittest.TestCase):
         self.assertEqual(catchup.unseen(items, {}), items)
         seen = catchup.moments(items)
         self.assertEqual(catchup.unseen(items, seen), [], "read once, not shown again")
+
+    def test_a_line_read_in_one_state_is_new_in_another(self) -> None:
+        read = catchup.Item(
+            "risk:d-1:2026-10-29T09:00:00Z",
+            catchup.RISK,
+            "2026-10-29T09:00:00Z",
+            "a",
+            state="open",
+        )
+        moved = catchup.Item(
+            "risk:d-1:2026-10-29T09:00:00Z",
+            catchup.RISK,
+            "2026-10-29T09:00:00Z",
+            "a",
+            state="has-job",
+        )
+        seen = catchup.moments([read])
+        self.assertEqual(catchup.unseen([moved], seen), [moved], "same moment, new state")
 
     def test_the_same_key_with_a_new_moment_is_new_again(self) -> None:
         old = catchup.Item("waiting:merge:j-1", catchup.WAITING, "2026-10-28T09:00:00Z", "a")
