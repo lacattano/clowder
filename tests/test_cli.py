@@ -5612,7 +5612,9 @@ class CliTest(unittest.TestCase):
         self.assertNotIn(
             "Now live: the old page", out, "history older than a week is not listed"
         )
-        self.assertIn("1 older thing(s) are not shown", out)
+        self.assertIn("landings are the last 7 days", out)
+        self.assertIn("the rest stands today", out)
+        self.assertIn("1 older landing(s) are not listed", out)
         # The history it did not list is marked read, so it cannot flood the next read.
         code, out, err = self.cli("catchup", env=self.fake_env())
         self.assertEqual(code, 0, err)
@@ -5622,6 +5624,50 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("catchup", "--all", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("Now live: the old page", out)
+
+    def test_a_first_read_shows_an_old_risk(self) -> None:
+        store = StateStore(self.state)
+        old = Task(
+            id="t-0001",
+            question="q",
+            brief="b",
+            shape="scout",
+            agent="maker",
+            repo="myrepo",
+            repo_path=str(self.repo_path),
+        )
+        store.add(old)
+        store.save()
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a bundle carries a machine name",
+            "--first-seen",
+            "2026-09-01",
+            "--last-seen",
+            "2026-09-02",
+            "--count",
+            "3",
+            "--status",
+            "open",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Still happening: a bundle carries a machine name", out)
+
+    def test_all_on_a_first_read_says_everything_not_a_week(self) -> None:
+        job_id, _ = self.open_a_job("arrival-keys")
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", "--all", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("everything on record", out)
+        self.assertNotIn("last 7 days", out)
 
     def test_a_landed_line_uses_the_title_not_the_label(self) -> None:
         job_id, _ = self.open_a_job(

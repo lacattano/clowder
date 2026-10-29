@@ -5064,7 +5064,7 @@ def cmd_catchup(args: argparse.Namespace) -> int:
         shown = new
     read_at = now_iso()
     note = (
-        catchup_mod.first_read_note(len(shown), hidden)
+        catchup_mod.first_read_note(len(shown), hidden, everything=args.all)
         if first
         else catchup_mod.summary_note(len(new), len(items), last_read)
     )

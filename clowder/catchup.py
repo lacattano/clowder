@@ -48,12 +48,13 @@ GROUPS = (
 
 HEADINGS = dict(GROUPS)
 
-# A first read has no mark to read from, so it is bounded: history older than this is
-# counted, not listed. The owner's own state listed 244 past landings on the first run,
-# which is a wall, not an answer. Waiting, running and queued are always shown whole -
-# an old thing he must act on cannot be aged out of the picture.
+# A first read has no mark to read from, so its history is bounded: landings older than
+# this are counted, not listed. The owner's own state listed 244 past landings on the
+# first run, which is a wall, not an answer. Only landings are aged out: waiting,
+# running, queued and a still-biting defect stand now, and hiding one would hide work
+# that is his to act on.
 FIRST_READ_DAYS = 7
-FIRST_READ_KINDS = (LANDED, RISK)
+FIRST_READ_KINDS = (LANDED,)
 
 
 @dataclass(frozen=True)
@@ -258,11 +259,24 @@ def bounded_first_read(
     return kept, hidden
 
 
-def first_read_note(shown: int, hidden: int, *, days: int = FIRST_READ_DAYS) -> str:
-    """The sentence over a first read: that it is one, the window, and what it left out."""
-    note = f"First read, so this is the last {days} days: {shown} thing(s)."
-    if hidden:
-        note += f" {hidden} older thing(s) are not shown; --all shows everything."
+def first_read_note(
+    shown: int, hidden: int, *, days: int = FIRST_READ_DAYS, everything: bool = False
+) -> str:
+    """The sentence over a first read: what the window covers, and what stands today.
+
+    The window is about landings only - the lines that accumulate. Everything else on
+    the list stands now, so the sentence must not claim a week over it. With `--all`
+    there is no window at all, and the sentence says so.
+    """
+    if everything:
+        note = f"First read, so this is everything on record: {shown} thing(s)."
+    else:
+        note = (
+            f"First read, so landings are the last {days} days and the rest stands "
+            f"today: {shown} thing(s)."
+        )
+    if hidden and not everything:
+        note += f" {hidden} older landing(s) are not listed; --all shows everything."
     return note
 
 

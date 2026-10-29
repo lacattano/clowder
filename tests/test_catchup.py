@@ -97,14 +97,26 @@ class FirstReadTest(unittest.TestCase):
             ),
         ]
 
-    def test_a_first_read_is_bounded_to_the_window(self) -> None:
+    def test_only_landings_are_bounded_on_a_first_read(self) -> None:
         from datetime import UTC, datetime
 
         kept, hidden = catchup.bounded_first_read(
             self.items(), at=datetime(2026, 10, 30, tzinfo=UTC)
         )
-        self.assertEqual([item.key for item in kept], ["landed:new", "waiting:merge:j-1"])
-        self.assertEqual(hidden, 2, "the old landing and the old risk are counted")
+        self.assertEqual(
+            [item.key for item in kept], ["landed:new", "risk:old", "waiting:merge:j-1"]
+        )
+        self.assertEqual(hidden, 1, "only the old landing is counted")
+
+    def test_an_old_risk_is_shown_on_a_first_read(self) -> None:
+        # Blocker from the j-0235 review: an old defect that is still biting is work he
+        # must act on. Ageing it out on the first read hid it and marked it read.
+        from datetime import UTC, datetime
+
+        kept, _ = catchup.bounded_first_read(
+            self.items(), at=datetime(2026, 10, 30, tzinfo=UTC)
+        )
+        self.assertIn("risk:old", [item.key for item in kept])
 
     def test_an_old_thing_he_must_act_on_is_never_aged_out(self) -> None:
         from datetime import UTC, datetime
@@ -112,15 +124,24 @@ class FirstReadTest(unittest.TestCase):
         kept, _ = catchup.bounded_first_read(
             self.items(), at=datetime(2026, 10, 30, tzinfo=UTC)
         )
-        self.assertIn("waiting:merge:j-1", [item.key for item in kept])
+        keys = [item.key for item in kept]
+        self.assertIn("waiting:merge:j-1", keys)
+        self.assertIn("risk:old", keys)
 
-    def test_the_note_says_it_is_a_first_read_and_names_the_window(self) -> None:
+    def test_the_note_names_the_window_for_landings_only(self) -> None:
         note = catchup.first_read_note(2, 5)
         self.assertIn("First read", note)
-        self.assertIn("last 7 days", note)
-        self.assertIn("5 older thing(s) are not shown", note)
+        self.assertIn("landings are the last 7 days", note)
+        self.assertIn("the rest stands today", note)
+        self.assertIn("5 older landing(s) are not listed", note)
         self.assertIn("--all", note)
         self.assertNotIn("older", catchup.first_read_note(3, 0))
+
+    def test_all_on_a_first_read_says_everything_not_a_week(self) -> None:
+        note = catchup.first_read_note(9, 0, everything=True)
+        self.assertIn("everything on record", note)
+        self.assertNotIn("7 days", note)
+        self.assertNotIn("older", note)
 
 
 class LandedNameTest(unittest.TestCase):
