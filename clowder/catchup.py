@@ -29,7 +29,7 @@ from datetime import datetime
 from . import owner as owner_mod
 from .defects import Defect
 from .state import Job, Queued, StateStore, Task
-from .timeutil import elapsed_seconds, human_age
+from .timeutil import elapsed_seconds, human_age, now, to_epoch
 
 LANDED = "landed"
 RISK = "risk"
@@ -47,6 +47,14 @@ GROUPS = (
 )
 
 HEADINGS = dict(GROUPS)
+
+# A first read has no mark to read from, so its history is bounded: landings older than
+# this are counted, not listed. The owner's own state listed 244 past landings on the
+# first run, which is a wall, not an answer. Only landings are aged out: waiting,
+# running, queued and a still-biting defect stand now, and hiding one would hide work
+# that is his to act on.
+FIRST_READ_DAYS = 7
+FIRST_READ_KINDS = (LANDED,)
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,15 @@ def _moment(value: str | None) -> str:
     return value or ""
 
 
+def landed_name(job: Job) -> str:
+    """The name a landed change carries to the owner: effect, title, then the label."""
+    for value in (job.effect, job.title):
+        text = (value or "").strip()
+        if text:
+            return text
+    return job.label
+
+
 def landed(jobs: Iterable[Job]) -> list[Item]:
     """What merged, newest first, with what it changes for a user."""
     items = [
@@ -94,7 +111,10 @@ def landed(jobs: Iterable[Job]) -> list[Item]:
             key=f"landed:{job.id}",
             kind=LANDED,
             at=_moment(job.merged_at),
-            text=f"Now live: {job.effect or job.name_in_words}",
+            # What it changes, in his words: the effect line, then the title he would
+            # recognise, then - only when neither was recorded - the label, which is the
+            # old behaviour and not a new guess.
+            text=f"Now live: {landed_name(job)}",
             state="merged",
         )
         for job in jobs
@@ -216,6 +236,48 @@ def plain_question(text: str) -> str:
     cleaned = SHAPE.sub("", cleaned.strip())
     cleaned = " ".join(cleaned.replace("()", "").replace("[]", "").split())
     return cleaned.strip(" :-,") or "a step in flight"
+
+
+def bounded_first_read(
+    items: Sequence[Item], *, days: int = FIRST_READ_DAYS, at: datetime | None = None
+) -> tuple[list[Item], int]:
+    """What a first read shows and how many it left out. Returns (kept, hidden).
+
+    History - what landed and what is at risk - is kept only inside the window, because
+    with no read mark every past landing would count as new. Everything he must act on
+    now, or that is running, is kept whole: an old decision is not made stale by being
+    old.
+    """
+    cutoff = (at or now()).timestamp() - days * 86400
+    kept: list[Item] = []
+    hidden = 0
+    for item in items:
+        if item.kind in FIRST_READ_KINDS and (to_epoch(item.at) or 0.0) < cutoff:
+            hidden += 1
+            continue
+        kept.append(item)
+    return kept, hidden
+
+
+def first_read_note(
+    shown: int, hidden: int, *, days: int = FIRST_READ_DAYS, everything: bool = False
+) -> str:
+    """The sentence over a first read: what the window covers, and what stands today.
+
+    The window is about landings only - the lines that accumulate. Everything else on
+    the list stands now, so the sentence must not claim a week over it. With `--all`
+    there is no window at all, and the sentence says so.
+    """
+    if everything:
+        note = f"First read, so this is everything on record: {shown} thing(s)."
+    else:
+        note = (
+            f"First read, so landings are the last {days} days and the rest stands "
+            f"today: {shown} thing(s)."
+        )
+    if hidden and not everything:
+        note += f" {hidden} older landing(s) are not listed; --all shows everything."
+    return note
 
 
 def unseen(items: Sequence[Item], seen: dict[str, str]) -> list[Item]:

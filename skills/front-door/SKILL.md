@@ -52,13 +52,12 @@ task. What a worker reported is in the inbox until you read it.
 
 The newer pieces, so a fresh you does not have to discover them:
 
-- `clowder inbox` is the one-command check for a finished step.
+- `clowder inbox` is the one-command check for a finished step; one reviewer per repo holds
+  that repo's changes and walks the owner through them.
 - The owner's pass and merge word live on the job: `clowder job pass`, `clowder job word`,
   `clowder job publish`, `clowder job merge`. Publish and merge refuse without them.
-- One reviewer per repo holds that repo's changes and walks the owner through them.
-- The board opens with "Since you last looked" - the catch-up below - then "For you" (one line
-  each, the number he replies with, and how long it waited), "Running now", "Waiting for a worker"
-  (your queue) and "Changed since you last opened this page". The records follow.
+- The board opens with the catch-up, then "For you" (one line each, the number he replies with,
+  how long it waited), "Running now", "Waiting for a worker" and "Changed since you last looked".
 - The board is drawn from the state file, so it asks the multiplexer nothing; add `--live` when
   you need the live roster, and the page says which it shows. It is rewritten by every command
   that changes state, so it is current without anyone running `clowder board`.
@@ -101,7 +100,7 @@ Two more mechanisms, so one fact lives in one place:
 
 ```
 clowder ensure <repo> [--role maker|verifier|teacher|researcher] [--name AGENT] [--no-create]
-clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT] [--defect ID]
+clowder job open <repo> --label <what the work is> [--title TEXT] [--role maker] [--name AGENT] [--defect ID]
 clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]
@@ -131,8 +130,7 @@ clowder config
 clowder state repair --drop-unknown FIELD --backup PATH [--why TEXT] [--by NAME]
 ```
 
-Run `clowder`. From a checkout with nothing installed, `py -3.15 -m clowder`.
-
+Run `clowder`, or `py -3.15 -m clowder` from a checkout with nothing installed.
 - **`agent reset <agent>`** gives a pane a fresh context by typing `/new` as keys, then
   verifies the session file changed. It refuses while a step on that agent is unreported, and
   when the session does not change it fails instead of claiming success. Do this at a clean
@@ -219,6 +217,8 @@ clowder job open <repo> --label refund --role maker
 clowder job list
 clowder job close j-0001
 ```
+
+Always pass `--title` in his words: it is the name a landed change carries to him, not a label.
 
 - `job open` **refuses a dirty space**, and refuses to switch branches in the main checkout.
   Both refusals protect the user's own work. Report the reason; do not work around it.

@@ -5052,10 +5052,22 @@ def cmd_catchup(args: argparse.Namespace) -> int:
     items = _catchup_items(config, store)
     seen = store.seen()
     last_read = store.catchup_at
+    first = last_read is None
     new = catchup_mod.unseen(items, seen)
-    shown = items if args.all else new
+    hidden = 0
+    if args.all:
+        shown = items
+    elif first:
+        # No read mark yet: bound the history, or every past landing is "new".
+        shown, hidden = catchup_mod.bounded_first_read(new)
+    else:
+        shown = new
     read_at = now_iso()
-    note = catchup_mod.summary_note(len(new), len(items), last_read)
+    note = (
+        catchup_mod.first_read_note(len(shown), hidden, everything=args.all)
+        if first
+        else catchup_mod.summary_note(len(new), len(items), last_read)
+    )
 
     if args.json:
         _emit_json(
@@ -5066,6 +5078,8 @@ def cmd_catchup(args: argparse.Namespace) -> int:
                 "count": len(shown),
                 "new": len(new),
                 "standing": len(items),
+                "first_read": first,
+                "hidden": hidden,
                 "items": [
                     {
                         "key": item.key,
@@ -5084,9 +5098,11 @@ def cmd_catchup(args: argparse.Namespace) -> int:
 
     # Only this run marks read: a machine read is not the owner reading. The picture
     # replaces the last one, so an item that left and came back is not "already read".
+    # A first read marks the whole picture read, including the history it did not list:
+    # otherwise that history floods the next read instead of this one.
     picture = (
         catchup_mod.moments(items)
-        if args.all
+        if args.all or first
         else {
             **{
                 key: value for key, value in seen.items() if key in {item.key for item in items}
