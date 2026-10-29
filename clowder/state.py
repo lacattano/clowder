@@ -22,6 +22,22 @@ from .timeutil import elapsed_seconds, now_iso
 
 SCHEMA_VERSION = 2
 
+# Every top-level key this copy knows. Read once and used in two places: loading, to
+# keep a key a newer copy wrote, and saving, so that key is written back. A set written
+# twice is a set that drifts.
+KNOWN_KEYS = {
+    "schema",
+    "rev",
+    "seq",
+    "job_seq",
+    "queue_seq",
+    "tasks",
+    "jobs",
+    "queued",
+    "seen",
+    "catchup_at",
+}
+
 DISPATCHED = "dispatched"
 REPORTED = "reported"
 FAILED = "failed"
@@ -457,6 +473,15 @@ class StateStore:
         self._tasks: dict[str, Task] = {}
         self._jobs: dict[str, Job] = {}
         self._queued: dict[str, Queued] = {}
+        # What the owner has already been shown: item key -> the moment it carried when
+        # it was read. `catchup` writes it; every view reads it. It lives in this file
+        # because the record is one file, and a second store is a second truth.
+        self._seen: dict[str, str] = {}
+        self._catchup_at: str | None = None
+        # Top-level keys this copy does not know, kept and written back. A newer copy
+        # may store something here; a save that rebuilt the payload without them would
+        # delete its field as surely as a lost record. Same rule as `extra` on a task.
+        self._extras: dict[str, object] = {}
         self._loaded = False
         # A revision of the file, and the records we loaded. A save that finds a
         # newer revision folds the other writer's records in, or refuses loudly.
@@ -485,6 +510,15 @@ class StateStore:
         self._job_seq = self._int_field(raw, "job_seq")
         self._queue_seq = self._int_field(raw, "queue_seq")
         self._base_rev = self._int_field(raw, "rev")
+        seen = raw.get("seen")
+        self._seen = (
+            {str(key): str(moment) for key, moment in seen.items()}
+            if isinstance(seen, dict)
+            else {}
+        )
+        moment = raw.get("catchup_at")
+        self._catchup_at = str(moment) if isinstance(moment, str) and moment else None
+        self._extras = {key: value for key, value in raw.items() if key not in KNOWN_KEYS}
 
         self._jobs = {
             str(key): Job.from_dict(self._record(record, key, "job"))
@@ -576,7 +610,13 @@ class StateStore:
                 "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
                 "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
                 "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
+                "seen": dict(self._seen),
+                "catchup_at": self._catchup_at,
             }
+            # A key a newer copy wrote is carried through untouched, never dropped by a
+            # save that only knows this much.
+            for key, value in self._extras.items():
+                payload.setdefault(key, value)
             text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
             temp = self._temp_path()
             try:
@@ -637,6 +677,18 @@ class StateStore:
         self._seq = max(self._seq, self._int_field(raw, "seq"))
         self._job_seq = max(self._job_seq, self._int_field(raw, "job_seq"))
         self._queue_seq = max(self._queue_seq, self._int_field(raw, "queue_seq"))
+        # A read is a snapshot of what he has seen, so the later read wins whole: two
+        # panes reading at once must not merge into a picture neither of them was
+        # shown.
+        seen = raw.get("seen")
+        moment = raw.get("catchup_at")
+        if isinstance(moment, str) and (self._catchup_at is None or moment > self._catchup_at):
+            if isinstance(seen, dict):
+                self._seen = {str(key): str(value) for key, value in seen.items()}
+            self._catchup_at = moment
+        for key, value in raw.items():
+            if key not in KNOWN_KEYS:
+                self._extras[key] = value
         self._base_rev = disk_rev
         self._snapshot_base()
 
@@ -714,6 +766,32 @@ class StateStore:
     def all_queued(self) -> list[Queued]:
         self.load()
         return sorted(self._queued.values(), key=lambda item: item.created_at)
+
+    @property
+    def catchup_at(self) -> str | None:
+        """When the owner last read the catch-up, or None if he never has."""
+        self.load()
+        return self._catchup_at
+
+    def seen(self) -> dict[str, str]:
+        """What he has already been shown: item key -> the moment it carried then."""
+        self.load()
+        return dict(self._seen)
+
+    def record_read(self, picture: dict[str, str], *, at: str) -> None:
+        """Record the picture he was just shown, in full. Caller saves.
+
+        It replaces the last picture rather than growing it: an item that leaves and
+        comes back is not something he has already read, and a set that only grew could
+        never say so.
+        """
+        self.load()
+        self._seen = dict(picture)
+        self._catchup_at = at
+
+    def mark_seen(self, moments: dict[str, str], *, at: str) -> None:
+        """Record that he has now been shown these items. Kept for one caller."""
+        self.record_read(moments, at=at)
 
     def remove_queued(self, item_id: str) -> Queued:
         self.load()

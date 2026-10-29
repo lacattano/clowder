@@ -250,6 +250,7 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(defect.state, OPEN)
         self.assertEqual(defect.linked_jobs, [])
         self.assertIsNone(defect.job)
+        self.assertTrue(defect.reopened_at, "the moment it became actionable again")
         self.assertEqual([item.id for item in self.store.repeated([])], ["d-0001"])
 
     def test_a_fixed_defect_seen_again_forgets_the_job_that_fixed_it(self) -> None:

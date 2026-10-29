@@ -459,6 +459,11 @@ class BoardData:
     # right now. Filled by whoever builds this data; an empty page draws without it
     # rather than reading a machine from inside a render.
     capacity: str | None = None
+    # The catch-up, in his words: one line per thing he has not read yet, and the
+    # sentence over them. The builder fills it from the record; drawing never marks a
+    # line read - only `clowder catchup` does that.
+    catchup: list[str] = field(default_factory=list)
+    catchup_note: str | None = None
 
 
 def _e(value: object) -> str:
@@ -1221,9 +1226,20 @@ def _kanban(data: BoardData) -> str:
 def render_board(data: BoardData) -> str:
     """The whole page, as one self-contained file.
 
-    Four sections first, in the order the owner reads them: what waits on him, what is
-    running, the front door's queue, and what changed. The records follow, unchanged.
+    The catch-up comes first, in his words: what he has not read yet, then the four
+    record sections in the order he reads them, then the records, unchanged. The
+    catch-up section is the same text `clowder catchup` prints, so the page and the
+    command cannot say different things.
     """
+    if data.catchup:
+        catch_html = "<ul>" + "".join(f"<li>{_e(line)}</li>" for line in data.catchup) + "</ul>"
+    else:
+        catch_html = _nothing(
+            "Nothing new since your last read. The full standing picture is one "
+            "command: clowder catchup --all"
+        )
+    if data.catchup_note:
+        catch_html += f"<p class='why'>{_e(data.catchup_note)}</p>"
     for_you = waiting_on_you(data)
     running = running_now(data)
     queue = worker_queue(data)
@@ -1433,6 +1449,7 @@ def render_board(data: BoardData) -> str:
 <h1>{_e(TITLE)}</h1>
 <p class="meta">What waits on you, what is running, what is queued, and what changed.</p>
 <p class="meta" id="freshness">{_e(freshness)} {_e(reload_line)}</p>
+{_section("Since you last looked", len(data.catchup), catch_html, css="needs")}
 {_section("For you", len(for_you), needs_html, css="needs")}
 {_section("Running now", len(running), running_html)}
 {_section("Waiting for a worker", len(queue), queue_html)}

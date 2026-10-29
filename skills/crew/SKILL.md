@@ -92,6 +92,10 @@ A vague ask wastes the peer's turn.
   the job, the pull request and the date, so nobody has to notice the merge and edit it by hand.
   A link that named the wrong job is dropped with `clowder defects unlink <id> --job <job>`.
 
+- **Start from what he last knew.** Before you write to him, run `clowder catchup`: what landed,
+  what is at risk, what waits on him with the word that answers it, what runs, what is queued.
+  It shows only what is new since his last read, and reading it marks it read.
+
 **Sending over the bus.** A pane can send only once the remote-pi Docker service is running and
 the pane is joined with `/remote-pi join`. If `list_peers` says "Not in a session", the pane is
 not joined - say so rather than fail quietly; the front door can join it from its side. A slash

@@ -19,6 +19,7 @@ from functools import partial
 from pathlib import Path
 
 from . import __version__, audit, box, gitcmd, load
+from . import catchup as catchup_mod
 from . import handover as handover_doc
 from . import owner as owner_mod
 from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write_board
@@ -308,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s_report.add_argument(
         "--by", metavar="NAME", help="who is reporting (default: the step's agent)"
+    )
+    s_report.add_argument(
+        "--force",
+        action="store_true",
+        help="close without the For the owner: line (the report will read as incomplete)",
     )
     s_report.add_argument("--json", action="store_true")
     s_report.set_defaults(handler=cmd_step_report, refreshes_board=True)
@@ -684,6 +690,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     box_cmd.add_argument("--json", action="store_true")
     box_cmd.set_defaults(handler=cmd_box)
+
+    catch = sub.add_parser(
+        "catchup",
+        help="what you missed since you last looked, in your words",
+        parents=[common],
+        description=(
+            "What landed and what it changes, what broke or is at risk, what waits on "
+            "you and the word that answers it, what runs now, and what is queued. Only "
+            "what is new since your last read, unless --all is given. Reading it marks "
+            "it read, and the next run is built from the record again, so it cannot go "
+            "stale."
+        ),
+    )
+    catch.add_argument(
+        "--all", action="store_true", help="the whole standing picture, not only what is new"
+    )
+    catch.add_argument("--json", action="store_true")
+    catch.set_defaults(handler=cmd_catchup, refreshes_board=True)
 
     start = sub.add_parser(
         "start",
@@ -2074,6 +2098,14 @@ def cmd_step_report(args: argparse.Namespace) -> int:
         if text:
             answer = text
             source = "file"
+
+    if owner_line(answer) is None and not args.force:
+        raise UsageError(
+            "this report has no 'For the owner:' line, and that is the line he reads "
+            "first. Add it to the answer - two sentences, in his words, on what this "
+            "changes for him - then report again. To close without one, pass --force; "
+            "the report will read as incomplete."
+        )
 
     mux = Mux(config.mux_bin, config.mux_prompt_argv)
     since, until = _step_window(store, task)
@@ -4302,8 +4334,16 @@ def _board_data(
     memo.save()
 
     activity = handover_doc.last_activity(store)
+    # The catch-up, in his words, at the top of the page. It is built now, from the
+    # record; drawing does not mark it read.
+    catchup_items = _catchup_items(config, store)
+    unseen = catchup_mod.unseen(catchup_items, store.seen())
     return BoardData(
         capacity=box.summary(box.read(), box.steps_in_flight(open_tasks(tasks)), config.floors),
+        catchup=catchup_mod.lines(unseen),
+        catchup_note=catchup_mod.summary_note(
+            len(unseen), len(catchup_items), store.catchup_at
+        ),
         tasks=tasks,
         jobs=jobs,
         queued=store.all_queued(),
@@ -4993,6 +5033,80 @@ def cmd_box(args: argparse.Namespace) -> int:
 def _gib_value(value: int | None) -> float | None:
     """Bytes as GiB, one decimal, or None. The one conversion a reader can check."""
     return None if value is None else round(value / box.GIB, 1)
+
+
+def _catchup_items(config: Config, store: StateStore) -> list[catchup_mod.Item]:
+    """The standing picture, built from the record now. Nothing here writes."""
+    defects, _ = read_defects(_defect_store(config))
+    return catchup_mod.build(store, defects)
+
+
+def cmd_catchup(args: argparse.Namespace) -> int:
+    """What he missed: only what is new, unless --all, in his words.
+
+    Reading it marks what it showed as read, with the moment each line carried, so the
+    same line is not shown twice. Nothing is cached: the next run rebuilds from the
+    record, which is why a view of this cannot be stale.
+    """
+    config, store = _context(args)
+    items = _catchup_items(config, store)
+    seen = store.seen()
+    last_read = store.catchup_at
+    new = catchup_mod.unseen(items, seen)
+    shown = items if args.all else new
+    read_at = now_iso()
+    note = catchup_mod.summary_note(len(new), len(items), last_read)
+
+    if args.json:
+        _emit_json(
+            {
+                "read_at": read_at,
+                "last_read": last_read,
+                "note": note,
+                "count": len(shown),
+                "new": len(new),
+                "standing": len(items),
+                "items": [
+                    {
+                        "key": item.key,
+                        "kind": item.kind,
+                        "at": item.at,
+                        "text": item.text,
+                        "line": item.line,
+                        "answer": item.answer,
+                        "new": seen.get(item.key) != item.at,
+                    }
+                    for item in shown
+                ],
+            }
+        )
+        return 0
+
+    # Only this run marks read: a machine read is not the owner reading. The picture
+    # replaces the last one, so an item that left and came back is not "already read".
+    picture = (
+        catchup_mod.moments(items)
+        if args.all
+        else {
+            **{
+                key: value for key, value in seen.items() if key in {item.key for item in items}
+            },
+            **catchup_mod.moments(shown),
+        }
+    )
+    store.record_read(picture, at=read_at)
+    store.save()
+
+    print(f"catchup: read at {catchup_mod.read_at(read_at)}")
+    print(f"{INDENT}{note}")
+    for line in catchup_mod.lines(shown):
+        print(f"{INDENT}{line}")
+    if not shown and items:
+        print(
+            f"{INDENT}Nothing has changed since your last read, so nothing here is "
+            "old: this list was built just now."
+        )
+    return 0
 
 
 def cmd_start(args: argparse.Namespace) -> int:

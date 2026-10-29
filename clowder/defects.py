@@ -129,6 +129,13 @@ class Defect:
     # pull request. Empty on a defect fixed by hand.
     fixed_at: str | None = None
     fixed_pr: str | None = None
+    # When a linked job closed without merging and put it back to open. It is the
+    # moment the defect became actionable again, and the catch-up shows it again then -
+    # `last_seen` has not moved, because nobody saw it happen. The count moves with it:
+    # two reopens inside one second carry the same timestamp, and the count is what
+    # makes the second one news.
+    reopened_at: str | None = None
+    reopen_seq: int = 0
     state: str = OPEN
     reason: str | None = None
     # The body behind the one line: the workaround, the citations, what was seen.
@@ -498,6 +505,8 @@ class DefectStore:
                 if defect.state == HAS_JOB and not remaining:
                     defect.state = OPEN
                     defect.job = None
+                    defect.reopened_at = now_iso()
+                    defect.reopen_seq += 1
                 else:
                     defect.job = remaining[0] if remaining else defect.job
                 affected.append(defect)
@@ -540,6 +549,8 @@ class DefectStore:
                 defect.job = None
                 if defect.state == HAS_JOB:
                     defect.state = OPEN
+                    defect.reopened_at = now_iso()
+                    defect.reopen_seq += 1
             self._save()
             return defect
 

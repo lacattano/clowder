@@ -5436,6 +5436,193 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(StateStore(self.state).get("t-0001").status, DISPATCHED)
 
+    def test_catchup_shows_only_what_is_new_and_then_says_nothing(self) -> None:
+        code, _, err = self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "scout: read the terms page",
+            "--agent",
+            "maker",
+            "--why",
+            "the space holds an open job",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Queued next:", out)
+        self.assertIn("not sent yet: the space holds an open job", out)
+        self.assertIn("1 new since you last looked", out)
+        # Read once: the next run has nothing new.
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing new", out)
+        self.assertNotIn("Queued next:", out)
+        # The standing picture shows it again on demand.
+        code, out, err = self.cli("catchup", "--all", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Queued next:", out)
+        self.assertIn("read the terms page", out)
+
+    def test_catchup_names_the_word_that_answers_him(self) -> None:
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        code, _, err = self.cli(
+            "owner",
+            "t-0001",
+            "--item",
+            "Which page should the refund link go on?",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Waiting on you:", out)
+        self.assertIn("Which page should the refund link go on? - type 1", out)
+
+    def test_a_landing_appears_after_a_read_with_no_refresh(self) -> None:
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        job_id, _ = self.open_a_job("evidence")
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("What landed:", out)
+        self.assertIn("Now live: evidence", out)
+        self.assertNotIn("never", out, "not the first read any more")
+
+    def test_catchup_json_marks_nothing_read(self) -> None:
+        # A machine read is not the owner reading. The JSON view reports and marks
+        # nothing, so a relay cannot eat the line before he sees it.
+        self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "scout: x",
+            "--agent",
+            "maker",
+            "--why",
+            "waiting",
+            env=self.fake_env(),
+        )
+        code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
+        payload = json.loads(out)
+        self.assertEqual(payload["new"], 1)
+        self.assertTrue(payload["items"][0]["new"])
+        self.assertEqual(payload["items"][0]["kind"], "queued")
+        code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
+        self.assertEqual(json.loads(out)["new"], 1, "still unread after a machine read")
+        # The human run marks it read, and then the machine read agrees.
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertIn("1 new since you last looked", out)
+        code, out, _ = self.cli("catchup", "--json", env=self.fake_env())
+        payload = json.loads(out)
+        self.assertEqual(payload["new"], 0)
+        self.assertIn("last_read", payload)
+
+    def test_a_risk_that_returns_is_shown_again(self) -> None:
+        # The reviewer's case: read the risk, the job link hides it, the job closes
+        # without merging and it comes back with the same last_seen. It must be news.
+        for _ in range(2):
+            self.cli(
+                "defects",
+                "add",
+                "--line",
+                "a bundle carries a machine name",
+                env=self.fake_env(),
+            )
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Still happening: a bundle carries a machine name", out)
+
+        job_id, _ = self.open_a_job("evidence", extra=("--defect", "d-0001"))
+        # While the job holds it, it is not a risk. Checked without a catch-up run, so
+        # nothing between the two reads can hide the returning line.
+        code, out, _ = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertNotIn("d-0001", out, "in flight, so not a risk")
+
+        code, _, err = self.cli("job", "close", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Still happening: a bundle carries a machine name", out)
+
+    def test_the_running_line_is_in_his_nouns(self) -> None:
+        self.dispatch(
+            "maker",
+            "myrepo",
+            "ship (t-1016): make the board tell him what changed",
+            "--worktree",
+            str(self.repo_path),
+        )
+        code, out, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("make the board tell him what changed", out)
+        self.assertNotIn("t-1016", out, "no handle in a line he reads")
+        self.assertNotIn("ship (", out)
+
+    def test_the_board_opens_with_the_catch_up_text(self) -> None:
+        self.cli(
+            "queue",
+            "add",
+            "myrepo",
+            "scout: read the terms page",
+            "--agent",
+            "maker",
+            "--why",
+            "busy",
+            env=self.fake_env(),
+        )
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertLess(html.index("Since you last looked"), html.index("For you"))
+        self.assertIn("not sent yet: busy", html)
+        # Drawing the page does not mark his read: only catchup does.
+        code, out, _ = self.cli("catchup", env=self.fake_env())
+        self.assertIn("1 new since you last looked", out)
+
+    def test_a_step_report_without_the_owner_line_is_refused(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
+        body = self.root / "answer.md"
+        body.write_text("Re: the refund page\nThe terms page is empty.\n", encoding="utf-8")
+        code, _, err = self.cli(
+            "step",
+            "report",
+            "t-0001",
+            "--headline",
+            "the refund page is missing",
+            "--answer-file",
+            str(body),
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("For the owner:", err)
+        self.assertIn("--force", err)
+        self.assertEqual(
+            StateStore(self.state).get("t-0001").status, DISPATCHED, "nothing closed"
+        )
+        # Forcing it closes, and the record says the line was missing.
+        code, _, err = self.cli(
+            "step",
+            "report",
+            "t-0001",
+            "--headline",
+            "the refund page is missing",
+            "--answer-file",
+            str(body),
+            "--force",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(StateStore(self.state).get("t-0001").status, CLOSED)
+
     def test_a_step_reported_twice_closes_once(self) -> None:
         # Both intake paths, twice each. `step report` is the worker writing the
         # record itself; `inbox` is the front door's cheap check. Neither may write
@@ -5443,7 +5630,11 @@ class CliTest(unittest.TestCase):
         job_id, _ = self.open_a_job()
         self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
         body = self.root / "answer.md"
-        body.write_text("Re: the refund page\nThe terms page is empty.\n", encoding="utf-8")
+        body.write_text(
+            "Re: the refund page\nThe terms page is empty.\n"
+            "For the owner: The refund page is live now. It shows the policy.\n",
+            encoding="utf-8",
+        )
 
         code, _, err = self.cli(
             "step",
