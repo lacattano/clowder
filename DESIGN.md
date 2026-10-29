@@ -906,6 +906,35 @@ dedicated usage, and the page file's own use.
   fails the format gate. The choice was made on 2026-10-05 (see the comment in `pyproject.toml`)
   and this change keeps it: the tool targets 3.15 and the formatter owns the spelling.
 
+### 40. A defect names the jobs that fix it, and the merge closes it
+
+Seen on the day the defects record was built: d-0007 (a committed evidence bundle carried a
+machine name and absolute paths) is fixed by j-0206, which was in review. When it merged, the
+record would still have said open, because nothing joined a defect to the work that fixed it. A
+person had to notice, and after seven days the defect dropped out of `clowder start`'s recent
+list, so the chance to notice went with it.
+
+- **A link, made where the job is opened.** `clowder job open --defect <id>` (repeatable), or
+  `clowder defects link <id> --job <job>` later. A defect may name more than one job; the front
+  door links it when the job is opened, so the link is not a thing to remember.
+- **The merge closes it.** `clowder job merge` marks every defect naming that job fixed, with the
+  job, the pull request and the date, and writes one `defects-fixed` audit line. A defect that
+  still names another open job stays `has-job`: the work is not finished while another branch
+  says it is coming, and the merge that lands the last link is the one that fixes it.
+- **The list tells the truth.** `defects list` shows a linked defect whose job is open as
+  `has-job`, and a link whose job closed without merging as `open` again, so the repeat alarm
+  returns. That is a read-time answer, not a write: reading the record never edits it.
+- **A defect that comes back starts clean.** Seen again after a fix, the settlement fields and
+  the old job link are cleared, so the defect is open with no job; the next job's merge closes it
+  again. Left in place, the closed fixer read as a second link and the defect could never close.
+- **A merge never rewrites a decision.** An accepted workaround keeps its state and its reason,
+  and a link to a closed job is dropped rather than turned into a fix.
+- **Every change leaves a trail.** A merge that only drops a link, a job closed without merging,
+  and `defects unlink` each write one audit line. `defects unlink <id> --job <job>` drops a wrong
+  link without closing the job, and `describe` names every linked job.
+- **Not fuzzy matching.** The link is named by a command, never guessed from a defect's words.
+  The word search and the seed are unchanged.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from

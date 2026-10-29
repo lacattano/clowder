@@ -153,6 +153,246 @@ class StoreTest(unittest.TestCase):
         )
 
 
+class LinkTest(unittest.TestCase):
+    """A defect names the jobs that fix it, and the merge closes it."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.path = defects_path(self.root / "state.json")
+        self.store = DefectStore(self.path)
+
+    def twice(self, line: str = "a bundle carries a machine name") -> None:
+        self.store.sighting(line)
+        self.store.sighting(line)
+
+    def test_a_link_marks_it_has_job_and_silences_the_repeat(self) -> None:
+        self.twice()
+        defect = self.store.link("d-0001", "j-0007")
+        self.assertEqual(defect.state, HAS_JOB)
+        self.assertEqual(defect.job, "j-0007")
+        self.assertEqual(defect.linked_jobs, ["j-0007"])
+        self.assertEqual(self.store.repeated(["j-0007"]), [], "the fix is in flight")
+
+    def test_a_linked_job_closed_without_merging_puts_it_back_to_open(self) -> None:
+        # The stored word is what the last write knew. A job closed without merging
+        # fixed nothing, so the reader must not keep showing "has-job".
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        defect = self.store.get("d-0001")
+        self.assertEqual(defect.state_now(["j-0007"]), HAS_JOB)
+        self.assertEqual(defect.state_now([]), OPEN)
+        self.assertEqual([item.id for item in self.store.repeated([])], ["d-0001"])
+
+    def test_a_merge_marks_only_the_defects_linked_to_it(self) -> None:
+        self.twice("the linked one")
+        self.twice("the other one")
+        self.store.link("d-0001", "j-0007")
+        self.store.link("d-0002", "j-0008")
+        closed, pending = self.store.mark_fixed_by_job(
+            "j-0007", pr="87", at="2026-10-29T10:00:00Z"
+        )
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        self.assertEqual(pending, [])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0007")
+        self.assertEqual(fixed.fixed_pr, "87")
+        self.assertEqual(fixed.fixed_at, "2026-10-29T10:00:00Z")
+        self.assertEqual(fixed.linked_jobs, [])
+        self.assertEqual(self.store.get("d-0002").state, HAS_JOB, "not this job's fix")
+
+    def test_two_jobs_and_the_later_merge_fixes_it_once(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.link("d-0001", "j-0002")
+        self.assertEqual(self.store.get("d-0001").linked_jobs, ["j-0001", "j-0002"])
+
+        closed, still = self.store.mark_fixed_by_job(
+            "j-0001", pr="87", at="2026-10-29T10:00:00Z"
+        )
+        self.assertEqual(closed, [], "a second job still addresses it")
+        self.assertEqual([defect.id for defect in still], ["d-0001"])
+        pending = self.store.get("d-0001")
+        self.assertEqual(pending.state, HAS_JOB)
+        self.assertEqual(pending.linked_jobs, ["j-0002"])
+        self.assertIsNone(pending.fixed_at)
+
+        closed, still = self.store.mark_fixed_by_job(
+            "j-0002", pr="88", at="2026-10-29T11:00:00Z"
+        )
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        self.assertEqual(still, [])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0002")
+        self.assertEqual(fixed.fixed_pr, "88")
+        # The later merge is the one that fixed it, and the count did not move.
+        self.assertEqual(fixed.count, 2)
+
+    def test_an_unlinked_defect_is_untouched_by_a_merge(self) -> None:
+        self.twice()
+        self.assertEqual(
+            self.store.mark_fixed_by_job("j-0007", pr="9", at="2026-10-29T10:00:00Z"),
+            ([], []),
+        )
+        self.assertEqual(self.store.get("d-0001").state, OPEN)
+
+    def test_closing_a_job_without_merging_drops_its_link(self) -> None:
+        # A closed branch fixed nothing. Its link must go, or a later merge would see
+        # a job that no longer means anything and the defect would look in flight.
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        affected = self.store.unlink_job("j-0007")
+        self.assertEqual([defect.id for defect in affected], ["d-0001"])
+        defect = self.store.get("d-0001")
+        self.assertEqual(defect.state, OPEN)
+        self.assertEqual(defect.linked_jobs, [])
+        self.assertIsNone(defect.job)
+        self.assertEqual([item.id for item in self.store.repeated([])], ["d-0001"])
+
+    def test_a_fixed_defect_seen_again_forgets_the_job_that_fixed_it(self) -> None:
+        # Blocker from the j-0225 review: the settlement fields and the old link stayed,
+        # so a later job's merge saw the closed j-0001 as a second link and the defect
+        # could never close again.
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+        self.assertEqual(self.store.get("d-0001").state, FIXED)
+
+        again, _ = self.store.sighting("a bundle carries a machine name")
+        self.assertEqual(again.state, OPEN)
+        self.assertEqual(again.linked_jobs, [], "the old fixer is not a link")
+        self.assertIsNone(again.job)
+        self.assertIsNone(again.fixed_at)
+        self.assertIsNone(again.fixed_pr)
+
+        self.store.link("d-0001", "j-0002")
+        closed, _ = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0002")
+        self.assertEqual(fixed.fixed_pr, "88")
+
+    def test_a_reopen_with_an_explicit_status_clears_the_old_fix(self) -> None:
+        # The reviewer's gap: the clean-up was gated on no --status, so `add --status
+        # open` (or has-job) kept the dead link and the defect could never close again.
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+
+        again, _ = self.store.sighting("a bundle carries a machine name", state=OPEN)
+        self.assertEqual(again.state, OPEN)
+        self.assertEqual(again.linked_jobs, [])
+        self.assertIsNone(again.fixed_at)
+        self.assertIsNone(again.fixed_pr)
+
+        self.store.link("d-0001", "j-0002")
+        closed, _ = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        self.assertEqual(self.store.get("d-0001").fixed_pr, "88")
+
+    def test_a_reopen_as_has_job_clears_the_old_fix_and_keeps_the_new_job(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+
+        again, _ = self.store.sighting(
+            "a bundle carries a machine name", job="j-0002", state=HAS_JOB
+        )
+        self.assertEqual(again.state, HAS_JOB)
+        self.assertEqual(again.linked_jobs, ["j-0002"], "the new job only")
+        self.assertIsNone(again.fixed_at)
+        self.assertIsNone(again.fixed_pr)
+
+        closed, _ = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0002")
+
+    def test_a_merge_never_rewrites_an_accepted_workaround(self) -> None:
+        # Blocker: `defects add --job j-0005 --status accepted-workaround` stored a link,
+        # and j-0005's merge flipped the state to fixed, losing the owner's decision.
+        self.store.sighting(
+            "elapsed time is wall clock, not work",
+            job="j-0005",
+            state=ACCEPTED,
+            reason="the owner quotes active time instead",
+        )
+        closed, pending = self.store.mark_fixed_by_job(
+            "j-0005", pr="87", at="2026-10-29T10:00:00Z"
+        )
+        self.assertEqual((closed, pending), ([], []))
+        defect = self.store.get("d-0001")
+        self.assertEqual(defect.state, ACCEPTED)
+        self.assertEqual(defect.reason, "the owner quotes active time instead")
+        self.assertIsNone(defect.fixed_at)
+        # And closing the job does not touch it either.
+        self.assertEqual(self.store.unlink_job("j-0005"), [])
+        self.assertEqual(self.store.get("d-0001").state, ACCEPTED)
+
+    def test_a_wrong_link_is_dropped_without_closing_the_job(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.link("d-0001", "j-0002")
+        defect = self.store.unlink("d-0001", "j-0002")
+        self.assertEqual(defect.linked_jobs, ["j-0001"])
+        self.assertEqual(defect.state, HAS_JOB)
+        defect = self.store.unlink("d-0001", "j-0001")
+        self.assertEqual(defect.linked_jobs, [])
+        self.assertEqual(defect.state, OPEN)
+        self.assertIsNone(defect.job)
+        with self.assertRaises(StateError):
+            self.store.unlink("d-0001", "j-0001")
+
+    def test_a_settled_defect_s_links_are_history_and_cannot_be_unlinked(self) -> None:
+        self.store.sighting("one", state=FIXED)
+        with self.assertRaises(StateError):
+            self.store.unlink("d-0001", "j-0009")
+
+    def test_linking_a_settled_defect_is_refused(self) -> None:
+        self.store.sighting("one", state=FIXED)
+        with self.assertRaises(StateError):
+            self.store.link("d-0001", "j-0009")
+        self.store.sighting("accepted", state=ACCEPTED, reason="the cost is known")
+        with self.assertRaises(StateError):
+            self.store.link("d-0002", "j-0009")
+
+    def test_linking_the_same_job_twice_is_harmless(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        self.store.link("d-0001", "j-0007")
+        self.assertEqual(self.store.get("d-0001").linked_jobs, ["j-0007"])
+
+    def test_an_old_record_with_one_job_reads_as_one_link(self) -> None:
+        # A file written before a defect could name two jobs carries only `job`.
+        self.path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "next": 2,
+                    "defects": {
+                        "d-0001": {
+                            "id": "d-0001",
+                            "line": "a real one",
+                            "first_seen": "2026-10-25T10:00:00Z",
+                            "last_seen": "2026-10-25T10:00:00Z",
+                            "job": "j-0007",
+                            "state": "has-job",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        defect = DefectStore(self.path).get("d-0001")
+        self.assertEqual(defect.linked_jobs, ["j-0007"])
+        self.assertEqual(defect.state_now(["j-0007"]), HAS_JOB)
+
+
 class WordSearchTest(unittest.TestCase):
     def test_the_same_words_in_another_order_are_found(self) -> None:
         # The reviewer's case: the same defect written in different words. Word
@@ -225,6 +465,15 @@ class DescribeTest(unittest.TestCase):
             self.assertIn("d-0001", text)
             self.assertIn("one line", text)
             self.assertIn("seen 1 time", text)
+
+    def test_describe_names_every_linked_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DefectStore(Path(tmp) / "defects.json")
+            store.sighting("one line")
+            store.link("d-0001", "j-0001")
+            store.link("d-0001", "j-0002")
+            text = describe(store.get("d-0001"), open_jobs=["j-0001", "j-0002"])
+            self.assertIn("jobs j-0001, j-0002", text)
 
 
 if __name__ == "__main__":
