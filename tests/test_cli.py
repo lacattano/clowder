@@ -6052,6 +6052,104 @@ class CliTest(unittest.TestCase):
         self.assertEqual(fixed["job"], second)
         self.assertEqual(fixed["fixed_pr"], "88")
 
+    def test_a_reopen_with_an_explicit_status_closes_again_with_the_new_job(self) -> None:
+        # The exact reviewer gap, through the command: `--status open` and
+        # `--status has-job` must both forget the old fix, so the new merge closes it.
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        first, _ = self.open_a_job("one", extra=("--defect", "d-0001"))
+        self.merge_word(first)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", first, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.stored_defect("d-0001")["state"], "fixed")
+
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a bundle carries a machine name",
+            "--status",
+            "open",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        again = self.stored_defect("d-0001")
+        self.assertEqual(again["state"], "open")
+        self.assertEqual(again["jobs"], [], "the dead link is gone")
+        self.assertIsNone(again["fixed_at"])
+        self.assertIsNone(again["fixed_pr"])
+
+        second, _ = self.open_a_job("two", extra=("--defect", "d-0001"))
+        self.merge_word(second)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", second, "--pr", "88", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        fixed = self.stored_defect("d-0001")
+        self.assertEqual(fixed["state"], "fixed")
+        self.assertEqual(fixed["job"], second)
+        self.assertEqual(fixed["fixed_pr"], "88")
+
+    def test_a_reopen_as_has_job_links_the_new_job_and_closes_with_it(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        first, _ = self.open_a_job("one", extra=("--defect", "d-0001"))
+        self.merge_word(first)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", first, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+
+        second, _ = self.open_a_job("two")
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a bundle carries a machine name",
+            "--status",
+            "has-job",
+            "--job",
+            second,
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        again = self.stored_defect("d-0001")
+        self.assertEqual(again["state"], "has-job")
+        self.assertEqual(again["jobs"], [second], "the new job only, not the closed one")
+        self.assertIsNone(again["fixed_at"])
+
+        self.merge_word(second)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", second, "--pr", "88", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        fixed = self.stored_defect("d-0001")
+        self.assertEqual(fixed["state"], "fixed")
+        self.assertEqual(fixed["job"], second)
+
+    def test_defects_add_refuses_a_closed_job_unless_it_records_a_fix(self) -> None:
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+        code, _, err = self.cli(
+            "defects", "add", "--line", "one line only", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot be the job that fixes", err)
+        # A seed or a hand-recorded fix may name the job that already merged.
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "one line only",
+            "--status",
+            "fixed",
+            "--job",
+            job_id,
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.stored_defect("d-0001")["state"], "fixed")
+
     def test_a_merge_never_rewrites_an_accepted_workaround(self) -> None:
         # Blocker 2: an accepted workaround stored a link, and the merge turned it into
         # a fix, throwing away the owner's decision.
@@ -6100,8 +6198,9 @@ class CliTest(unittest.TestCase):
             if line.get("action") == "defects-unlinked"
         ]
         self.assertEqual(len(lines), 1, "a dropped link leaves a trail")
-        self.assertEqual(lines[0]["defect"], "d-0001")
+        self.assertEqual(lines[0]["defects"], ["d-0001"])
         self.assertEqual(lines[0]["job"], job_id)
+        self.assertNotIn("defect", lines[0], "one shape for a dropped link")
 
     def test_a_non_final_merge_audits_the_link_it_drops(self) -> None:
         self.cli(
@@ -6141,6 +6240,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["job"], job_id)
         self.assertEqual(lines[0]["defects"], ["d-0001"])
+        self.assertNotIn("defect", lines[0], "the same shape as defects unlink")
 
     def test_a_settled_defect_cannot_be_linked(self) -> None:
         self.cli(

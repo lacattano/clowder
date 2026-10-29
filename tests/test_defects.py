@@ -276,6 +276,43 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(fixed.job, "j-0002")
         self.assertEqual(fixed.fixed_pr, "88")
 
+    def test_a_reopen_with_an_explicit_status_clears_the_old_fix(self) -> None:
+        # The reviewer's gap: the clean-up was gated on no --status, so `add --status
+        # open` (or has-job) kept the dead link and the defect could never close again.
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+
+        again, _ = self.store.sighting("a bundle carries a machine name", state=OPEN)
+        self.assertEqual(again.state, OPEN)
+        self.assertEqual(again.linked_jobs, [])
+        self.assertIsNone(again.fixed_at)
+        self.assertIsNone(again.fixed_pr)
+
+        self.store.link("d-0001", "j-0002")
+        closed, _ = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        self.assertEqual(self.store.get("d-0001").fixed_pr, "88")
+
+    def test_a_reopen_as_has_job_clears_the_old_fix_and_keeps_the_new_job(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+
+        again, _ = self.store.sighting(
+            "a bundle carries a machine name", job="j-0002", state=HAS_JOB
+        )
+        self.assertEqual(again.state, HAS_JOB)
+        self.assertEqual(again.linked_jobs, ["j-0002"], "the new job only")
+        self.assertIsNone(again.fixed_at)
+        self.assertIsNone(again.fixed_pr)
+
+        closed, _ = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0002")
+
     def test_a_merge_never_rewrites_an_accepted_workaround(self) -> None:
         # Blocker: `defects add --job j-0005 --status accepted-workaround` stored a link,
         # and j-0005's merge flipped the state to fixed, losing the owner's decision.

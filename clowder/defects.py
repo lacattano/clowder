@@ -415,10 +415,12 @@ class DefectStore:
             else:
                 current.count += 1
                 current.last_seen = moment
-                if current.state == FIXED and not state:
-                    # It is not fixed if it happened again. The job that fixed it is
-                    # history, not a link: left in place, a later merge would see a
-                    # closed job and the defect would never close again.
+                if current.state == FIXED and chosen in (OPEN, HAS_JOB):
+                    # It is not fixed if it happened again, whatever flag the caller
+                    # passed. The job that fixed it is history, not a link: left in
+                    # place, a later merge would see a closed job and the defect
+                    # would never close again. An accepted workaround is a settled
+                    # decision and is not reopened this way.
                     current.state = OPEN
                     current.jobs = []
                     current.job = None

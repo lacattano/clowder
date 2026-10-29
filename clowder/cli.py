@@ -25,6 +25,7 @@ from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .defects import (
     ACCEPTED,
+    FIXED,
     HAS_JOB,
     DefectStore,
     matches_line,
@@ -4671,7 +4672,16 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     if state == HAS_JOB and not args.job:
         raise UsageError("--state has-job needs --job ID")
     if args.job:
-        store.get_job(args.job)  # refuse an id that names nothing
+        named = store.get_job(args.job)  # refuse an id that names nothing
+        # A closed job is not a fix in flight. It is still valid as the record of
+        # where a defect was fixed or accepted, which is what a seed names.
+        settled = state in (FIXED, ACCEPTED)
+        if not named.is_open and not settled:
+            raise UsageError(
+                f"{named.id} is {named.state_in_words}, so it cannot be the job that "
+                "fixes this defect. Name an open job, or record the fix with "
+                "--status fixed and this job as the one that fixed it."
+            )
     if args.detail and args.detail_file:
         raise UsageError("pass --detail or --detail-file, not both")
     # A seed carries a date and a state, and either alone is refused: a seeded entry
@@ -4836,8 +4846,8 @@ def cmd_defects_unlink(args: argparse.Namespace) -> int:
             "action": "defects-unlinked",
             "at": now_iso(),
             "by": config.front_door_name or "unknown",
-            "defect": defect.id,
             "job": args.job,
+            "defects": [defect.id],
             "why": "the link named the wrong job",
         },
     )
