@@ -924,6 +924,14 @@ list, so the chance to notice went with it.
 - **The list tells the truth.** `defects list` shows a linked defect whose job is open as
   `has-job`, and a link whose job closed without merging as `open` again, so the repeat alarm
   returns. That is a read-time answer, not a write: reading the record never edits it.
+- **A defect that comes back starts clean.** Seen again after a fix, the settlement fields and
+  the old job link are cleared, so the defect is open with no job; the next job's merge closes it
+  again. Left in place, the closed fixer read as a second link and the defect could never close.
+- **A merge never rewrites a decision.** An accepted workaround keeps its state and its reason,
+  and a link to a closed job is dropped rather than turned into a fix.
+- **Every change leaves a trail.** A merge that only drops a link, a job closed without merging,
+  and `defects unlink` each write one audit line. `defects unlink <id> --job <job>` drops a wrong
+  link without closing the job, and `describe` names every linked job.
 - **Not fuzzy matching.** The link is named by a command, never guessed from a defect's words.
   The word search and the seed are unchanged.
 

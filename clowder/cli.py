@@ -775,6 +775,12 @@ def build_parser() -> argparse.ArgumentParser:
     d_link.add_argument("--json", action="store_true")
     d_link.set_defaults(handler=cmd_defects_link, refreshes_board=True)
 
+    d_unlink = defects_parser("unlink", "drop a link that named the wrong job")
+    d_unlink.add_argument("id", help="defect id, e.g. d-0007")
+    d_unlink.add_argument("--job", required=True, metavar="ID", help="the job to drop")
+    d_unlink.add_argument("--json", action="store_true")
+    d_unlink.set_defaults(handler=cmd_defects_unlink, refreshes_board=True)
+
     d_show = defects_parser("show", "one defect, in full")
     d_show.add_argument("id", help="defect id, e.g. d-0001")
     d_show.add_argument("--json", action="store_true")
@@ -2593,7 +2599,7 @@ def cmd_job_close(args: argparse.Namespace) -> int:
     store.save()
     # Closing without merging fixed nothing, so the job's links stop pointing at it.
     # The defect goes back to open, and the repeat alarm can fire again.
-    reopened = _unlink_defects(config, job)
+    reopened = _unlink_defects(config, store, job)
 
     if args.json:
         _emit_json(
@@ -4571,10 +4577,10 @@ def _link_defects(config: Config, job: Job, defect_ids: Sequence[str]) -> list[s
     return list(defect_ids)
 
 
-def _unlink_defects(config: Config, job: Job) -> list[str]:
-    """Drop a closed job's links, and return the defects that are open again."""
+def _unlink_defects(config: Config, store: StateStore, job: Job) -> list[str]:
+    """Drop a closed job's links, write one audit line, return the defects reopened."""
     try:
-        affected = _defect_store(config).unlink(job.id)
+        affected = _defect_store(config).unlink_job(job.id)
     except (StateError, OSError) as exc:
         print(
             f"{PROGRAM}: warning: {job.id} closed, but its linked defects could not be "
@@ -4582,19 +4588,35 @@ def _unlink_defects(config: Config, job: Job) -> list[str]:
             file=sys.stderr,
         )
         return []
-    return [defect.id for defect in affected]
+    if not affected:
+        return []
+    ids = [defect.id for defect in affected]
+    audit.append_audit(
+        store.path,
+        {
+            "action": "defects-unlinked",
+            "at": job.closed_at or now_iso(),
+            "by": config.front_door_name or "unknown",
+            "job": job.id,
+            "defects": ids,
+            "why": "the job closed without merging, so its links are not fixes",
+        },
+    )
+    return ids
 
 
 def _mark_defects_fixed(config: Config, store: StateStore, job: Job, pr: str) -> list[str]:
     """Mark the defects this job fixes fixed, and write one audit line.
 
-    Returns the ids the merge closed. A defect naming a second, still open job stays
-    `has-job`: the work is not finished while another branch says it is coming. A
-    merge that lands is already done, so a defect file that cannot be read is a
-    warning here, not a reason to claim the merge failed.
+    Returns the ids the merge closed. A defect naming a second, still open job loses
+    its link to this job and stays `has-job`: the work is not finished while another
+    branch says it is coming. That drop is a change to the record, so it is audited
+    too, even when this merge closed nothing. A merge that landed is already done, so
+    a defect file that cannot be read is a warning here, not a reason to claim the
+    merge failed.
     """
     try:
-        marked = _defect_store(config).mark_fixed_by_job(
+        closed, pending = _defect_store(config).mark_fixed_by_job(
             job.id, pr=pr, at=job.merged_at or now_iso()
         )
     except (StateError, OSError) as exc:
@@ -4604,9 +4626,10 @@ def _mark_defects_fixed(config: Config, store: StateStore, job: Job, pr: str) ->
             file=sys.stderr,
         )
         return []
-    if not marked:
+    if not closed and not pending:
         return []
-    ids = [defect.id for defect in marked]
+    ids = [defect.id for defect in closed]
+    still_open = [defect.id for defect in pending]
     audit.append_audit(
         store.path,
         {
@@ -4616,6 +4639,7 @@ def _mark_defects_fixed(config: Config, store: StateStore, job: Job, pr: str) ->
             "job": job.id,
             "pr": pr,
             "defects": ids,
+            "still_open": still_open,
         },
     )
     return ids
@@ -4791,6 +4815,37 @@ def cmd_defects_link(args: argparse.Namespace) -> int:
         print(f"{defect.id} linked to {job.id}: {', '.join(defect.linked_jobs)}")
     else:
         print(f"{defect.id} is already linked to {job.id}")
+    return 0
+
+
+def cmd_defects_unlink(args: argparse.Namespace) -> int:
+    """Drop a link that named the wrong job, and record that it was dropped.
+
+    A link is named by a command, so a wrong one has to be nameable too. Closing the
+    job was the only way to undo it, which threw away the branch as well.
+    """
+    config, store = _context(args)
+    defects = _defect_store(config)
+    try:
+        defect = defects.unlink(args.id, args.job)
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
+    audit.append_audit(
+        store.path,
+        {
+            "action": "defects-unlinked",
+            "at": now_iso(),
+            "by": config.front_door_name or "unknown",
+            "defect": defect.id,
+            "job": args.job,
+            "why": "the link named the wrong job",
+        },
+    )
+    if args.json:
+        _emit_json({"defect": defect.to_dict(), "job": args.job, "unlinked": True})
+        return 0
+    remaining = ", ".join(defect.linked_jobs) or "(none)"
+    print(f"{defect.id} unlinked from {args.job}; links now: {remaining}")
     return 0
 
 

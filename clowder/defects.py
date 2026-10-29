@@ -415,14 +415,20 @@ class DefectStore:
             else:
                 current.count += 1
                 current.last_seen = moment
+                if current.state == FIXED and not state:
+                    # It is not fixed if it happened again. The job that fixed it is
+                    # history, not a link: left in place, a later merge would see a
+                    # closed job and the defect would never close again.
+                    current.state = OPEN
+                    current.jobs = []
+                    current.job = None
+                    current.fixed_at = None
+                    current.fixed_pr = None
                 if job and job not in current.linked_jobs:
                     current.jobs = [*current.linked_jobs, job]
                     current.job = current.jobs[0]
                 if state:
                     current.state = chosen
-                elif current.state == FIXED:
-                    # It is not fixed if it happened again.
-                    current.state = OPEN
                 elif job and current.state == OPEN:
                     current.state = HAS_JOB
                 if reason:
@@ -465,12 +471,13 @@ class DefectStore:
                 self._save()
             return defect
 
-    def unlink(self, job_id: str) -> list[Defect]:
-        """Drop a job's links because the job closed without merging. Returns those left open.
+    def unlink_job(self, job_id: str) -> list[Defect]:
+        """Drop a job's links because the job closed without merging. Returns what changed.
 
         A closed branch fixed nothing. Leaving its link in place would make the defect
         look in flight for ever, and a later merge would see a link that no longer
-        means anything.
+        means anything. A settled defect is left alone: an accepted workaround is a
+        decision, and closing a job does not decide anything about it.
         """
         with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
             self._loaded = False
@@ -478,6 +485,8 @@ class DefectStore:
             affected: list[Defect] = []
             changed = False
             for defect in self._defects.values():
+                if defect.settled:
+                    continue
                 links = defect.linked_jobs
                 if job_id not in links:
                     continue
@@ -494,20 +503,67 @@ class DefectStore:
                 self._save()
             return sorted(affected, key=lambda defect: defect.id)
 
-    def mark_fixed_by_job(self, job_id: str, *, pr: str, at: str) -> list[Defect]:
-        """Mark the defects this job fixes, and only those. Returns those closed.
+    def unlink(self, defect_id: str, job_id: str) -> Defect:
+        """Drop one wrong link from one defect, and return it.
+
+        The link is named by a command, so a wrong one has to be nameable too. A
+        settled defect is refused: it records what happened, and relinking does not
+        undo a merge.
+        """
+        with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
+            self._loaded = False
+            self.load()
+            defect = self._defects.get(defect_id)
+            if defect is None:
+                raise StateError(
+                    f"no defect {defect_id!r} in {self.path}. List them with: "
+                    "clowder defects list"
+                )
+            if defect.settled:
+                raise StateError(
+                    f"{defect.id} is {defect.state}, so its links are history, not work "
+                    "in flight. Nothing changed."
+                )
+            links = defect.linked_jobs
+            if job_id not in links:
+                raise StateError(
+                    f"{defect.id} is not linked to {job_id}. Its links: "
+                    f"{', '.join(links) or '(none)'}"
+                )
+            remaining = [job for job in links if job != job_id]
+            defect.jobs = remaining
+            if remaining:
+                defect.job = remaining[0]
+            else:
+                defect.job = None
+                if defect.state == HAS_JOB:
+                    defect.state = OPEN
+            self._save()
+            return defect
+
+    def mark_fixed_by_job(
+        self, job_id: str, *, pr: str, at: str
+    ) -> tuple[list[Defect], list[Defect]]:
+        """Mark the defects this job fixes. Returns (closed, still pending).
 
         A defect naming two jobs is not fixed by the first merge: the other job still
-        says the work is coming. Its link is dropped and it stays `has-job`; the
-        merge that lands the last link records the moment, the job and the PR, and
-        marks it fixed. One write, so a merge cannot leave half a record.
+        says the work is coming. Its link is dropped and it stays `has-job`, and it is
+        returned as pending; the merge that lands the last link records the moment,
+        the job and the PR, and marks it fixed. One write, so a merge cannot leave
+        half a record.
+
+        A settled defect is never rewritten. An accepted workaround is a decision the
+        owner made, and a merge does not decide anything about it.
         """
         with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
             self._loaded = False
             self.load()
             closed: list[Defect] = []
+            pending: list[Defect] = []
             changed = False
             for defect in self._defects.values():
+                if defect.settled:
+                    continue
                 links = defect.linked_jobs
                 if job_id not in links:
                     continue
@@ -520,6 +576,7 @@ class DefectStore:
                     # when one of them has merged.
                     defect.job = remaining[0]
                     defect.state = HAS_JOB
+                    pending.append(defect)
                     continue
                 defect.job = job_id
                 defect.state = FIXED
@@ -528,7 +585,10 @@ class DefectStore:
                 closed.append(defect)
             if changed:
                 self._save()
-            return sorted(closed, key=lambda defect: defect.id)
+            return (
+                sorted(closed, key=lambda defect: defect.id),
+                sorted(pending, key=lambda defect: defect.id),
+            )
 
 
 def recently_seen(
@@ -578,9 +638,9 @@ def merge_warning(defect: Defect) -> str | None:
 
 
 def describe(defect: Defect, *, open_jobs: Sequence[str] = ()) -> str:
-    """One line for a list: id, line, count, state, the linked jobs."""
+    """One line for a list: id, line, count, state, every linked job."""
     links = defect.linked_jobs
-    job = f"job {defect.job}" if links else "no job"
+    job = f"jobs {', '.join(links)}" if links else "no job"
     seen = f"seen {defect.count} time{'s' if defect.count != 1 else ''}"
     needs = " - needs a job or an accepted workaround" if defect.needs_action(open_jobs) else ""
     return (

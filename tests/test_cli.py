@@ -6017,6 +6017,131 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("cannot be the fix", err)
 
+    def test_a_defect_that_comes_back_closes_again_with_the_new_job(self) -> None:
+        # Blocker 1 from the j-0225 review: the old fixer came back as a link, so the
+        # second merge left the defect has-job pointing at a closed job, for ever.
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        first, _ = self.open_a_job("one", extra=("--defect", "d-0001"))
+        self.merge_word(first)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", first, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.stored_defect("d-0001")["state"], "fixed")
+
+        code, out, err = self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("seen again", out)
+        again = self.stored_defect("d-0001")
+        self.assertEqual(again["state"], "open")
+        self.assertEqual(again["jobs"], [], "the old fixer is history, not a link")
+        self.assertIsNone(again["job"])
+        self.assertIsNone(again["fixed_at"])
+        self.assertIsNone(again["fixed_pr"])
+
+        second, _ = self.open_a_job("two", extra=("--defect", "d-0001"))
+        self.merge_word(second)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", second, "--pr", "88", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        fixed = self.stored_defect("d-0001")
+        self.assertEqual(fixed["state"], "fixed")
+        self.assertEqual(fixed["job"], second)
+        self.assertEqual(fixed["fixed_pr"], "88")
+
+    def test_a_merge_never_rewrites_an_accepted_workaround(self) -> None:
+        # Blocker 2: an accepted workaround stored a link, and the merge turned it into
+        # a fix, throwing away the owner's decision.
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "defects",
+            "add",
+            "--line",
+            "elapsed time is wall clock, not work",
+            "--job",
+            job_id,
+            "--status",
+            "accepted-workaround",
+            "--reason",
+            "the owner quotes active time instead",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, out, err = self.cli(
+                "job", "merge", job_id, "--pr", "87", env=self.state_env()
+            )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("defects marked fixed", out)
+        defect = self.stored_defect("d-0001")
+        self.assertEqual(defect["state"], "accepted-workaround")
+        self.assertEqual(defect["reason"], "the owner quotes active time instead")
+        self.assertIsNone(defect["fixed_at"])
+
+    def test_defects_unlink_drops_a_wrong_link_and_records_it(self) -> None:
+        self.cli("defects", "add", "--line", "one line only", env=self.fake_env())
+        job_id, _ = self.open_a_job()
+        self.cli("defects", "link", "d-0001", "--job", job_id, env=self.state_env())
+        code, out, err = self.cli(
+            "defects", "unlink", "d-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"unlinked from {job_id}", out)
+        defect = self.stored_defect("d-0001")
+        self.assertEqual(defect["state"], "open")
+        self.assertEqual(defect["jobs"], [])
+        lines = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "defects-unlinked"
+        ]
+        self.assertEqual(len(lines), 1, "a dropped link leaves a trail")
+        self.assertEqual(lines[0]["defect"], "d-0001")
+        self.assertEqual(lines[0]["job"], job_id)
+
+    def test_a_non_final_merge_audits_the_link_it_drops(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        first, _ = self.open_a_job("one", extra=("--defect", "d-0001"))
+        second = "j-0002"
+        self.write_job(second, "task/two")
+        self.cli("defects", "link", "d-0001", "--job", second, env=self.state_env())
+        self.merge_word(first)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", first, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.stored_defect("d-0001")["state"], "has-job")
+        lines = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "defects-fixed"
+        ]
+        self.assertEqual(len(lines), 1, "dropping a link is a change, so it is audited")
+        self.assertEqual(lines[0]["defects"], [])
+        self.assertEqual(lines[0]["still_open"], ["d-0001"])
+
+    def test_closing_a_job_drops_its_link_and_audits_it(self) -> None:
+        self.cli("defects", "add", "--line", "one line only", env=self.fake_env())
+        job_id, _ = self.open_a_job("one", extra=("--defect", "d-0001"))
+        code, _, err = self.cli("job", "close", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        defect = self.stored_defect("d-0001")
+        self.assertEqual(defect["state"], "open")
+        self.assertEqual(defect["jobs"], [])
+        lines = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "defects-unlinked"
+        ]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["job"], job_id)
+        self.assertEqual(lines[0]["defects"], ["d-0001"])
+
     def test_a_settled_defect_cannot_be_linked(self) -> None:
         self.cli(
             "defects",

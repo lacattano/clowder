@@ -90,6 +90,7 @@ A vague ask wastes the peer's turn.
 - **Name the defect on the job that fixes it.** Open the job with `--defect <id>`, or link it
   later with `clowder defects link <id> --job <job>`. The merge then marks the defect fixed with
   the job, the pull request and the date, so nobody has to notice the merge and edit it by hand.
+  A link that named the wrong job is dropped with `clowder defects unlink <id> --job <job>`.
 
 **Sending over the bus.** A pane can send only once the remote-pi Docker service is running and
 the pane is joined with `/remote-pi join`. If `list_peers` says "Not in a session", the pane is

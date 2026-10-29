@@ -78,11 +78,11 @@ Two more mechanisms, so one fact lives in one place:
   the machine or the person that no command can derive. Write the handover before a reset, not
   after one.
 - **A defect has one home.** Record what cost time with `clowder defects add --line "..."`, in
-  the owner's words, at the moment you see it. Open the fixing job with `--defect <id>`, or link
-  it later with `clowder defects link <id> --job <job>`: the merge marks the defect fixed, with
-  the job, the pull request and the date. `--status accepted-workaround --reason TEXT` when the
-  owner accepts the cost instead. If it is not in that record it is not known; nothing else
-  stores one. `--detail` (or `--detail-file`) carries the workaround and the citations.
+  the owner's words, when you see it. Open the fixing job with `--defect <id>`, or link it later
+  with `clowder defects link <id> --job <job>`: the merge marks the defect fixed, with the job,
+  the pull request and the date. `--status fixed` marks one by hand; `--status
+  accepted-workaround --reason TEXT` when the owner accepts the cost. If it is not in that
+  record it is not known; nothing else stores one. `--detail` carries the workaround and citations.
 - **Seeding an entry from an older record.** A defect known only from a handover is added with
   `--first-seen DATE --last-seen DATE --count N --status ...`: the dates say when it was recorded,
   the count how often, and the state where it stands today. A seeded entry is refused without a
