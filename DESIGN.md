@@ -935,6 +935,36 @@ list, so the chance to notice went with it.
 - **Not fuzzy matching.** The link is named by a command, never guessed from a defect's words.
   The word search and the seed are unchanged.
 
+### 41. He reads one place: what he missed, built from the record every time
+
+His words, 2026-10-26: "a lot of our turns are just me asking you to repeat yourself with context
+... The board was meant to be the way that I could pick up information that I'd missed in the chat.
+But the board is just always stale, and I have to ask you to refresh the board." Three mechanical
+faults sat behind it. The board is a file a command writes, so between commands it is a snapshot
+of a record that moved on. Its first section lists records (job ids, states, worker questions),
+not what happened and what it means for him. And nothing recorded what he had already read, so
+"what did I miss" could not be computed: every view answered "what is true now".
+
+What already covered part of it: the board's "What landed since this page was last drawn" counts
+by the page's own draw moment, not his reading; "For you" already carries the word that answers
+each line; the dispatch marker already requires a `For the owner:` line, and `report` already
+shows it first and marks a report without it incomplete. Those stayed.
+
+- **`clowder catchup`** builds the answer from the record on every run and caches nothing: what
+  landed and what it changes, what broke or is at risk, what waits on him with the answering
+  word, what runs now, what is queued. One line each, names before handles, no worker narration.
+- **Read tracking in the one state file.** Each line has a stable key and the moment it became
+  true; `seen` maps key to the moment shown, and `catchup_at` is his last read. A line is new when
+  its key carries a moment he has not been shown, so a line that moves (a job that lands later)
+  is new again. `--all` is the standing picture. No second store.
+- **The board opens with that text**, built by the same function, so the page and the command
+  cannot disagree. Drawing never marks a line read: only `catchup` does. The record sections
+  follow, unchanged and in their order.
+- **The owner line is enforced where it is recorded.** `step report` refuses an answer with no
+  usable `For the owner:` line, with `--force` to close anyway and the report then reading
+  incomplete. That is the step where the meaning used to leak: the worker wrote it, the front door
+  paraphrased it. The front door now relays it verbatim (section 20).
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from

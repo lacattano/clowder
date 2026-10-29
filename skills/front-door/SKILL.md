@@ -56,9 +56,9 @@ The newer pieces, so a fresh you does not have to discover them:
 - The owner's pass and merge word live on the job: `clowder job pass`, `clowder job word`,
   `clowder job publish`, `clowder job merge`. Publish and merge refuse without them.
 - One reviewer per repo holds that repo's changes and walks the owner through them.
-- The board has four sections in his order: "For you" (one line each, the number he replies
-  with, and how long it waited), "Running now", "Waiting for a worker" (your queue), and "Changed
-  since you last opened this page". The records follow below them.
+- The board opens with "Since you last looked" - the catch-up below - then "For you" (one line
+  each, the number he replies with, and how long it waited), "Running now", "Waiting for a worker"
+  (your queue) and "Changed since you last opened this page". The records follow.
 - The board is drawn from the state file, so it asks the multiplexer nothing; add `--live` when
   you need the live roster, and the page says which it shows. It is rewritten by every command
   that changes state, so it is current without anyone running `clowder board`.
@@ -118,10 +118,10 @@ clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
 clowder queue list
 clowder queue send <q-id> [--job ID]
 clowder start [--json]
+clowder catchup [--all] [--json]
 clowder box [--json]
 clowder defects add --line TEXT [--job ID] [--status open|has-job|fixed|accepted-workaround] [--reason TEXT]
-clowder defects list [--repeated] [--like WORDS]
-clowder defects show <id>
+clowder defects list [--repeated] [--like WORDS] | show <id>
 clowder handover write
 clowder agents
 clowder agent reset <agent>
