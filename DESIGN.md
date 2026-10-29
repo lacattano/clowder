@@ -971,8 +971,10 @@ shows it first and marks a report without it incomplete. Those stayed.
   the owner reading, and a relay must not eat the line before he sees it.
 - **A returning line is news, and the line is in his nouns.** A read replaces the picture rather
   than growing it, so an item that left and came back is not "already read"; a defect put back to
-  open by a job that closed without merging carries the moment it became actionable again; and a
-  running line drops the shape word and any job or task handle the brief's first line carried.
+  open by a job that closed without merging carries the moment it became actionable again, and a
+  count that moves with it, because a timestamp with second resolution cannot tell two reopens in
+  one second apart; and a running line drops the shape label and any job or task handle the
+  brief's first line carried, while an English sentence such as "scout the area" is left alone.
 
 ## What step 1 built
 

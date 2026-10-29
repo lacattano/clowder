@@ -22,6 +22,22 @@ from .timeutil import elapsed_seconds, now_iso
 
 SCHEMA_VERSION = 2
 
+# Every top-level key this copy knows. Read once and used in two places: loading, to
+# keep a key a newer copy wrote, and saving, so that key is written back. A set written
+# twice is a set that drifts.
+KNOWN_KEYS = {
+    "schema",
+    "rev",
+    "seq",
+    "job_seq",
+    "queue_seq",
+    "tasks",
+    "jobs",
+    "queued",
+    "seen",
+    "catchup_at",
+}
+
 DISPATCHED = "dispatched"
 REPORTED = "reported"
 FAILED = "failed"
@@ -502,19 +518,7 @@ class StateStore:
         )
         moment = raw.get("catchup_at")
         self._catchup_at = str(moment) if isinstance(moment, str) and moment else None
-        known = {
-            "schema",
-            "rev",
-            "seq",
-            "job_seq",
-            "queue_seq",
-            "tasks",
-            "jobs",
-            "queued",
-            "seen",
-            "catchup_at",
-        }
-        self._extras = {key: value for key, value in raw.items() if key not in known}
+        self._extras = {key: value for key, value in raw.items() if key not in KNOWN_KEYS}
 
         self._jobs = {
             str(key): Job.from_dict(self._record(record, key, "job"))
@@ -682,20 +686,8 @@ class StateStore:
             if isinstance(seen, dict):
                 self._seen = {str(key): str(value) for key, value in seen.items()}
             self._catchup_at = moment
-        known = {
-            "schema",
-            "rev",
-            "seq",
-            "job_seq",
-            "queue_seq",
-            "tasks",
-            "jobs",
-            "queued",
-            "seen",
-            "catchup_at",
-        }
         for key, value in raw.items():
-            if key not in known:
+            if key not in KNOWN_KEYS:
                 self._extras[key] = value
         self._base_rev = disk_rev
         self._snapshot_base()

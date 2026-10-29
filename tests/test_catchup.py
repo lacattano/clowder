@@ -101,8 +101,39 @@ class PlainQuestionTest(unittest.TestCase):
             "add the refund page",
         )
 
+    def test_an_english_sentence_that_starts_with_a_shape_word_is_left_alone(self) -> None:
+        # The strip is for the label, "ship:" or "scout:", not for the verb.
+        self.assertEqual(
+            catchup.plain_question("scout the area for the link"), "scout the area for the link"
+        )
+        self.assertEqual(catchup.plain_question("ship the refund page"), "ship the refund page")
+
     def test_a_question_that_is_only_a_handle_says_something(self) -> None:
         self.assertEqual(catchup.plain_question("t-1016"), "a step in flight")
+
+
+class ReopenTest(unittest.TestCase):
+    def test_two_reopens_in_one_second_are_two_news(self) -> None:
+        # Timestamps have second resolution, so the count is what separates two reopens
+        # that land in the same second - the CI failure this pins.
+        import tempfile
+        from pathlib import Path
+
+        from clowder.defects import DefectStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DefectStore(Path(tmp) / "defects.json")
+            store.sighting("a bundle carries a machine name")
+            store.sighting("a bundle carries a machine name")
+            tokens = []
+            for job_id in ("j-0001", "j-0002"):
+                store.link("d-0001", job_id)
+                store.unlink_job(job_id)
+                defect = store.get("d-0001")
+                items = catchup.at_risk([defect], [])
+                tokens.append(items[0].token)
+            self.assertNotEqual(tokens[0], tokens[1], "same second, different reopen")
+            self.assertEqual(store.get("d-0001").reopen_seq, 2)
 
 
 class SeenTest(unittest.TestCase):

@@ -122,7 +122,9 @@ def at_risk(defects: Sequence[Defect], open_jobs: Sequence[str]) -> list[Item]:
                     f"Still happening: {defect.line} "
                     f"(seen {defect.count} time{'s' if defect.count != 1 else ''})"
                 ),
-                state=defect.state_now(open_jobs),
+                # The reopen count is part of the state: a defect reopened inside the
+                # same second as the read is still news.
+                state=f"{defect.state_now(open_jobs)}#{defect.reopen_seq}",
             )
         )
     return sorted(items, key=lambda item: item.at, reverse=True)
@@ -195,7 +197,7 @@ def build(store: StateStore, defects: Sequence[Defect]) -> list[Item]:
 
 
 HANDLE = re.compile(r"[jtqd]-\d{3,}", re.IGNORECASE)
-SHAPE = re.compile(r"^(ship|scout)[:\s-]*", re.IGNORECASE)
+SHAPE = re.compile(r"^(ship|scout)\s*:\s*", re.IGNORECASE)
 EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]")
 
 
@@ -204,10 +206,14 @@ def plain_question(text: str) -> str:
 
     `question` is the brief's first line, so it can carry the crew's dialect - "ship
     (t-1016): ..." - and a handle in a line he reads is a lookup he did not ask for.
+    The shape word is stripped only when it is written as a label, "ship:" or "scout:",
+    so an English sentence such as "scout the area" is left alone.
     """
     cleaned = HANDLE.sub("", text or "")
-    cleaned = SHAPE.sub("", cleaned.strip())
+    # Empty brackets go before the shape word: "ship (t-1016):" becomes "ship :" first,
+    # and only then is the label stripped.
     cleaned = EMPTY_BRACKETS.sub("", cleaned)
+    cleaned = SHAPE.sub("", cleaned.strip())
     cleaned = " ".join(cleaned.replace("()", "").replace("[]", "").split())
     return cleaned.strip(" :-,") or "a step in flight"
 
