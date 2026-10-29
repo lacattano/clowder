@@ -153,6 +153,135 @@ class StoreTest(unittest.TestCase):
         )
 
 
+class LinkTest(unittest.TestCase):
+    """A defect names the jobs that fix it, and the merge closes it."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.path = defects_path(self.root / "state.json")
+        self.store = DefectStore(self.path)
+
+    def twice(self, line: str = "a bundle carries a machine name") -> None:
+        self.store.sighting(line)
+        self.store.sighting(line)
+
+    def test_a_link_marks_it_has_job_and_silences_the_repeat(self) -> None:
+        self.twice()
+        defect = self.store.link("d-0001", "j-0007")
+        self.assertEqual(defect.state, HAS_JOB)
+        self.assertEqual(defect.job, "j-0007")
+        self.assertEqual(defect.linked_jobs, ["j-0007"])
+        self.assertEqual(self.store.repeated(["j-0007"]), [], "the fix is in flight")
+
+    def test_a_linked_job_closed_without_merging_puts_it_back_to_open(self) -> None:
+        # The stored word is what the last write knew. A job closed without merging
+        # fixed nothing, so the reader must not keep showing "has-job".
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        defect = self.store.get("d-0001")
+        self.assertEqual(defect.state_now(["j-0007"]), HAS_JOB)
+        self.assertEqual(defect.state_now([]), OPEN)
+        self.assertEqual([item.id for item in self.store.repeated([])], ["d-0001"])
+
+    def test_a_merge_marks_only_the_defects_linked_to_it(self) -> None:
+        self.twice("the linked one")
+        self.twice("the other one")
+        self.store.link("d-0001", "j-0007")
+        self.store.link("d-0002", "j-0008")
+        closed = self.store.mark_fixed_by_job("j-0007", pr="87", at="2026-10-29T10:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0007")
+        self.assertEqual(fixed.fixed_pr, "87")
+        self.assertEqual(fixed.fixed_at, "2026-10-29T10:00:00Z")
+        self.assertEqual(fixed.linked_jobs, [])
+        self.assertEqual(self.store.get("d-0002").state, HAS_JOB, "not this job's fix")
+
+    def test_two_jobs_and_the_later_merge_fixes_it_once(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0001")
+        self.store.link("d-0001", "j-0002")
+        self.assertEqual(self.store.get("d-0001").linked_jobs, ["j-0001", "j-0002"])
+
+        closed = self.store.mark_fixed_by_job("j-0001", pr="87", at="2026-10-29T10:00:00Z")
+        self.assertEqual(closed, [], "a second job still addresses it")
+        pending = self.store.get("d-0001")
+        self.assertEqual(pending.state, HAS_JOB)
+        self.assertEqual(pending.linked_jobs, ["j-0002"])
+        self.assertIsNone(pending.fixed_at)
+
+        closed = self.store.mark_fixed_by_job("j-0002", pr="88", at="2026-10-29T11:00:00Z")
+        self.assertEqual([defect.id for defect in closed], ["d-0001"])
+        fixed = self.store.get("d-0001")
+        self.assertEqual(fixed.state, FIXED)
+        self.assertEqual(fixed.job, "j-0002")
+        self.assertEqual(fixed.fixed_pr, "88")
+        # The later merge is the one that fixed it, and the count did not move.
+        self.assertEqual(fixed.count, 2)
+
+    def test_an_unlinked_defect_is_untouched_by_a_merge(self) -> None:
+        self.twice()
+        self.assertEqual(
+            self.store.mark_fixed_by_job("j-0007", pr="9", at="2026-10-29T10:00:00Z"), []
+        )
+        self.assertEqual(self.store.get("d-0001").state, OPEN)
+
+    def test_closing_a_job_without_merging_drops_its_link(self) -> None:
+        # A closed branch fixed nothing. Its link must go, or a later merge would see
+        # a job that no longer means anything and the defect would look in flight.
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        affected = self.store.unlink("j-0007")
+        self.assertEqual([defect.id for defect in affected], ["d-0001"])
+        defect = self.store.get("d-0001")
+        self.assertEqual(defect.state, OPEN)
+        self.assertEqual(defect.linked_jobs, [])
+        self.assertIsNone(defect.job)
+        self.assertEqual([item.id for item in self.store.repeated([])], ["d-0001"])
+
+    def test_linking_a_settled_defect_is_refused(self) -> None:
+        self.store.sighting("one", state=FIXED)
+        with self.assertRaises(StateError):
+            self.store.link("d-0001", "j-0009")
+        self.store.sighting("accepted", state=ACCEPTED, reason="the cost is known")
+        with self.assertRaises(StateError):
+            self.store.link("d-0002", "j-0009")
+
+    def test_linking_the_same_job_twice_is_harmless(self) -> None:
+        self.twice()
+        self.store.link("d-0001", "j-0007")
+        self.store.link("d-0001", "j-0007")
+        self.assertEqual(self.store.get("d-0001").linked_jobs, ["j-0007"])
+
+    def test_an_old_record_with_one_job_reads_as_one_link(self) -> None:
+        # A file written before a defect could name two jobs carries only `job`.
+        self.path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "next": 2,
+                    "defects": {
+                        "d-0001": {
+                            "id": "d-0001",
+                            "line": "a real one",
+                            "first_seen": "2026-10-25T10:00:00Z",
+                            "last_seen": "2026-10-25T10:00:00Z",
+                            "job": "j-0007",
+                            "state": "has-job",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        defect = DefectStore(self.path).get("d-0001")
+        self.assertEqual(defect.linked_jobs, ["j-0007"])
+        self.assertEqual(defect.state_now(["j-0007"]), HAS_JOB)
+
+
 class WordSearchTest(unittest.TestCase):
     def test_the_same_words_in_another_order_are_found(self) -> None:
         # The reviewer's case: the same defect written in different words. Word

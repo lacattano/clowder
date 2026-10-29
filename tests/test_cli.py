@@ -5855,6 +5855,188 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("j-9999", err)
 
+    def stored_defect(self, defect_id: str) -> dict:
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        return stored["defects"][defect_id]
+
+    def merge_word(self, job_id: str) -> None:
+        code, _, err = self.cli(
+            "job",
+            "word",
+            job_id,
+            "--word",
+            "merge it",
+            "--by",
+            "lacattano",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_defect_link_names_the_job_that_fixes_it(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        job_id, _ = self.open_a_job()
+        code, out, err = self.cli(
+            "defects", "link", "d-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"d-0001 linked to {job_id}", out)
+        defect = self.stored_defect("d-0001")
+        self.assertEqual(defect["state"], "has-job")
+        self.assertEqual(defect["jobs"], [job_id])
+        # Linking twice is harmless: one defect, one link.
+        code, out, _ = self.cli(
+            "defects", "link", "d-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("already linked", out)
+        self.assertEqual(self.stored_defect("d-0001")["jobs"], [job_id])
+
+    def test_a_merge_marks_its_linked_defects_and_only_those(self) -> None:
+        for line in ("a bundle carries a machine name", "the board clips a long answer"):
+            code, _, err = self.cli("defects", "add", "--line", line, env=self.fake_env())
+            self.assertEqual(code, 0, err)
+        job_id, _ = self.open_a_job("evidence", extra=("--defect", "d-0001"))
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, out, err = self.cli(
+                "job", "merge", job_id, "--pr", "87", env=self.state_env()
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("defects marked fixed: d-0001", out)
+
+        fixed = self.stored_defect("d-0001")
+        self.assertEqual(fixed["state"], "fixed")
+        self.assertEqual(fixed["job"], job_id)
+        self.assertEqual(fixed["fixed_pr"], "87")
+        self.assertTrue(fixed["fixed_at"], "the merge date is recorded")
+        self.assertEqual(fixed["jobs"], [])
+        self.assertEqual(self.stored_defect("d-0002")["state"], "open", "not this job's")
+
+        lines = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "defects-fixed"
+        ]
+        self.assertEqual(len(lines), 1, "one audit line for the merge")
+        self.assertEqual(lines[0]["job"], job_id)
+        self.assertEqual(lines[0]["pr"], "87")
+        self.assertEqual(lines[0]["defects"], ["d-0001"])
+
+    def test_a_merge_with_no_linked_defect_leaves_the_record_alone(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        before = (self.root / "defects.json").read_text(encoding="utf-8")
+        job_id, _ = self.open_a_job()
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, out, err = self.cli("job", "merge", job_id, "--pr", "9", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("defects marked fixed", out)
+        self.assertEqual((self.root / "defects.json").read_text(encoding="utf-8"), before)
+        lines = [
+            line
+            for line in audit.read_audit(self.state)
+            if line.get("action") == "defects-fixed"
+        ]
+        self.assertEqual(lines, [])
+
+    def test_a_linked_job_suppresses_the_repeat_alarm_until_it_merges(self) -> None:
+        for _ in range(2):
+            self.cli(
+                "defects",
+                "add",
+                "--line",
+                "a bundle carries a machine name",
+                env=self.fake_env(),
+            )
+        code, out, _ = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertIn("d-0001", out, "seen twice with no job, so it needs one")
+
+        job_id, _ = self.open_a_job("evidence", extra=("--defect", "d-0001"))
+        code, out, err = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("no defect has been seen twice with no open job", out)
+        code, out, _ = self.cli("defects", "list", env=self.fake_env())
+        self.assertIn("has-job", out, "the list shows the job it has")
+
+        # A job closed without merging fixed nothing, so the alarm comes back.
+        code, _, err = self.cli("job", "close", job_id, env=self.state_env())
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.cli("defects", "list", "--repeated", env=self.fake_env())
+        self.assertIn("d-0001", out)
+        code, out, _ = self.cli("defects", "list", env=self.fake_env())
+        self.assertIn("open", out)
+        self.assertEqual(self.stored_defect("d-0001")["jobs"], [], "the dead link is dropped")
+
+    def test_a_defect_linked_to_two_jobs_is_fixed_by_the_later_merge(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        first, _ = self.open_a_job("evidence", extra=("--defect", "d-0001"))
+        second = "j-0002"
+        self.write_job(second, "task/evidence")
+        code, out, err = self.cli(
+            "defects", "link", "d-0001", "--job", second, env=self.state_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.merge_word(first)
+        self.merge_word(second)
+
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, out, err = self.cli("job", "merge", first, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        pending = self.stored_defect("d-0001")
+        self.assertEqual(pending["state"], "has-job", "a second job still says it is coming")
+        self.assertEqual(pending["jobs"], [second])
+        self.assertIsNone(pending["fixed_at"])
+
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, out, err = self.cli(
+                "job", "merge", second, "--pr", "88", env=self.state_env()
+            )
+        self.assertEqual(code, 0, err)
+        fixed = self.stored_defect("d-0001")
+        self.assertEqual(fixed["state"], "fixed")
+        self.assertEqual(fixed["fixed_pr"], "88")
+        self.assertTrue(fixed["fixed_at"])
+        # Marked once: the first merge left it open, the second closed it.
+        self.assertEqual(fixed["count"], 1)
+
+    def test_a_defect_cannot_be_linked_to_a_job_that_is_closed(self) -> None:
+        self.cli(
+            "defects", "add", "--line", "a bundle carries a machine name", env=self.fake_env()
+        )
+        job_id, _ = self.open_a_job()
+        self.assertEqual(self.cli("job", "close", job_id, env=self.state_env())[0], 0)
+        code, _, err = self.cli(
+            "defects", "link", "d-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot be the fix", err)
+
+    def test_a_settled_defect_cannot_be_linked(self) -> None:
+        self.cli(
+            "defects",
+            "add",
+            "--line",
+            "a known cost",
+            "--status",
+            "accepted-workaround",
+            "--reason",
+            "the owner accepts it",
+            env=self.fake_env(),
+        )
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "defects", "link", "d-0001", "--job", job_id, env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("accepted-workaround", err)
+        self.assertIn("recorded again", err)
+
     def test_handover_write_names_the_file_and_refuses_a_defect_with_no_id(self) -> None:
         self.dispatch(
             "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)

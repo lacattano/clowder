@@ -78,11 +78,11 @@ Two more mechanisms, so one fact lives in one place:
   the machine or the person that no command can derive. Write the handover before a reset, not
   after one.
 - **A defect has one home.** Record what cost time with `clowder defects add --line "..."`, in
-  the owner's words, at the moment you see it. Add `--job <id>` when a job fixes it, `--status
-  fixed` when the fix lands, or `--status accepted-workaround --reason TEXT` when the owner
-  accepts the cost. If it is not in that record it is not known, and nothing else - not the
-  handover, not DESIGN.md, not your own words - stores one. `--detail` (or `--detail-file`) is
-  the body behind the line: the workaround and the citations, kept in the entry itself.
+  the owner's words, at the moment you see it. Open the fixing job with `--defect <id>`, or link
+  it later with `clowder defects link <id> --job <job>`: the merge marks the defect fixed, with
+  the job, the pull request and the date. `--status accepted-workaround --reason TEXT` when the
+  owner accepts the cost instead. If it is not in that record it is not known; nothing else
+  stores one. `--detail` (or `--detail-file`) carries the workaround and the citations.
 - **Seeding an entry from an older record.** A defect known only from a handover is added with
   `--first-seen DATE --last-seen DATE --count N --status ...`: the dates say when it was recorded,
   the count how often, and the state where it stands today. A seeded entry is refused without a
@@ -101,7 +101,7 @@ Two more mechanisms, so one fact lives in one place:
 
 ```
 clowder ensure <repo> [--role maker|verifier|teacher|researcher] [--name AGENT] [--no-create]
-clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT]
+clowder job open <repo> --label <what the work is> [--role maker] [--name AGENT] [--defect ID]
 clowder job list [--all]
 clowder job handover <job-id> [--to verifier] [--name AGENT]
 clowder job pin <job-id> [--to verifier] [--name AGENT] [--commit SHA]

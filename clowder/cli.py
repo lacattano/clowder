@@ -13,7 +13,7 @@ import shlex
 import sys
 import time
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -442,6 +442,14 @@ def build_parser() -> argparse.ArgumentParser:
     j_open.add_argument("repo")
     j_open.add_argument("--label", required=True, help="what the work is, in a word or three")
     j_open.add_argument(
+        "--defect",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="a defect this job fixes; repeatable. The merge marks each one fixed, with "
+        "this job, the pull request and the date",
+    )
+    j_open.add_argument(
         "--title",
         metavar="TEXT",
         help="the change named for the owner, in his words (default: the label)",
@@ -760,6 +768,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     d_list.add_argument("--json", action="store_true")
     d_list.set_defaults(handler=cmd_defects_list)
+
+    d_link = defects_parser("link", "name the job that fixes a defect, so its merge closes it")
+    d_link.add_argument("id", help="defect id, e.g. d-0007")
+    d_link.add_argument("--job", required=True, metavar="ID", help="the job that fixes it")
+    d_link.add_argument("--json", action="store_true")
+    d_link.set_defaults(handler=cmd_defects_link, refreshes_board=True)
 
     d_show = defects_parser("show", "one defect, in full")
     d_show.add_argument("id", help="defect id, e.g. d-0001")
@@ -2223,6 +2237,9 @@ def _ensure(
 
 def cmd_job_open(args: argparse.Namespace) -> int:
     config, store = _context(args)
+    # Refuse an unlinked defect before a branch is made, not after: a typo must not
+    # leave a job that nobody knows the purpose of.
+    wanted = _defects_to_link(config, args.defect)
     repo_path = config.resolve_repo(args.repo)
     if not gitcmd.is_repo(repo_path):
         raise GitError(
@@ -2323,10 +2340,20 @@ def cmd_job_open(args: argparse.Namespace) -> int:
         None,
     )
     if here is not None and here.branch == branch:
+        linked = _link_defects(config, here, wanted)
         if args.json:
-            _emit_json({"job": here.to_dict(), "agent": agent.name, "already_open": True})
+            _emit_json(
+                {
+                    "job": here.to_dict(),
+                    "agent": agent.name,
+                    "already_open": True,
+                    "defects": linked,
+                }
+            )
         else:
             print(f"{here.id} already open: {here.branch} in {here.worktree}")
+            if linked:
+                print(f"{INDENT}fixes {', '.join(linked)}")
         return 0
     if here is not None and not args.force:
         raise GitError(
@@ -2375,13 +2402,23 @@ def cmd_job_open(args: argparse.Namespace) -> int:
     )
     store.add_job(job)
     store.save()
+    linked = _link_defects(config, job, wanted)
 
     if args.json:
-        _emit_json({"job": job.to_dict(), "agent": agent.name, "created": ensured.created})
+        _emit_json(
+            {
+                "job": job.to_dict(),
+                "agent": agent.name,
+                "created": ensured.created,
+                "defects": linked,
+            }
+        )
         return 0
 
     print(f"{job.id} open: {job.branch} in {job.worktree}")
     print(f"{INDENT}{agent.name} | {job.repo} | from {job.base} | {job.commit or 'no commit'}")
+    if linked:
+        print(f"{INDENT}fixes {', '.join(linked)}")
     return 0
 
 
@@ -2554,6 +2591,9 @@ def cmd_job_close(args: argparse.Namespace) -> int:
     job.closed_at = now_iso()
     job.released_at = now_iso()
     store.save()
+    # Closing without merging fixed nothing, so the job's links stop pointing at it.
+    # The defect goes back to open, and the repeat alarm can fire again.
+    reopened = _unlink_defects(config, job)
 
     if args.json:
         _emit_json(
@@ -2562,6 +2602,7 @@ def cmd_job_close(args: argparse.Namespace) -> int:
                 "returned_to": base_ref,
                 "branch_deleted": deleted,
                 "space": "free",
+                "defects_reopened": reopened,
             }
         )
         return 0
@@ -2570,6 +2611,8 @@ def cmd_job_close(args: argparse.Namespace) -> int:
     print(f"{INDENT}{worktree}")
     if deleted:
         print(f"{INDENT}the job branch was deleted")
+    if reopened:
+        print(f"{INDENT}defects open again: {', '.join(reopened)}")
     return 0
 
 
@@ -3081,6 +3124,10 @@ def cmd_job_merge(args: argparse.Namespace) -> int:
     job.status = CLOSED
     job.closed_at = now_iso()
     store.save()
+    # The merge is the moment a link becomes true: every defect that names this job
+    # is marked fixed here, with the job, the pull request and the date. Nobody has
+    # to notice a defect and type the same words again.
+    fixed_defects = _mark_defects_fixed(config, store, job, args.pr)
     try:
         _release_job_space(config, job, force=True)
         if job.released_at is None:
@@ -3092,9 +3139,18 @@ def cmd_job_merge(args: argparse.Namespace) -> int:
     store.save()
 
     if args.json:
-        _emit_json({"job": job.to_dict(), "merged": True, "pr": args.pr})
+        _emit_json(
+            {
+                "job": job.to_dict(),
+                "merged": True,
+                "pr": args.pr,
+                "defects_fixed": fixed_defects,
+            }
+        )
         return 0
     print(f"{job.id} merged: pull request {args.pr}")
+    if fixed_defects:
+        print(f"{INDENT}defects marked fixed: {', '.join(fixed_defects)}")
     return 0
 
 
@@ -4484,6 +4540,87 @@ def _open_job_ids(store: StateStore) -> list[str]:
     return [job.id for job in store.open_jobs()]
 
 
+def _defects_to_link(config: Config, ids: Sequence[str]) -> list[str]:
+    """The defect ids a job names, checked once, in order and without repeats.
+
+    A wrong id is refused here, before the branch exists. A settled defect is refused
+    too: it is fixed or accepted, so a job cannot be its fix.
+    """
+    wanted: list[str] = []
+    for defect_id in ids or []:
+        if defect_id in wanted:
+            continue
+        defect = _defect_store(config).get(defect_id)
+        if defect.settled:
+            raise UsageError(
+                f"{defect.id} is {defect.state}, so a job cannot be its fix. A defect "
+                "that is fixed and bites again is recorded again: "
+                f'clowder defects add --line "{defect.line}"'
+            )
+        wanted.append(defect.id)
+    return wanted
+
+
+def _link_defects(config: Config, job: Job, defect_ids: Sequence[str]) -> list[str]:
+    """Link each defect to the job, and return the ids that were linked."""
+    if not defect_ids:
+        return []
+    defects = _defect_store(config)
+    for defect_id in defect_ids:
+        defects.link(defect_id, job.id)
+    return list(defect_ids)
+
+
+def _unlink_defects(config: Config, job: Job) -> list[str]:
+    """Drop a closed job's links, and return the defects that are open again."""
+    try:
+        affected = _defect_store(config).unlink(job.id)
+    except (StateError, OSError) as exc:
+        print(
+            f"{PROGRAM}: warning: {job.id} closed, but its linked defects could not be "
+            f"updated: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    return [defect.id for defect in affected]
+
+
+def _mark_defects_fixed(config: Config, store: StateStore, job: Job, pr: str) -> list[str]:
+    """Mark the defects this job fixes fixed, and write one audit line.
+
+    Returns the ids the merge closed. A defect naming a second, still open job stays
+    `has-job`: the work is not finished while another branch says it is coming. A
+    merge that lands is already done, so a defect file that cannot be read is a
+    warning here, not a reason to claim the merge failed.
+    """
+    try:
+        marked = _defect_store(config).mark_fixed_by_job(
+            job.id, pr=pr, at=job.merged_at or now_iso()
+        )
+    except (StateError, OSError) as exc:
+        print(
+            f"{PROGRAM}: warning: {job.id} merged, but its linked defects could not be "
+            f"marked fixed: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    if not marked:
+        return []
+    ids = [defect.id for defect in marked]
+    audit.append_audit(
+        store.path,
+        {
+            "action": "defects-fixed",
+            "at": job.merged_at or now_iso(),
+            "by": config.front_door_name or "unknown",
+            "job": job.id,
+            "pr": pr,
+            "defects": ids,
+        },
+    )
+    return ids
+
+
 def cmd_defects_add(args: argparse.Namespace) -> int:
     """Record one sighting: a new defect, or the same one seen again.
 
@@ -4610,8 +4747,8 @@ def cmd_defects_list(args: argparse.Namespace) -> int:
                 defect.id,
                 str(defect.count),
                 short_date(defect.last_seen),
-                defect.state,
-                defect.job or "-",
+                defect.state_now(open_jobs),
+                ", ".join(defect.linked_jobs) or "-",
                 _clip(defect.line, 90),
             ]
         )
@@ -4628,14 +4765,50 @@ def cmd_defects_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_defects_show(args: argparse.Namespace) -> int:
-    """One defect in full. This is the only place its detail lives."""
-    config, _ = _context(args)
+def cmd_defects_link(args: argparse.Namespace) -> int:
+    """Link a defect to the job that fixes it, so its merge closes the defect.
+
+    The link is the fact the merge reads. It is a command rather than a rule to
+    remember: a job opened with `--defect` carries its links from the start, and this
+    is how one is added later.
+    """
+    config, store = _context(args)
+    job = store.get_job(args.job)
+    if not job.is_open:
+        raise StateError(
+            f"{job.id} is {job.state_in_words}, so it cannot be the fix for anything. "
+            "Link the defect to an open job."
+        )
     defects = _defect_store(config)
-    defect = defects.get(args.id)
+    before = defects.get(args.id).linked_jobs
+    defect = defects.link(args.id, job.id)
+    changed = defect.linked_jobs != before
 
     if args.json:
-        _emit_json({"defect": defect.to_dict(), "path": str(defects.path)})
+        _emit_json({"defect": defect.to_dict(), "job": job.id, "linked": changed})
+        return 0
+    if changed:
+        print(f"{defect.id} linked to {job.id}: {', '.join(defect.linked_jobs)}")
+    else:
+        print(f"{defect.id} is already linked to {job.id}")
+    return 0
+
+
+def cmd_defects_show(args: argparse.Namespace) -> int:
+    """One defect in full. This is the only place its detail lives."""
+    config, store = _context(args)
+    defects = _defect_store(config)
+    defect = defects.get(args.id)
+    open_jobs = _open_job_ids(store)
+
+    if args.json:
+        _emit_json(
+            {
+                "defect": defect.to_dict(),
+                "state_now": defect.state_now(open_jobs),
+                "path": str(defects.path),
+            }
+        )
         return 0
     rows = [
         ["id", defect.id],
@@ -4643,9 +4816,17 @@ def cmd_defects_show(args: argparse.Namespace) -> int:
         ["seen", str(defect.count)],
         ["first seen", short_date(defect.first_seen)],
         ["last seen", short_date(defect.last_seen)],
-        ["state", defect.state],
-        ["job", defect.job or "(none)"],
+        ["state", defect.state_now(open_jobs)],
+        ["job", ", ".join(defect.linked_jobs) or defect.job or "(none)"],
     ]
+    if defect.fixed_at:
+        rows.append(
+            [
+                "fixed by",
+                f"{defect.job} via pull request {defect.fixed_pr} "
+                f"on {short_date(defect.fixed_at)}",
+            ]
+        )
     if defect.reason:
         rows.append(["reason", defect.reason])
     print(_column(rows))

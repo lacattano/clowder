@@ -121,6 +121,14 @@ class Defect:
     # The job that fixes it, when one is open. `state` says where the defect is in
     # its life; `reason` is kept only for an accepted workaround.
     job: str | None = None
+    # Every job that addresses it, oldest first. `job` is the same fact for a reader
+    # that knows only one, and it is always the first entry here. A defect may be
+    # fixed by two jobs, and a merge closes it only when it is the last of them.
+    jobs: list[str] = field(default_factory=list)
+    # What closed it without a person typing "fixed": the moment, the job and the
+    # pull request. Empty on a defect fixed by hand.
+    fixed_at: str | None = None
+    fixed_pr: str | None = None
     state: str = OPEN
     reason: str | None = None
     # The body behind the one line: the workaround, the citations, what was seen.
@@ -137,15 +145,46 @@ class Defect:
     def settled(self) -> bool:
         return self.state in SETTLED
 
+    @property
+    def linked_jobs(self) -> list[str]:
+        """Every open job that addresses this defect, oldest first.
+
+        A record written before a defect could name more than one job carries only
+        `job`; that one link is the whole list, so an old file reads the same way. A
+        settled defect has no working links: its `job` is the one that fixed it, and
+        `fixed_at` says when.
+        """
+        if self.jobs:
+            return list(self.jobs)
+        if self.job and self.state not in SETTLED:
+            return [self.job]
+        return []
+
     def needs_action(self, open_jobs: Sequence[str]) -> bool:
         """Seen at least twice, and neither a job nor an accepted workaround.
 
-        This is the check `--repeated` and the board make. A closed job counts as
-        no job: the fix is not in flight, so the defect can bite again.
+        This is the check `--repeated` and the board make. Any linked job that is
+        still open silences it: the fix is in flight. A closed job counts as no job,
+        because a branch that was closed without merging fixed nothing.
         """
         if not self.seen_twice or self.settled:
             return False
-        return not (self.job and self.job in set(open_jobs))
+        return not any(job in set(open_jobs) for job in self.linked_jobs)
+
+    def state_now(self, open_jobs: Sequence[str] = ()) -> str:
+        """The state a reader should show, given which jobs are open.
+
+        The stored state is what the last write knew. A link whose job has closed
+        without merging is not "has-job" any more: nothing is in flight, so the
+        defect is open again, and the repeat alarm must fire. Nothing here writes;
+        it only stops a stale word from being shown as if it were true.
+        """
+        if self.state in SETTLED:
+            return self.state
+        links = self.linked_jobs
+        if any(job in set(open_jobs) for job in links):
+            return HAS_JOB
+        return OPEN
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Defect:
@@ -157,6 +196,12 @@ class Defect:
         except TypeError as exc:
             raise StateError(f"defect record is malformed: {exc}") from exc
         defect.extra = extra
+        # One source of truth for the links: `jobs` holds them all, `job` is the first.
+        # A file written before the list existed carries only `job`.
+        if not defect.jobs and defect.job:
+            defect.jobs = [defect.job]
+        if defect.jobs and defect.job not in defect.jobs:
+            defect.job = defect.jobs[0]
         return defect
 
     def to_dict(self) -> dict[str, object]:
@@ -361,6 +406,7 @@ class DefectStore:
                     last_seen=last or began or moment,
                     count=count,
                     job=job,
+                    jobs=[job] if job else [],
                     state=chosen,
                     reason=reason,
                     detail=(detail or "").strip() or None,
@@ -369,8 +415,9 @@ class DefectStore:
             else:
                 current.count += 1
                 current.last_seen = moment
-                if job:
-                    current.job = job
+                if job and job not in current.linked_jobs:
+                    current.jobs = [*current.linked_jobs, job]
+                    current.job = current.jobs[0]
                 if state:
                     current.state = chosen
                 elif current.state == FIXED:
@@ -382,10 +429,106 @@ class DefectStore:
                     current.reason = reason
                 if detail and (detail.strip() or None) != current.detail:
                     current.detail = detail.strip() or None
-            if current.state == HAS_JOB and not current.job:
+            if current.state == HAS_JOB and not current.linked_jobs:
                 current.state = OPEN
             self._save()
         return current, created
+
+    def link(self, defect_id: str, job_id: str) -> Defect:
+        """Name a job that fixes this defect. More than one is allowed.
+
+        This is the link `job merge` reads: when it lands, every defect naming that
+        job is marked fixed, so nobody has to remember to type the same words again.
+        Linking a settled defect is refused - a fixed defect that a new job fixes is
+        a fresh sighting, and saying it is fixed while a job is open would be false.
+        """
+        with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
+            self._loaded = False
+            self.load()
+            defect = self._defects.get(defect_id)
+            if defect is None:
+                raise StateError(
+                    f"no defect {defect_id!r} in {self.path}. List them with: "
+                    "clowder defects list"
+                )
+            if defect.settled:
+                raise StateError(
+                    f"{defect.id} is {defect.state}, so a job cannot be linked to it. A "
+                    "defect that is fixed and bites again is recorded again: "
+                    f'clowder defects add --line "{defect.line}"'
+                )
+            if job_id not in defect.linked_jobs:
+                defect.jobs = [*defect.linked_jobs, job_id]
+                defect.job = defect.jobs[0]
+                if defect.state == OPEN:
+                    defect.state = HAS_JOB
+                self._save()
+            return defect
+
+    def unlink(self, job_id: str) -> list[Defect]:
+        """Drop a job's links because the job closed without merging. Returns those left open.
+
+        A closed branch fixed nothing. Leaving its link in place would make the defect
+        look in flight for ever, and a later merge would see a link that no longer
+        means anything.
+        """
+        with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
+            self._loaded = False
+            self.load()
+            affected: list[Defect] = []
+            changed = False
+            for defect in self._defects.values():
+                links = defect.linked_jobs
+                if job_id not in links:
+                    continue
+                changed = True
+                remaining = [job for job in links if job != job_id]
+                defect.jobs = remaining
+                if defect.state == HAS_JOB and not remaining:
+                    defect.state = OPEN
+                    defect.job = None
+                else:
+                    defect.job = remaining[0] if remaining else defect.job
+                affected.append(defect)
+            if changed:
+                self._save()
+            return sorted(affected, key=lambda defect: defect.id)
+
+    def mark_fixed_by_job(self, job_id: str, *, pr: str, at: str) -> list[Defect]:
+        """Mark the defects this job fixes, and only those. Returns those closed.
+
+        A defect naming two jobs is not fixed by the first merge: the other job still
+        says the work is coming. Its link is dropped and it stays `has-job`; the
+        merge that lands the last link records the moment, the job and the PR, and
+        marks it fixed. One write, so a merge cannot leave half a record.
+        """
+        with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
+            self._loaded = False
+            self.load()
+            closed: list[Defect] = []
+            changed = False
+            for defect in self._defects.values():
+                links = defect.linked_jobs
+                if job_id not in links:
+                    continue
+                changed = True
+                remaining = [job for job in links if job != job_id]
+                defect.jobs = remaining
+                if remaining:
+                    # Another job still addresses it, so it is not fixed yet. The
+                    # dropped link is still saved: the record must not say two jobs
+                    # when one of them has merged.
+                    defect.job = remaining[0]
+                    defect.state = HAS_JOB
+                    continue
+                defect.job = job_id
+                defect.state = FIXED
+                defect.fixed_at = at
+                defect.fixed_pr = pr
+                closed.append(defect)
+            if changed:
+                self._save()
+            return sorted(closed, key=lambda defect: defect.id)
 
 
 def recently_seen(
@@ -425,7 +568,7 @@ def merge_warning(defect: Defect) -> str | None:
     """
     if not defect.seen_twice or defect.settled:
         return None
-    if defect.job:
+    if defect.linked_jobs:
         return None
     return (
         f"{defect.id} has now been seen {defect.count} times with no job. A second "
@@ -435,11 +578,12 @@ def merge_warning(defect: Defect) -> str | None:
 
 
 def describe(defect: Defect, *, open_jobs: Sequence[str] = ()) -> str:
-    """One line for a list: id, line, count, state, job."""
-    job = f"job {defect.job}" if defect.job else "no job"
+    """One line for a list: id, line, count, state, the linked jobs."""
+    links = defect.linked_jobs
+    job = f"job {defect.job}" if links else "no job"
     seen = f"seen {defect.count} time{'s' if defect.count != 1 else ''}"
     needs = " - needs a job or an accepted workaround" if defect.needs_action(open_jobs) else ""
     return (
         f"{defect.id} | {seen} | last {short_date(defect.last_seen)} | "
-        f"{defect.state} | {job} | {defect.line}{needs}"
+        f"{defect.state_now(open_jobs)} | {job} | {defect.line}{needs}"
     )
