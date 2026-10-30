@@ -556,9 +556,9 @@ It writes one HTML file next to the state file and prints the path. It is drawn 
 file, so it needs no server and no multiplexer read (`--live` adds the live roster, and the page
 says which it shows). Its first section is "For you": one line per question, the number he
 replies with, and how long it has waited. Then "Running now", "Waiting for a worker" (your
-queue), and "What landed since this page was last drawn", which the tool titles honestly: it knows
-when it last drew the page, not when he opened it. Relay his section in words. Do not paste the
-HTML at the user.
+queue), and "What landed since you last looked", which counts from his last look: opening the
+page records it (`--open`), and `--looked` records it after you relay the page. Relay his section
+in words. Do not paste the HTML at the user.
 
 The page is a snapshot. It reloads itself only while something is in flight, and when nothing has
 changed since the last draw it says so in one line - relay that line as it stands. Only a clowder
