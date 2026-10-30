@@ -66,7 +66,8 @@ adds the live roster when you want it, and the page says which one it shows.
 
 It leads with four sections in the order you read them: what waits on you (one line each, the
 number to reply with, and how long it has waited), what is running now, the front door's queue,
-and what changed since the page was last drawn - one sentence each, in your words, no handles.
+and what landed since you last looked - one sentence each, in your words, no handles. Opening
+the page records the look; a draw by another command does not.
 The records follow: the filterable cards, agents and their spaces, answers, dropped queue items,
 and the model rollup.
 
@@ -89,7 +90,7 @@ changed since a given time. It needs no server.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 937
+**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 943
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 

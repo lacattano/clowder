@@ -161,7 +161,6 @@ class RenderTest(unittest.TestCase):
         html = render_board(
             data(
                 generated_at="2026-09-27 10:00",
-                drawn_at="2026-09-27T10:00:00",
                 last_change="2026-09-27 09:15",
             )
         )
@@ -169,21 +168,39 @@ class RenderTest(unittest.TestCase):
         self.assertIn("last change 2026-09-27 09:15", html)
 
     def test_a_page_with_nothing_in_flight_shows_no_frozen_age(self) -> None:
-        # Drawn at 10:00, nothing recorded since 09:15: the page says both. "Nothing
-        # has changed since 09:15" is honest; "generated 10:00" alone would read as
-        # fresh when nothing has happened.
+        # Drawn at 10:00, last looked at 09:15, nothing recorded since 09:15: the page
+        # says the look, not the draw. "generated 10:00" alone would read as fresh
+        # when nothing has happened.
         html = render_board(
             data(
                 generated_at="2026-09-27 10:00",
-                drawn_at="2026-09-27T10:00:00",
                 # Naive timestamps here: the page stores UTC and shows local, which a
                 # test cannot pin without knowing the machine's zone.
-                previous_draw="2026-09-27T09:15:00",
+                last_looked="2026-09-27T09:15:00",
                 last_change="2026-09-27 09:15",
             )
         )
-        self.assertIn("Nothing has landed since 2026-09-27 09:15.", html)
+        self.assertIn("Nothing has landed since you last looked at 2026-09-27 09:15.", html)
         self.assertIn("does not reload itself", html)
+
+    def test_the_changed_section_reads_the_last_look_not_the_draw(self) -> None:
+        # The defect seen on 2026-10-30: the reference was the draw, and every command
+        # draws, so the section could never show anything. A draw is not a look.
+        html = render_board(
+            data(
+                generated_at="2026-09-27 10:00",
+                last_looked="2026-09-27T09:15:00",
+            )
+        )
+        self.assertIn("Nothing has landed since you last looked at 2026-09-27 09:15.", html)
+        self.assertNotIn("last drawn", html)
+        self.assertNotIn("first draw", html)
+
+    def test_a_page_with_no_look_does_not_claim_it_was_just_drawn(self) -> None:
+        html = render_board(data(generated_at="2026-09-27 10:00"))
+        self.assertIn("You have not looked at this page yet", html)
+        self.assertNotIn("first draw", html)
+        self.assertNotIn("last drawn", html)
 
     def test_every_section_is_present_even_when_empty(self) -> None:
         html = render_board(data())
@@ -191,7 +208,7 @@ class RenderTest(unittest.TestCase):
             "For you",
             "Running now",
             "Waiting for a worker",
-            "What landed since this page was last drawn",
+            "What landed since you last looked",
             "To Do",
             "In Progress",
             "Done",
@@ -718,7 +735,7 @@ class WaitingTest(unittest.TestCase):
             "For you",
             "Running now",
             "Waiting for a worker",
-            "What landed since this page was last drawn",
+            "What landed since you last looked",
             "Filters",
             "To Do",
             "Agents and spaces",
@@ -729,7 +746,7 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions), "the page reads in his order")
 
     def test_the_changed_section_is_capped_and_says_so(self) -> None:
-        # The first draw of an old record can hold months of merges. The newest few are
+        # The first look at an old record can hold months of merges. The newest few are
         # what he can act on; the cut is named so it is never hidden.
         jobs = [
             job(
@@ -740,27 +757,26 @@ class WaitingTest(unittest.TestCase):
             for index in range(20)
         ]
         html = render_board(data(jobs=jobs))
-        section = html.split("What landed since this page was last drawn", 1)[1].split(
-            "</section>", 1
-        )[0]
+        section = html.split("What landed since you last looked", 1)[1].split("</section>", 1)[
+            0
+        ]
         self.assertIn("Showing the newest 12 of 20", section)
         self.assertEqual(section.count("<li>"), 12, "twelve lines, not twenty")
         self.assertNotIn("j-0001", section, "no job id in his section")
 
     def test_the_page_does_not_claim_nothing_changed_while_a_step_runs(self) -> None:
-        # The reviewer's case: a step dispatched at 12:41, page last drawn at 12:40, no
-        # merge. The section counts landed work only and says so; "nothing changed"
-        # would contradict the "Running now" list on the same page.
+        # The reviewer's case: a step dispatched at 12:41, the owner last looked at
+        # 12:40, no merge. The section counts landed work only and says so; "nothing
+        # changed" would contradict the "Running now" list on the same page.
         html = render_board(
             data(
                 tasks=[task(job=None, dispatched_at="2026-10-26T12:41:00")],
                 generated_at="2026-10-26 18:41",
-                drawn_at="2026-10-26T18:41:00",
-                previous_draw="2026-10-26T12:40:00",
+                last_looked="2026-10-26T12:40:00",
                 last_change="2026-10-26 12:41",
             )
         )
-        self.assertIn("Nothing has landed since 2026-10-26 12:40.", html)
+        self.assertIn("Nothing has landed since you last looked at 2026-10-26 12:40.", html)
         self.assertNotIn("Nothing has changed", html)
         self.assertIn("Running now", html)
         self.assertIn("does the site need a refund policy?", html)

@@ -770,16 +770,18 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   long it has waited), "Running now" (each worker, what it is on, how long, what it costs the
   box), plus one line of what the box has left and what the gate would decide now,
   "Waiting for a worker" (the front door's queue, oldest first, with its own warnings), then
-  "What landed since this page was last drawn". The records follow, unchanged: the filterable
-  cards, agents and spaces, answers, dropped items, the model rollup.
-- **"What landed" is scoped to what it counts.** The tool cannot know when he opened the page; it
-  knows when it last drew it, because the page carries that moment in its own body and the next
-  draw reads the file it is replacing. The section counts landed work only - a step that started
-  is under Running now, not here - and both the heading and the empty line say so ("Nothing has
-  landed since 12:40"), because "nothing changed" was false while a step ran. One sentence each,
-  in his words, no id and no state word - the newest twelve, with "showing the newest 12 of N"
-  when the record is older, because the first draw of an old record held months of merges. The
-  footer keeps the page's own age: generated at, and the record's last change.
+  "What landed since you last looked". The records follow, unchanged: the filterable cards,
+  agents and spaces, answers, dropped items, the model rollup.
+- **"What landed" is scoped to what it counts.** The section reads the owner's last look, not the
+  page's last draw. A draw is a moment the tool chose; a look is his, recorded on `board --open`
+  and on `board --looked` when the front door relays the page. Every state-changing command
+  redraws the page, so measuring from a draw would always answer "nothing landed", which is the
+  defect seen on 2026-10-30. The section counts landed work only - a step that started is under
+  Running now, not here - and both the heading and the empty line say so ("Nothing has landed
+  since you last looked at 12:40"), because "nothing changed" was false while a step ran. One
+  sentence each, in his words, no id and no state word - the newest twelve, with "showing the
+  newest 12 of N" when the record is older, because a first look at an old record held months of
+  merges. The footer keeps the page's own age: generated at, and the record's last change.
 - **It reloads only while work runs.** The page always carried a 30s meta refresh. It now carries
   one only while a step is in flight: the browser re-reads the file, and the box draws nothing
   between commands, so an idle reload is flicker. The alternative - a timer that redraws the page
@@ -945,10 +947,11 @@ of a record that moved on. Its first section lists records (job ids, states, wor
 not what happened and what it means for him. And nothing recorded what he had already read, so
 "what did I miss" could not be computed: every view answered "what is true now".
 
-What already covered part of it: the board's "What landed since this page was last drawn" counts
-by the page's own draw moment, not his reading; "For you" already carries the word that answers
-each line; the dispatch marker already requires a `For the owner:` line, and `report` already
-shows it first and marks a report without it incomplete. Those stayed.
+What already covered part of it: the board's "What landed" section counted by the page's own draw
+moment, not his reading, so it could never change while every command redrew the page; "For you"
+already carries the word that answers each line; the dispatch marker already requires a
+`For the owner:` line, and `report` already shows it first and marks a report without it
+incomplete. Those stayed.
 
 - **`clowder catchup`** builds the answer from the record on every run and caches nothing: what
   landed and what it changes, what broke or is at risk, what waits on him with the answering
@@ -958,8 +961,9 @@ shows it first and marks a report without it incomplete. Those stayed.
   its key carries a moment he has not been shown, so a line that moves (a job that lands later)
   is new again. `--all` is the standing picture. No second store.
 - **The board opens with that text**, built by the same function, so the page and the command
-  cannot disagree. Drawing never marks a line read: only `catchup` does. The record sections
-  follow, unchanged and in their order.
+  cannot disagree. Drawing never marks a line read: opening the page (`board --open`), or the
+  front door recording that it relayed it (`board --looked`), does. The record sections follow,
+  unchanged and in their order.
 - **The owner line is enforced where it is recorded.** `step report` refuses an answer with no
   usable `For the owner:` line, with `--force` to close anyway and the report then reading
   incomplete. That is the step where the meaning used to leak: the worker wrote it, the front door

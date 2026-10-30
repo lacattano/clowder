@@ -72,7 +72,7 @@ All handlers take `args: argparse.Namespace` and return `int`.
 | `defects show` | `cmd_defects_show` | One defect in full; the only place its detail lives. |
 | `handover write` | `cmd_handover_write` | Compose today's handover from the record and name the file it wrote. |
 | `checkouts` | `cmd_checkouts` | How far behind its remote each checkout is, in one line each. |
-| `board` | `cmd_board` | Write the HTML page: drawn from the state file, with `--live` to add the multiplexer roster. |
+| `board` | `cmd_board` | Write the HTML page: drawn from the state file, with `--live` to add the multiplexer roster. `--open` opens it and records the look; `--looked` records that the owner has seen a page the front door relayed. |
 | `config` | `cmd_config` | Show resolved settings and paths. |
 | `state repair` | `cmd_state_repair` | Drop a field no copy knows, with a backup and an audit line. |
 
@@ -105,9 +105,7 @@ plumbing reached by almost every handler.
   cannot silently drop a field. Used by `report` and `tasks`.
 - `_refresh_board(args) -> None` - rewrites the board after a state-changing
   command. Called from `main`; never fails the command, and never asks the
-  multiplexer.
-- `_page_stamp(path) -> str | None` - when the page being replaced was drawn, read
-  from its own `<!-- drawn: ... -->` marker; None for a first draw.
+  multiplexer. A refresh draws; it never records a look.
 - `_board_agents_from_state(store) -> list[BoardAgent]` - the roster the state file
   knows: names, spaces and the open job on each. Every live-only field is left empty.
 - `_defect_store(config) -> DefectStore` - the one defects record for this config,

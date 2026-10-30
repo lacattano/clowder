@@ -57,7 +57,7 @@ The newer pieces, so a fresh you does not have to discover them:
 - The owner's pass and merge word live on the job: `clowder job pass`, `clowder job word`,
   `clowder job publish`, `clowder job merge`. Publish and merge refuse without them.
 - The board opens with the catch-up, then "For you" (one line each, the number he replies with,
-  how long it waited), "Running now", "Waiting for a worker" and "Changed since you last looked".
+  how long it waited), "Running now", "Waiting for a worker" and "What landed since you last looked".
 - The board is drawn from the state file, so it asks the multiplexer nothing; add `--live` when
   you need the live roster, and the page says which it shows. It is rewritten by every command
   that changes state, so it is current without anyone running `clowder board`.

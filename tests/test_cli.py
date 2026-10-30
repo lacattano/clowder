@@ -5729,6 +5729,53 @@ class CliTest(unittest.TestCase):
         self.assertIn("First read", out)
         self.assertIn("not sent yet: busy", out)
 
+    def test_opening_the_page_records_a_look_and_drawing_does_not_move_it(self) -> None:
+        # The defect: the reference was the draw, and every command draws, so the
+        # catch-up could never change. A look is recorded when the page is opened.
+        self.assertIsNone(StateStore(self.state).catchup_at, "never looked")
+        with mock.patch.object(cli.webbrowser, "open"):
+            code, _, err = self.cli("board", "--open", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        looked = StateStore(self.state).catchup_at
+        self.assertIsNotNone(looked, "opening the page records the look")
+
+        # Two more draws, of the kind every command makes, leave the look alone.
+        for _ in range(2):
+            code, _, err = self.cli("board", env=self.fake_env())
+            self.assertEqual(code, 0, err)
+        self.assertEqual(StateStore(self.state).catchup_at, looked, "a draw is not a look")
+
+    def test_the_front_door_can_record_a_page_it_relayed(self) -> None:
+        # One command, no browser and no daemon: the front door says the owner has
+        # now seen the page it put in front of him.
+        self.assertIsNone(StateStore(self.state).catchup_at, "never looked")
+        code, _, err = self.cli("board", "--looked", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIsNotNone(StateStore(self.state).catchup_at, "the relay records the look")
+
+    def test_work_that_lands_between_two_looks_appears_after_the_second(self) -> None:
+        code, _, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.cli("board", env=self.fake_env())
+
+        job_id, _ = self.open_a_job("evidence")
+        self.merge_word(job_id)
+        with mock.patch.object(cli, "_merge_pull_request"):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+
+        # The merge refreshed the page. Two more draws are the kind every command
+        # makes; the second is the one the owner opens. It must still show what
+        # landed since his look, not since the draw a moment ago.
+        for _ in range(2):
+            code, _, err = self.cli("board", env=self.fake_env())
+            self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("What landed since you last looked", 1)[1].split("</section>", 1)[
+            0
+        ]
+        self.assertIn("Now live: evidence", section)
+
     def test_a_step_report_without_the_owner_line_is_refused(self) -> None:
         job_id, _ = self.open_a_job()
         self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)

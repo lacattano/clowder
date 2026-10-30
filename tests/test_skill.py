@@ -11,6 +11,7 @@ import re
 import unittest
 from pathlib import Path
 
+from clowder.board import CHANGED_HEADING
 from clowder.cli import build_parser
 from clowder.marker import marker_line
 
@@ -61,6 +62,13 @@ class SkillTest(unittest.TestCase):
         text = read_skill()
         for command in commands:
             self.assertIn(f"clowder {command}", text, f"{command} is missing from the skill")
+
+    def test_the_board_bullet_names_the_section_the_page_shows(self) -> None:
+        # The bullet said "Changed since you last looked"; the page says what it
+        # says. One name, used by both.
+        text = read_skill()
+        self.assertIn(CHANGED_HEADING, text)
+        self.assertNotIn("Changed since you last looked", text)
 
     def test_the_marker_in_the_skill_is_the_marker_in_the_code(self) -> None:
         expected = marker_line("t-0004", "ship", "myrepo", "topcat")
