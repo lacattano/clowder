@@ -561,7 +561,7 @@ page records it (`--open`), and `--looked` records it after you relay the page. 
 in words. Do not paste the HTML at the user.
 
 The page is a snapshot. It reloads itself only while something is in flight, and when nothing has
-changed since the last draw it says so in one line - relay that line as it stands. Only a clowder
+landed since his last look it says so in one line - relay that line as it stands. Only a clowder
 command rewrites the file, so run `clowder board` before you relay a page that says it is old.
 
 ## Walking the owner through a change
