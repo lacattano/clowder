@@ -434,6 +434,11 @@ def build_parser() -> argparse.ArgumentParser:
         "page is drawn from the state file by default",
     )
     board.add_argument("--open", action="store_true", help="open it in your browser")
+    board.add_argument(
+        "--looked",
+        action="store_true",
+        help="record that the owner has now seen the page (use after relaying it)",
+    )
     board.add_argument("--json", action="store_true")
     board.set_defaults(handler=cmd_board)
 
@@ -4241,27 +4246,11 @@ def _work_has_landed(task: Task, job: Job | None) -> bool:
     return bool(job.merged_at)
 
 
-def _page_stamp(path: Path) -> str | None:
-    """When the page this write replaces was drawn, or None if there is none.
-
-    Read from the page itself (`<!-- drawn: ... -->`), so the tool needs no second
-    record to answer "what changed since you last drew it". An older page without the
-    marker reads as None: a first draw, which is honest about knowing nothing.
-    """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    match = re.search(r"<!-- drawn: (.*?) -->", text)
-    return match.group(1).strip() if match else None
-
-
 def _board_data(
     config: Config,
     store: StateStore,
     *,
     live: bool = False,
-    previous_draw: str | None = None,
     mux_timeout_s: float = BOARD_LIVE_MUX_TIMEOUT_S,
 ) -> BoardData:
     """Everything the page is drawn from.
@@ -4350,8 +4339,7 @@ def _board_data(
         agents=agents,
         state_path=str(store.path),
         generated_at=now_stamp(),
-        drawn_at=now_iso(),
-        previous_draw=previous_draw,
+        last_looked=store.catchup_at,
         last_change=stamp_of(activity) if activity is not None else None,
         live_ok=live_ok,
         note=note,
@@ -4371,7 +4359,7 @@ def _board_data(
 def cmd_board(args: argparse.Namespace) -> int:
     config, store = _context(args)
     target = Path(args.out).expanduser() if args.out else _board_path(store)
-    data = _board_data(config, store, live=args.live, previous_draw=_page_stamp(target))
+    data = _board_data(config, store, live=args.live)
     written = write_board(data, target)
 
     if data.defects_note:
@@ -4401,6 +4389,10 @@ def cmd_board(args: argparse.Namespace) -> int:
         print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
+    if args.open or args.looked:
+        # Opening the page, or relaying it, is the owner looking. A plain draw is not.
+        _record_look(store, _catchup_items(config, store), at=now_iso())
+        store.save()
     return RECORD_UNREADABLE if data.defects_note else 0
 
 
@@ -4501,7 +4493,7 @@ def _refresh_board(args: argparse.Namespace) -> None:
     try:
         config, store = _context(args)
         target = _board_path(store)
-        data = _board_data(config, store, previous_draw=_page_stamp(target))
+        data = _board_data(config, store)
         write_board(data, target)
     except Exception as exc:  # the board must never fail the command it follows
         print(f"{PROGRAM}: could not refresh the board: {exc}", file=sys.stderr)
@@ -5041,6 +5033,22 @@ def _catchup_items(config: Config, store: StateStore) -> list[catchup_mod.Item]:
     return catchup_mod.build(store, defects)
 
 
+def _record_look(store: StateStore, items: Sequence[catchup_mod.Item], *, at: str) -> None:
+    """Record that the owner has now seen this picture. Caller saves.
+
+    The picture replaces the last one: an item that left and came back is not
+    something he has already read. A look is not a draw, so only the commands that
+    mean "he has seen this" call it.
+    """
+    seen = store.seen()
+    keys = {item.key for item in items}
+    picture = {
+        **{key: value for key, value in seen.items() if key in keys},
+        **catchup_mod.moments(catchup_mod.unseen(items, seen)),
+    }
+    store.record_read(picture, at=at)
+
+
 def cmd_catchup(args: argparse.Namespace) -> int:
     """What he missed: only what is new, unless --all, in his words.
 
@@ -5098,19 +5106,7 @@ def cmd_catchup(args: argparse.Namespace) -> int:
 
     # Only this run marks read: a machine read is not the owner reading. The picture
     # replaces the last one, so an item that left and came back is not "already read".
-    # A first read marks the whole picture read, including the history it did not list:
-    # otherwise that history floods the next read instead of this one.
-    picture = (
-        catchup_mod.moments(items)
-        if args.all or first
-        else {
-            **{
-                key: value for key, value in seen.items() if key in {item.key for item in items}
-            },
-            **catchup_mod.moments(shown),
-        }
-    )
-    store.record_read(picture, at=read_at)
+    _record_look(store, items, at=read_at)
     store.save()
 
     print(f"catchup: read at {catchup_mod.read_at(read_at)}")

@@ -42,6 +42,10 @@ QUIET_AFTER_SECONDS = 3600.0
 
 TITLE = "clowder board"
 
+# The section he reads to catch up on landed work. Its name is the one the front-door
+# skill uses, and both take it from here so they cannot drift.
+CHANGED_HEADING = "What landed since you last looked"
+
 # An open tab follows along on its own: no server, no network. The one script is
 # the page's own filter loop, inline; nothing is fetched.
 REFRESH_SECONDS = 30
@@ -416,15 +420,13 @@ class BoardData:
     queued: list[Queued] = field(default_factory=list)
     agents: list[BoardAgent] = field(default_factory=list)
     state_path: str = ""
-    # `generated_at` is the local stamp a person reads; `drawn_at` is the same moment
-    # as an ISO timestamp, which is what the page records for itself and what the next
-    # draw compares against. Minutes are too coarse to answer "changed since".
+    # `generated_at` is the local stamp a person reads, and the page's own age for the
+    # footer. It is not the reference point for the catch-up: a draw is not a look.
     generated_at: str = ""
-    drawn_at: str = ""
-    # When the previous version of this page was drawn (ISO), or None for the first
-    # draw. Read from the file being replaced, so the page can say what changed since
-    # it was last drawn without keeping a second record.
-    previous_draw: str | None = None
+    # When the owner last looked, as an ISO timestamp, or None if he never has. This
+    # is the reference point for the landed-work section. Drawing the page never moves
+    # it; opening the page does. Read from the state file's `catchup_at`.
+    last_looked: str | None = None
     # The newest moment any record was touched, as a display stamp. This is the honest
     # clock for "nothing has changed since": a page redrawn at 13:10 with no new record
     # says 12:40, not 13:10.
@@ -1244,7 +1246,7 @@ def render_board(data: BoardData) -> str:
     running = running_now(data)
     queue = worker_queue(data)
     worker = waiting_for_worker(data)
-    since = to_epoch(data.previous_draw)
+    since = to_epoch(data.last_looked)
     changed = changed_for_owner(data, since=since)
     in_flight = bool(open_tasks(data.tasks))
 
@@ -1298,21 +1300,28 @@ def render_board(data: BoardData) -> str:
             "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
         )
 
-    drawn = _display_stamp(data.previous_draw) if data.previous_draw else data.generated_at
+    looked = _display_stamp(data.last_looked) if data.last_looked else None
     # The section counts landed work only, and says so: a step that started is under
     # "Running now", not here. "Nothing changed" would be false while a step runs.
-    if data.previous_draw and not changed:
-        freshness = f"Nothing has landed since {drawn}."
-    elif data.previous_draw:
+    if data.last_looked and not changed:
+        freshness = f"Nothing has landed since you last looked at {looked}."
+    elif data.last_looked:
         counted = "1 thing landed" if len(changed) == 1 else f"{len(changed)} things landed"
-        freshness = f"{counted} since the page was last drawn at {drawn}; the list is below."
+        freshness = f"{counted} since you last looked at {looked}; the list is below."
     else:
-        freshness = f"This is the first draw, at {data.generated_at}."
+        freshness = (
+            "You have not looked at this page yet, so the list below is all the work "
+            "that has landed on record."
+        )
     shown = changed[:CHANGED_CAP]
     changed_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in shown) + "</ul>"
         if changed
-        else _nothing(f"Nothing has landed since {drawn}.")
+        else _nothing(
+            f"Nothing has landed since you last looked at {looked}."
+            if looked
+            else "Nothing has landed on record yet."
+        )
     )
     if len(changed) > len(shown):
         changed_html += (
@@ -1320,9 +1329,9 @@ def render_board(data: BoardData) -> str:
             "are in the record below.</p>"
         )
     changed_html = (
-        "<p class='why'>The tool cannot know when you opened this page; it knows when it "
-        "last drew it. This lists the work that landed since then, and nothing else: a "
-        "step that started is under Running now.</p>" + changed_html
+        "<p class='why'>This lists the work that landed since you last looked, and "
+        "nothing else: a step that started is under Running now. Only opening the page "
+        "records a look; a redraw by another command does not.</p>" + changed_html
     )
 
     kanban_html = _kanban(data)
@@ -1440,7 +1449,6 @@ def render_board(data: BoardData) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {refresh_meta}
-<!-- drawn: {_e(data.drawn_at or data.generated_at)} -->
 <title>{_e(TITLE)}</title>
 <style>{STYLE}</style>
 </head>
@@ -1453,7 +1461,7 @@ def render_board(data: BoardData) -> str:
 {_section("For you", len(for_you), needs_html, css="needs")}
 {_section("Running now", len(running), running_html)}
 {_section("Waiting for a worker", len(queue), queue_html)}
-{_section("What landed since this page was last drawn", len(changed), changed_html)}
+{_section(CHANGED_HEADING, len(changed), changed_html)}
 {filters_html}
 {kanban_html}
 {_section("Agents and spaces", len(agent_rows), agents_html)}

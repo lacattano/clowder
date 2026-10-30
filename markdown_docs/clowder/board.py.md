@@ -67,8 +67,8 @@ class BoardData:
 - `FilterField` - one filterable column: `name` (the data attribute), `label`,
   `control` (`text`, `choice`, `bool`, `age`, `date`), `values` and a help `note`.
 - `BoardData` - everything the page is drawn from. `generated_at` is the display
-  stamp; `drawn_at` is the same moment as ISO, written into the page so the next draw
-  can say what changed since; `previous_draw` is that value read back; `last_change`
+  stamp and the page's own age; `last_looked` is the owner's last look as ISO, the
+  reference for the landed-work section, which a draw never moves; `last_change`
   is the newest recorded moment, shown in the footer so the age is never frozen. `rereview` maps job id -> the
   commit tip used for the re-review check; `risk_notes` maps id -> a warning;
   `stranded` is the set of commits on no branch; `dropped` is the audit record of
