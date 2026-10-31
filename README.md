@@ -90,7 +90,7 @@ changed since a given time. It needs no server.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the front-door skill, spaces and jobs, and the board.** 943
+**Steps 1 to 4 are built: the CLI, the dispatching-work skill, spaces and jobs, and the board.** 944
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
@@ -143,10 +143,10 @@ The flow for a change: run the gates, commit, push to `main`. CI runs the same f
 separate checks (`.github/workflows/ci.yml`), so a red one names itself. The tool never commits,
 pushes or merges anything on your behalf - delivery is `local-only`, and the merge is yours.
 
-### The front-door skill
+### The dispatching-work skill
 
-[`skills/front-door/SKILL.md`](skills/front-door/SKILL.md) tells one agent how to act as the
-front door: when to dispatch, how to write a brief, and how to report an answer back. Install it
+[`skills/dispatching-work/SKILL.md`](skills/dispatching-work/SKILL.md) tells one agent how to act
+as the front door: when to dispatch, how to write a brief, and how to report an answer back. Install it
 as a Pi package, pointing at the **repo root**:
 
 ```

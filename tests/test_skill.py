@@ -16,7 +16,8 @@ from clowder.cli import build_parser
 from clowder.marker import marker_line
 
 REPO = Path(__file__).resolve().parent.parent
-SKILL = REPO / "skills" / "front-door" / "SKILL.md"
+SKILL = REPO / "skills" / "dispatching-work" / "SKILL.md"
+REVIEWING = REPO / "skills" / "reviewing-changes" / "SKILL.md"
 NAME_RULE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 TEXT_SUFFIXES = {".md", ".py", ".toml", ".json", ".cfg", ".txt"}
@@ -52,6 +53,22 @@ class SkillTest(unittest.TestCase):
         self.assertTrue(description, "a skill without a description is not loaded")
         self.assertLessEqual(len(description), 1024)
         self.assertIn("Use when", description, "say when to reach for it")
+
+    def test_the_old_skill_names_still_resolve_by_redirect(self) -> None:
+        # Pi has no alias field: a command name is the frontmatter `name`, so an
+        # old name needs its own file. These are hidden redirects, not copies.
+        for old, new in (("front-door", "dispatching-work"), ("reviewer", "reviewing-changes")):
+            alias = REPO / "skills" / old / "SKILL.md"
+            self.assertTrue(alias.is_file(), f"{old} is gone")
+            fields = frontmatter(alias.read_text(encoding="utf-8"))
+            self.assertEqual(fields.get("name"), old, "Pi registers the old command name")
+            self.assertEqual(fields.get("disable-model-invocation"), "true")
+            text = " ".join(alias.read_text(encoding="utf-8").split())
+            self.assertIn(f"../{new}/SKILL.md", text, f"{old} does not point at {new}")
+            new_fields = frontmatter(
+                (REPO / "skills" / new / "SKILL.md").read_text(encoding="utf-8")
+            )
+            self.assertEqual(new_fields.get("name"), new)
 
     def test_every_cli_command_is_documented(self) -> None:
         parser = build_parser()
@@ -158,7 +175,7 @@ class SkillTest(unittest.TestCase):
         # The generic rules ship as a skill. A shipped skill must never point at a
         # local file: on a fresh install there is no such file, so the pointer
         # points at nothing. This replaces the test that locked that pointer in.
-        for path in (SKILL, REPO / "skills" / "reviewer" / "SKILL.md"):
+        for path in (SKILL, REVIEWING):
             text = " ".join(path.read_text(encoding="utf-8").split())
             self.assertIn(
                 "/skill:crew", text, f"{path.parent.name} does not name the crew skill"
@@ -167,10 +184,12 @@ class SkillTest(unittest.TestCase):
                 "code/AGENTS.md", text, f"{path.parent.name} points at a local file"
             )
 
-    def test_the_skill_sends_the_walk_to_the_reviewer_skill(self) -> None:
+    def test_the_skill_sends_the_walk_to_the_reviewing_changes_skill(self) -> None:
         text = " ".join(read_skill().split())
         self.assertIn("Walking the owner through a change", text)
-        self.assertIn("skills/reviewer/SKILL.md", text, "the pointer names the reviewer skill")
+        self.assertIn(
+            "skills/reviewing-changes/SKILL.md", text, "the pointer names the new skill"
+        )
         self.assertIn("passed, or what to change", text)
 
     def test_the_crew_skill_carries_the_gate_and_the_safety_rules(self) -> None:
@@ -253,12 +272,12 @@ class SkillTest(unittest.TestCase):
             self.assertNotIn(rule, text, f"the always-rule is restated here: {rule}")
         self.assertIn("/skill:crew", text, "the pointer still finds them")
 
-    def test_the_reviewer_skill_owns_the_walkthrough_and_the_check(self) -> None:
-        # Each step lives in one place: the reviewer skill holds them, the
-        # front-door skill points at them. Held in both, they drift.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+    def test_the_reviewing_changes_skill_owns_the_walkthrough_and_the_check(self) -> None:
+        # Each step lives in one place: the reviewing-changes skill holds them, the
+        # dispatching-work skill points at them. Held in both, they drift.
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         fields = frontmatter(reviewer)
-        self.assertEqual(fields.get("name"), "reviewer")
+        self.assertEqual(fields.get("name"), "reviewing-changes")
         self.assertIn("Use when", fields.get("description", ""))
 
         text = " ".join(reviewer.split())
@@ -294,7 +313,7 @@ class SkillTest(unittest.TestCase):
             "Quote one short exact line",
         ):
             self.assertIn(
-                step, text, f"walkthrough step missing from the reviewer skill: {step}"
+                step, text, f"walkthrough step missing from the reviewing-changes skill: {step}"
             )
         self.assertIn("STOPS there", text, "an irreversible act stops the walkthrough")
 
@@ -305,15 +324,17 @@ class SkillTest(unittest.TestCase):
             "Quote one short exact line",
         ):
             self.assertNotIn(
-                step, front, f"the walkthrough step is still in the front-door skill: {step}"
+                step,
+                front,
+                f"the walkthrough step is still in the dispatching-work skill: {step}",
             )
 
-    def test_the_reviewer_skill_opens_with_a_glossary_and_paces_one_idea(self) -> None:
+    def test_the_reviewing_changes_skill_opens_with_a_glossary_and_paces_one_idea(self) -> None:
         # The owner's feedback after the j-0107 walkthrough (t-0523): he wanted more
         # context going in, and one idea at a time, so his questions did not lead to
         # more questions. The glossary and the pacing carry the intent of q-0157,
         # q-0165 and q-0183.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         # The glossary is ONE piece: the terms together, in one message, before the
         # walk. The reviewer (t-0537) found the old wording read as one line per
@@ -359,12 +380,14 @@ class SkillTest(unittest.TestCase):
             "both rules come before the walkthrough steps",
         )
 
-    def test_the_reviewer_skill_leads_with_the_effect_for_an_internal_mechanism(self) -> None:
+    def test_the_reviewing_changes_skill_leads_with_the_effect_for_an_internal_mechanism(
+        self,
+    ) -> None:
         # The owner's feedback after the origin/base walkthrough (t-0553): the
         # mechanism explanation ran long and lost him until the reviewer re-anchored
         # on the one-line user effect. An internal-mechanism change opens with that
         # line; the mechanism is offered only if he asks.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn("Lead with the effect", text)
         self.assertIn("the change is about an internal mechanism", text)
@@ -386,11 +409,11 @@ class SkillTest(unittest.TestCase):
         )
         self.assertIn("One idea at a time", text)
 
-    def test_the_reviewer_skill_defaults_to_a_short_walk(self) -> None:
+    def test_the_reviewing_changes_skill_defaults_to_a_short_walk(self) -> None:
         # The owner finds the walks tiresome and long, and agreed the teaching parts
         # should be optional. The default is the effect line plus the decisions; the
         # deeper walk is offered once and given only if he asks. The parts stay.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn("The walk is short by default", text)
         self.assertIn("the effect line and the decisions, nothing else", text)
@@ -416,10 +439,10 @@ class SkillTest(unittest.TestCase):
         for row in ("Problem fit", "Irreversible acts", "Verified vs inferred"):
             self.assertIn(row, text, f"the short walk dropped a senior-check row: {row}")
 
-    def test_the_reviewer_skill_requires_the_interview_card(self) -> None:
+    def test_the_reviewing_changes_skill_requires_the_interview_card(self) -> None:
         # A walkthrough report without the card leaves the owner with nothing he
         # can say in an interview, so the skill must require it and name its lines.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn(
             "The interview card (the deeper walk)",
@@ -466,11 +489,11 @@ class SkillTest(unittest.TestCase):
             "the 'until q-0056 lands' paragraph is written once, not twice",
         )
 
-    def test_the_reviewer_skill_carries_the_code_reading_method(self) -> None:
+    def test_the_reviewing_changes_skill_carries_the_code_reading_method(self) -> None:
         # The owner cannot read code, so one small piece is read with him in every
-        # walkthrough. The reviewer skill carries the method; the step must not
+        # walkthrough. The reviewing-changes skill carries the method; the step must not
         # silently disappear, and the borrowing is credited.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         self.assertIn("The code-reading session", text)
         self.assertIn("read ONE small piece of the change with him, line by line", text)
@@ -498,11 +521,11 @@ class SkillTest(unittest.TestCase):
         # It does not delegate the reading to the personal skill.
         self.assertNotIn("/skill:teach-what-we-built", text)
 
-    def test_the_reviewer_skill_states_the_recall_check_and_its_order(self) -> None:
+    def test_the_reviewing_changes_skill_states_the_recall_check_and_its_order(self) -> None:
         # The recall check sits between the file walk and the pass: his four questions
         # with the reviewer's answers hidden, his attempt in his own words, then the
         # reveal. It gates nothing - no score, no pass mark.
-        reviewer = (REPO / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer = REVIEWING.read_text(encoding="utf-8")
         text = " ".join(reviewer.split())
         for piece in (
             "The recall check, after the walk and before the pass",
@@ -552,7 +575,7 @@ class PackageTest(unittest.TestCase):
         for pattern in manifest["pi"]["skills"]:
             path = (REPO / pattern.replace("./", "")).resolve()
             self.assertTrue(path.is_dir(), f"{pattern} is not a directory")
-            self.assertTrue((path / "front-door" / "SKILL.md").is_file())
+            self.assertTrue((path / "dispatching-work" / "SKILL.md").is_file())
 
     def test_the_package_ships_the_diff_viewer_and_its_skill(self) -> None:
         manifest = json.loads((REPO / "package.json").read_text(encoding="utf-8"))

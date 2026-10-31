@@ -36,9 +36,9 @@ description: Guide a plain-language, file-by-file review of Git changes, includi
   for the raw error. Never a traceback.
 - The viewer ships in the clowder Pi package, installed for this machine, so `/diff` is in every
   pane the crew uses - not only clowder panes. The install is a filtered package entry: personal
-  settings load `extensions` plus the `diff-review` skill, and exclude the `front-door` skill;
-  `clowder/.pi/settings.json` adds `front-door` back for clowder panes only. Do not copy
-  `extensions/diff.ts` into a repo.
+  settings load `extensions` plus the `diff-review` skill, and exclude the `dispatching-work`
+  skill; `clowder/.pi/settings.json` adds `dispatching-work` back for clowder panes only. Do not
+  copy `extensions/diff.ts` into a repo.
 - If a pane does not have `/diff`, run `/reload` in it first; a pane started before the install
   keeps its old resource list. If it is still missing, install from the clowder checkout with
   `pi install ./clowder`, then `/reload`.
