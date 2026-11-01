@@ -443,20 +443,21 @@ The tool ships its own state path, so one stale checkout must not freeze the cre
 - The top-level schema check stays: a file whose whole shape is unknown is a different case and is
   still refused.
 
-### 27. The viewer loads in every pane, and the front-door skill does not
+### 27. The viewer loads in every pane, and the dispatching-work skill does not
 
 Seen 2026-09-29: the owner was told to run `/diff main...HEAD` in a product-repo pane and the
 command was absent. The viewer ships in the clowder package, so it loads wherever that package
-loads - but loading the whole package everywhere would also put the `front-door` skill in panes
-that must not act as a front door.
+loads - but loading the whole package everywhere would also put the `dispatching-work` skill in
+panes that must not act as a front door.
 
 The install is a filtered package entry, not a copy of the file:
 
 - Personal (`~/.pi/agent/settings.json`): the clowder package with
-  `extensions: ["extensions/*.ts"]` and `skills: ["!skills/front-door"]`. Every pane gets `/diff`
-  and the `diff-review` skill.
+  `extensions: ["extensions/*.ts"]` and `skills: ["!skills/dispatching-work"]`. Every pane gets
+  `/diff` and the `diff-review` skill.
 - Project (`clowder/.pi/settings.json`): the same package with `autoload: false` and
-  `skills: ["+skills/front-door"]`. The front-door skill returns in clowder panes only.
+  `skills: ["+skills/dispatching-work"]`. The dispatching-work skill returns in clowder panes
+  only.
 
 A pane that still lacks `/diff` runs `/reload`, or `pi install ./clowder` from the checkout. The
 fallback is unchanged and must be offered: walk the change as before-and-after text, file by file.
@@ -714,8 +715,8 @@ document becomes a view of the tool:
   steps in flight, the queue count, and the defects seen twice with no open job. Stale is a fact
   about the record, not a memory: any recorded activity - a dispatch, a report, a job opened or
   merged, a queue item, a defect sighting - newer than the handover's own `generated:` line means
-  a session ran and nobody wrote a new handover. The front-door skill's start order is this one
-  command, not a list of files.
+  a session ran and nobody wrote a new handover. The dispatching-work skill's start order is this
+  one command, not a list of files.
 - **The repetition rule, with teeth.** A second sighting of the same defect must open a job or
   record an accepted workaround with the reason; bumping the count is not enough. The tool says so
   when the count moves, and keeps saying it where it is read: `clowder defects list --repeated`,
@@ -1023,7 +1024,7 @@ board (step 4), `/calm` (step 5).
 
 ## What step 2 built
 
-`skills/front-door/SKILL.md`, shipped as a Pi package by `package.json`. The skill holds the
+`skills/dispatching-work/SKILL.md`, shipped as a Pi package by `package.json`. The skill holds the
 part of this design that code cannot: when to dispatch, the five parts of a brief, the report
 shape, a pointer to the reviewer's walkthrough, and the rules the front door runs by - say when
 you dispatch, ask for exactly one decision. The owner gate and the always-rules are not repeated
@@ -1038,15 +1039,15 @@ fresh install has them. `code/AGENTS.md` is now the instance overlay beside the 
 scope, the multiplexer check, the focus repo, the roster pointer and the dated stories - and it
 restates no rule.
 
-`skills/reviewer/SKILL.md` holds the walkthrough steps, the reviewer's thirteen-row senior check,
-and the four questions the walkthrough asks the owner. The reviewer reads it; the front door keeps
-only the pointer at it.
+`skills/reviewing-changes/SKILL.md` holds the walkthrough steps, the reviewer's thirteen-row senior
+check, and the four questions the walkthrough asks the owner. The reviewer reads it; the front
+door keeps only the pointer at it.
 
 Two tests keep the prose honest. One fails when a CLI command is added and the skill is not
 updated. Another fails when the marker in the skill stops matching the marker in the code.
 Prose that drifts is worse than no prose.
 
-Install it with `pi install ./clowder` from this repo, or copy `skills/front-door/` into
+Install it with `pi install ./clowder` from this repo, or copy `skills/dispatching-work/` into
 `~/.pi/agent/skills/`.
 
 ## What step 3 built
@@ -1185,7 +1186,7 @@ Ideas borrowed, no code: the one-liaison model, ship versus scout task shapes, a
 dispatch rules file, quota-aware model choice, hiding tool noise, and a generated board for
 pending decisions.
 
-The code-reading method in the reviewer skill is adapted from Matt Pocock's skills
+The code-reading method in the reviewing-changes skill is adapted from Matt Pocock's skills
 ([mattpocock/skills](https://github.com/mattpocock/skills), installed here with
 `setup-matt-pocock-skills`): follow one concrete thing through the code, one step at a time,
 pacing to the reader, and teach the reason rather than the location. The wording is ours; only
