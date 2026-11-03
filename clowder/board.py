@@ -1261,36 +1261,61 @@ def _kanban(data: BoardData) -> str:
     )
 
 
+def _record_moved(previous_record: str | None, now: float | None) -> bool | None:
+    """Did the record move since the replaced page, or can that not be told?
+
+    The stamp is the newest record moment that page was drawn from, empty when the
+    record held no moments. Any difference counts, not only a later moment: the newest
+    moment can move backwards when the queue item holding it is dropped, and the page
+    must not say nothing changed while something left. Equal stamps are no change.
+    A page with no such tag at all is an older page that cannot speak, so it claims
+    nothing.
+    """
+    if previous_record is None:
+        return None
+    if previous_record == "":
+        return now is not None  # the record was empty; the first moment is a change
+    if now is None:
+        return True  # the record had moments, and now has none
+    before = to_epoch(previous_record)
+    if before is None:
+        return None
+    return now != before
+
+
 def _drawn_line(data: BoardData, previous_draw: str | None, previous_record: str | None) -> str:
     """What the page says about its own draw, and what moved since the last one.
 
     Record is compared with record - the newest moment in the record now against the
     newest moment the replaced page was drawn from - so a command that wrote and drew in
-    the same second does not read as a later change. A page that cannot read either
-    stamp claims nothing: a missing sentence is honest, a false "nothing has changed" is
-    not.
+    the same second does not read as a later change, and a newest moment that fell still
+    reads as one. The draw label is printed once: when the two draws fall in the same
+    minute, the copy he had open is named instead of the same time twice.
     """
     label = _display_stamp(data.drawn_at) if data.drawn_at else data.generated_at
     drawn_label = label or "an unrecorded time"
     parts = [f"Drawn at {_e(drawn_label)}."]
     previous_label = _display_stamp(previous_draw) if previous_draw else None
-    before = to_epoch(previous_record)
     now = to_epoch(data.last_change_at or data.last_change)
-    if previous_label and before is not None and now is not None:
-        if now > before:
-            if previous_label == drawn_label:
-                # Two draws inside one minute: printing the same time twice says nothing.
-                parts.append(
-                    "<span class='moved'>The copy you had open was out of date. "
-                    "This one is current.</span>"
-                )
-            else:
-                parts.append(
-                    "<span class='moved'>Something has changed since the page drawn at "
-                    f"{_e(previous_label)}.</span>"
-                )
+    moved = _record_moved(previous_record, now)
+    same_minute = previous_label is not None and previous_label == drawn_label
+    if previous_label and moved is True:
+        if same_minute:
+            parts.append(
+                "<span class='moved'>The copy you had open was out of date. "
+                "This one is current.</span>"
+            )
         else:
-            parts.append(f"Nothing has changed since the page drawn at {_e(previous_label)}.")
+            parts.append(
+                "<span class='moved'>Something has changed since the page drawn at "
+                f"{_e(previous_label)}.</span>"
+            )
+    elif previous_label and moved is False:
+        parts.append(
+            "Nothing has changed since the copy you had open."
+            if same_minute
+            else f"Nothing has changed since the page drawn at {_e(previous_label)}."
+        )
     parts.append(_e(LOOK_RULE))
     parts.append("<a href=''>Reload the page</a>")
     return " ".join(parts)
@@ -1569,8 +1594,10 @@ def _cost(task: Task) -> str:
 
 
 def _meta_value(text: str, name: str) -> str | None:
+    # An empty content attribute is a real value - a record with no moments - and is kept
+    # as "", so the next draw can tell it apart from an older page with no tag at all.
     match = re.search(rf'<meta name="{name}" content="([^"]*)"', text)
-    return (match.group(1) or None) if match else None
+    return match.group(1) if match else None
 
 
 def read_stamps(path: str | Path) -> tuple[str | None, str | None]:

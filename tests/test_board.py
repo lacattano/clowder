@@ -213,6 +213,69 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("out of date", html)
         self.assertNotIn("Something has changed", html)
 
+    def test_a_newest_moment_that_moved_backwards_is_announced(self) -> None:
+        # Case 10: the queue item holding the newest moment was dropped, so the record's
+        # newest moment fell. The page must not say nothing changed while something left.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:35:00",
+                    last_change_at="2026-09-27T10:00:00",
+                ),
+                path,
+            )
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:40:00",
+                    last_change_at="2026-09-27T09:20:00",
+                ),
+                path,
+            )
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("Something has changed since the page drawn at 2026-09-27 09:35.", html)
+        self.assertNotIn("Nothing has changed", html)
+
+    def test_the_first_write_into_an_empty_record_is_announced(self) -> None:
+        # Case 9: a page drawn from an empty record carries an empty record stamp. The
+        # first write after it is a change, not "no previous record".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(data(drawn_at="2026-09-27T09:35:00"), path)
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:40:00",
+                    last_change_at="2026-09-27T09:38:00",
+                ),
+                path,
+            )
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("Something has changed since the page drawn at 2026-09-27 09:35.", html)
+
+    def test_a_quiet_redraw_in_the_same_minute_names_the_copy_not_the_time_twice(self) -> None:
+        # The quiet case he sees most: the same minute printed twice, one line apart,
+        # read like the page arguing with itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:15:10",
+                    last_change_at="2026-09-27T09:15:10",
+                ),
+                path,
+            )
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:15:50",
+                    last_change_at="2026-09-27T09:15:10",
+                ),
+                path,
+            )
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("Nothing has changed since the copy you had open.", html)
+        drawn = html.split('id="drawn"', 1)[1].split("</p>", 1)[0]
+        self.assertEqual(drawn.count("09:15"), 1, "the same minute is named once")
+
     def test_a_change_inside_one_minute_does_not_print_the_same_time_twice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "board.html"

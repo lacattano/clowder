@@ -7131,7 +7131,7 @@ class CliTest(unittest.TestCase):
         first = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertIn("Drawn at", first)
         self.assertIn(
-            "Nothing has changed since the page drawn at",
+            "Nothing has changed since",
             first,
             "a redraw of the same record is not a change, even in the same second",
         )
