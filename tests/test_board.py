@@ -141,12 +141,16 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("25be", html, "no open marker escape")
 
     def test_the_page_reloads_only_while_work_is_running(self) -> None:
-        # Idle: no reload, and the page says so. While something is in flight: the
+        # Idle: no timed reload, and the page says so. While something is in flight: the
         # browser re-reads this file every 30s. The box draws nothing between commands,
-        # so an idle reload is pure flicker and a render timer would be pure cost.
+        # so an idle timer is pure flicker; when idle it refreshes on the way back from a
+        # hidden tab instead.
         idle = render_board(data())
         self.assertNotIn('<meta http-equiv="refresh"', idle)
-        self.assertIn("Nothing is running, so this page does not reload itself.", idle)
+        self.assertIn(
+            "Nothing is running, so this page refreshes when you come back to it.", idle
+        )
+        self.assertIn("visibilitychange", idle, "the idle refresh is on the way back")
 
         busy = render_board(data(tasks=[task(job=None)]))
         self.assertIn('<meta http-equiv="refresh" content="30">', busy)
@@ -156,6 +160,93 @@ class RenderTest(unittest.TestCase):
             "the reload belongs in the head",
         )
         self.assertIn("reloads every 30s while work is running", busy)
+
+    def test_the_page_shows_when_it_was_drawn_and_what_changed_since_the_last_draw(
+        self,
+    ) -> None:
+        html = render_board(
+            data(
+                drawn_at="2026-09-27T10:00:00",
+                last_change_at="2026-09-27T09:45:00",
+            ),
+            previous_draw="2026-09-27T09:30:00",
+        )
+        self.assertIn("Drawn at 2026-09-27 10:00.", html)
+        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", html)
+        self.assertIn("that copy was out of date", html)
+        self.assertIn("This one is current.", html)
+
+    def test_a_page_with_nothing_new_since_the_last_draw_says_so(self) -> None:
+        html = render_board(
+            data(
+                drawn_at="2026-09-27T10:00:00",
+                last_change_at="2026-09-27T09:20:00",
+            ),
+            previous_draw="2026-09-27T09:30:00",
+        )
+        self.assertIn(
+            "Nothing has changed in the record since the page drawn at 2026-09-27 09:30",
+            html,
+        )
+        self.assertNotIn("out of date", html)
+
+    def test_a_redraw_reads_the_older_stamp_and_detects_the_change(self) -> None:
+        # The page a command replaces is the one in his browser. Its stamp is read back
+        # from the file, so the redraw can say what moved while that copy was up.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:30:00",
+                    last_change_at="2026-09-27T09:30:00",
+                ),
+                path,
+            )
+            first = path.read_text(encoding="utf-8")
+            self.assertIn("Drawn at 2026-09-27 09:30.", first)
+            self.assertNotIn("out of date", first, "the first draw has nothing to compare")
+
+            write_board(
+                data(
+                    drawn_at="2026-09-27T10:00:00",
+                    last_change_at="2026-09-27T09:45:00",
+                ),
+                path,
+            )
+            second = path.read_text(encoding="utf-8")
+        self.assertIn(
+            "Drawn at 2026-09-27 10:00.", second, "a redraw reports the current stamp"
+        )
+        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", second)
+
+    def test_a_quiet_record_still_reports_a_change_since_the_last_draw(self) -> None:
+        # The change is caught by the stamps, not by the in-flight reload: with nothing
+        # running the page still names the old draw and the change.
+        html = render_board(
+            data(
+                drawn_at="2026-09-27T10:00:00",
+                last_change_at="2026-09-27T09:45:00",
+            ),
+            previous_draw="2026-09-27T09:30:00",
+        )
+        self.assertNotIn('<meta http-equiv="refresh"', html)
+        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", html)
+
+    def test_the_drawn_line_carries_no_internals(self) -> None:
+        # His words: no file, no command, no render machinery - and one plain sentence
+        # about what a look is. The old "redraw by another command" is the d-0094 phrase.
+        html = render_board(
+            data(
+                drawn_at="2026-09-27T10:00:00",
+                last_change_at="2026-09-27T09:45:00",
+            ),
+            previous_draw="2026-09-27T09:30:00",
+        )
+        drawn = html.split('id="drawn"', 1)[1].split("</p>", 1)[0]
+        for internals in ("state.json", "redraw", "command", "meta ", "generated", "JSON"):
+            self.assertNotIn(internals, drawn)
+        self.assertIn("Only opening the page counts as a look", drawn)
+        self.assertNotIn("redraw by another command", html)
 
     def test_the_page_shows_when_it_was_generated_and_when_it_last_changed(self) -> None:
         html = render_board(
@@ -181,7 +272,7 @@ class RenderTest(unittest.TestCase):
             )
         )
         self.assertIn("Nothing has landed since you last looked at 2026-09-27 09:15.", html)
-        self.assertIn("does not reload itself", html)
+        self.assertIn("refreshes when you come back to it", html)
 
     def test_the_changed_section_reads_the_last_look_not_the_draw(self) -> None:
         # The defect seen on 2026-10-30: the reference was the draw, and every command

@@ -783,13 +783,16 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   sentence each, in his words, no id and no state word - the newest twelve, with "showing the
   newest 12 of N" when the record is older, because a first look at an old record held months of
   merges. The footer keeps the page's own age: generated at, and the record's last change.
-- **It reloads only while work runs.** The page always carried a 30s meta refresh. It now carries
-  one only while a step is in flight: the browser re-reads the file, and the box draws nothing
-  between commands, so an idle reload is flicker. The alternative - a timer that redraws the page
-  while work runs - would cost a render per tick; at the measured 0.23s for a state change on a
-  small state, and 3.15s on this record, that is 27s to 6 minutes of CPU per hour per open page,
-  plus a process to start and stop. The meta refresh costs a file read and no daemon, so it is the
-  cheaper one and there is still no server or port to manage.
+- **It says when it was drawn, and reloads only while work runs.** The page always carried a 30s
+  meta refresh. It now carries one only while a step is in flight: the browser re-reads the file,
+  and the box draws nothing between commands, so an idle timer is flicker. The alternative - a
+  timer that redraws the page while work runs - would cost a render per tick; at the measured
+  0.23s for a state change on a small state, and 3.15s on this record, that is 27s to 6 minutes of
+  CPU per hour per open page, plus a process to start and stop. The meta refresh costs a file read
+  and no daemon, so it is the cheaper one and there is still no server or port to manage. A page
+  on disk cannot see the file change, so idle it refreshes on the way back from a hidden tab - the
+  moment a stale copy would be read. Its head carries a whole-second draw stamp, so each redraw can
+  say whether the record moved since the page it replaced, in his words and without a server.
 - **Not live means "not checked", not "busy" or "idle".** The roster is not read on a normal draw,
   so the page says what it can: a step whose record has not changed for the quiet threshold is
   marked "nothing recorded for 6h" under Running now, and the worker section repeats it as "not

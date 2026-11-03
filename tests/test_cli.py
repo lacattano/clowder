@@ -7119,6 +7119,27 @@ class CliTest(unittest.TestCase):
         self.assertIn("choose A or B", html)
         self.assertIn("roster from the state file", html)
 
+    def test_a_redraw_names_the_page_it_replaces_and_the_change(self) -> None:
+        # The copy in his browser is the page a command replaces. The redraw reads that
+        # page's stamp and says what moved while it was up, so a stale copy cannot pass
+        # for current without a word (his complaint, 2026-11-03).
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        first = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("Drawn at", first)
+        self.assertNotIn("has changed since the page drawn at", first, "nothing to compare yet")
+
+        # Any state change redraws the page, so the next draw can name the one it replaced.
+        self.dispatch(
+            "maker", "myrepo", "ship: add the refund page", "--worktree", str(self.repo_path)
+        )
+        second = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("Drawn at", second)
+        self.assertIn("The record has changed since the page drawn at", second)
+        self.assertIn("Only opening the page counts as a look", second)
+        self.assertNotIn("redraw by another command", second)
+        self.assertIsNone(StateStore(self.state).catchup_at, "neither draw recorded a look")
+
     # -- what waits on the owner: one list, two views ------------------------
 
     def add_open_decision(self, task_id: str = "t-0001") -> None:
