@@ -5847,6 +5847,53 @@ class CliTest(unittest.TestCase):
         ]
         self.assertIn("Now live: evidence", section)
 
+    def test_a_merge_in_the_same_second_as_the_look_still_shows(self) -> None:
+        # Both stamps are whole seconds, so a merge and the owner's look can share a
+        # second. A landing at the look's own second has landed and must show; it was
+        # hidden, and the page said nothing had landed while it had (d-0102).
+        moment = datetime(2026, 5, 1, 9, 0, 0, 700000, tzinfo=UTC)
+        stamp = to_iso(moment)
+        with mock.patch.object(cli, "now_iso", return_value=stamp):
+            code, _, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+
+        job_id, _ = self.open_a_job("evidence")
+        self.merge_word(job_id)
+        with (
+            mock.patch.object(cli, "now_iso", return_value=stamp),
+            mock.patch.object(cli, "_merge_pull_request"),
+        ):
+            code, _, err = self.cli("job", "merge", job_id, "--pr", "87", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            StateStore(self.state).get_job(job_id).merged_at,
+            stamp,
+            "the look and the landing share a second, which is the case under test",
+        )
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("What landed since you last looked", 1)[1].split("</section>", 1)[
+            0
+        ]
+        self.assertIn("Now live: evidence", section, "a landing at the look's second shows")
+
+        # And the filter still hides work that landed before the look: a later look is
+        # a second after it, and the same merge is no longer in the section.
+        with mock.patch.object(
+            cli, "now_iso", return_value=to_iso(moment + timedelta(seconds=1))
+        ):
+            code, _, err = self.cli("catchup", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        html = (self.root / "board.html").read_text(encoding="utf-8")
+        section = html.split("What landed since you last looked", 1)[1].split("</section>", 1)[
+            0
+        ]
+        self.assertNotIn("Now live: evidence", section, "a look after it still hides it")
+
     def test_a_step_report_without_the_owner_line_is_refused(self) -> None:
         job_id, _ = self.open_a_job()
         self.assertEqual(self.step("--job", job_id, "ship: add the refund page")[0], 0)
@@ -6989,17 +7036,30 @@ class CliTest(unittest.TestCase):
 
     def test_start_names_the_seeded_entries_as_seen_in_the_last_seven_days(self) -> None:
         # The source handovers are within the week, so every seeded entry is in the
-        # recent list once - the near-duplicate defence seeding depends on.
-        for line in ("a seeded defect one", "a seeded defect two"):
+        # recent list once - the near-duplicate defence seeding depends on. The dates
+        # are relative to now: fixed ones made this pass for a week and fail after it
+        # (d-0086). The point is unchanged: one seen inside the window is listed, one
+        # seen outside it is not.
+        today = datetime.now(UTC).date()
+        inside_first = (today - timedelta(days=6)).isoformat()
+        inside_last = (today - timedelta(days=1)).isoformat()
+        outside_first = (today - timedelta(days=40)).isoformat()
+        outside_last = (today - timedelta(days=30)).isoformat()
+        seeds = (
+            ("a seeded defect one", inside_first, inside_last),
+            ("a seeded defect two", inside_first, inside_last),
+            ("a seeded defect long ago", outside_first, outside_last),
+        )
+        for line, first, last in seeds:
             code, _, err = self.seed(
                 "--line",
                 line,
                 "--status",
                 "open",
                 "--first-seen",
-                "2026-10-18",
+                first,
                 "--last-seen",
-                "2026-10-25",
+                last,
                 env=self.fake_env(),
             )
             self.assertEqual(code, 0, err)
@@ -7008,6 +7068,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("defects seen in the last 7 days: 2", out)
         self.assertEqual(out.count("d-0001"), 1, "each entry once")
         self.assertEqual(out.count("d-0002"), 1)
+        self.assertNotIn("d-0003", out, "a defect last seen outside the week is not listed")
 
     # -- the page the owner reads -------------------------------------------
 
