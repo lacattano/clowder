@@ -113,7 +113,7 @@ clowder report <id> [--verbose] [--json] [--open-decision TEXT] [--decide TEXT]
 clowder owner <id> --item TEXT [--detail TEXT|--detail-file PATH] | --clear
 clowder step abandon <id> --why TEXT
 clowder step report <id> --headline TEXT [--answer-file PATH] [--by NAME]
-clowder queue add <repo> <brief...> --agent A|--role R --why TEXT
+clowder queue add <repo> <brief...> --agent A|--role R --why TEXT [--shape ship|scout]
 clowder queue list
 clowder queue send <q-id> [--job ID]
 clowder start [--json]
@@ -530,13 +530,16 @@ clowder queue list
 clowder queue send q-0001 --job j-0006
 ```
 
-- `queue add` records the brief, the repo, the agent or role it is for, and why it waits. Give
-  exactly one of `--agent` or `--role`, and always a `--why`.
+- `queue add` records the brief, the repo, the agent or role it is for, why it waits, and the
+  shape (`--shape ship|scout`, default `ship`; a brief that begins "scout:" does not set it).
+  Give exactly one of `--agent` or `--role`, and always a `--why`.
 - `queue list` reads them back in a fresh context. The board shows them too, in the section on
   what is waiting.
 - `queue send` goes through the normal dispatch path, so the cross-repo guard and the marker
-  still apply. A role is resolved to a live agent; it never makes one. On success the item
-  leaves the queue; on any failure it stays, so nothing is lost.
+  still apply, and it replays the recorded shape: a scout needs no job, a ship does. A role is
+  resolved to a live agent; it never makes one. On success the item leaves the queue; on any
+  failure it stays, so nothing is lost. A record with no shape reads as a ship; an unknown
+  shape is refused.
 - **`queue send --job <id>` gives or corrects the job** an item belongs to, so an item recorded
   while a space was busy can join its job once the block clears. A queued item carries no
   worktree, so its job is the only place its save can go: sending a **ship** item with no job is

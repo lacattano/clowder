@@ -4020,6 +4020,17 @@ class CliTest(unittest.TestCase):
         self.assertEqual(item["why"], "the space holds an open job")
         self.assertIsNotNone(item["created_at"])
 
+    def test_queue_add_records_the_shape_it_is_given(self) -> None:
+        code, _, err = self.queue_scout("--agent", "maker")
+        self.assertEqual(code, 0, err)
+        item = self.load_state()["queued"]["q-0001"]
+        self.assertEqual(item["shape"], "scout")
+
+    def test_queue_add_defaults_to_a_ship(self) -> None:
+        code, _, err = self.queue_add("--agent", "maker")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.load_state()["queued"]["q-0001"]["shape"], "ship")
+
     def test_queue_add_records_labels(self) -> None:
         code, _, err = self.queue_add("--agent", "maker", "--label", "sev:high")
         self.assertEqual(code, 0, err)
@@ -4294,11 +4305,71 @@ class CliTest(unittest.TestCase):
         self.queue_add("--agent", "maker")
         code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
         self.assertEqual(code, 1)
-        self.assertIn("no job", err)
+        self.assertIn("is a ship item with no job", err)
         self.assertIn("--job", err)
         payload = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn("q-0001", payload["queued"], "a refused item stays in the queue")
         self.assertEqual(payload["tasks"], {})
+
+    def test_a_stored_scout_sends_with_no_job(self) -> None:
+        # The read-only brief that used to be stuck: the shape is on the record,
+        # so the send replays it and a scout needs no job and no worktree.
+        self.queue_scout("--agent", "maker")
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        task = self.only_task()
+        self.assertEqual(task["shape"], "scout")
+        self.assertIsNone(task["job"])
+        self.assertNotIn("q-0001", self.load_state()["queued"])
+
+    def test_a_record_with_no_shape_reads_as_a_ship(self) -> None:
+        # Every item written before the shape was recorded still behaves as it did:
+        # a ship, so a send with no job is refused with the reason.
+        self.queue_add("--agent", "maker")
+        payload = self.load_state()
+        del payload["queued"]["q-0001"]["shape"]
+        self.state.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("is a ship item with no job", err)
+        self.assertIn("q-0001", self.load_state()["queued"], "the item stays put")
+        self.assertEqual(self.load_state()["tasks"], {})
+
+    def test_an_unknown_shape_is_refused(self) -> None:
+        self.queue_add("--agent", "maker")
+        payload = self.load_state()
+        payload["queued"]["q-0001"]["shape"] = "scoot"
+        self.state.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _, err = self.cli("queue", "send", "q-0001", env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("scoot", err)
+        self.assertIn("ship", err)
+        self.assertIn("scout", err)
+        payload = self.load_state()
+        self.assertIn("q-0001", payload["queued"], "a refused item stays in the queue")
+        self.assertEqual(payload["tasks"], {}, "nothing is sent")
+
+    def test_queue_help_names_the_shape(self) -> None:
+        # `--help` is the front door's own reference, so it must name the flag it
+        # replays and say a scout needs no job.
+        add_help = self.queue_help("add")
+        self.assertIn("--shape", add_help)
+        self.assertIn("ship", add_help)
+        self.assertIn("scout", add_help)
+
+        send_help = self.queue_help("send")
+        self.assertIn("shape", send_help, "the send says it replays the recorded shape")
+        self.assertIn("scout", send_help, "and that a scout needs no job")
+
+    @staticmethod
+    def queue_help(subcommand: str) -> str:
+        """A queue subcommand's `--help` text, as the front door reads it."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.suppress(SystemExit):
+            cli.build_parser().parse_args(["queue", subcommand, "--help"])
+        return out.getvalue()
 
     def test_a_no_job_step_records_the_agents_own_space(self) -> None:
         # The sibling defect: a step sent to an agent whose space holds a job was

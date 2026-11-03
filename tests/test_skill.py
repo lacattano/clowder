@@ -710,10 +710,11 @@ class MessageDisciplineTest(unittest.TestCase):
 
     def test_the_section_did_not_turn_the_skill_into_an_essay(self) -> None:
         # 561 lines before this section, 587 with it. The budget moved by one when the audit
-        # clause came back from the j-0223 review: a fact was restored, not padding added.
-        # The number is a cap, not a target; a later section that earns a line moves this
-        # number in the same commit.
-        self.assertLessEqual(len(read_skill().splitlines()), 587)
+        # clause came back from the j-0223 review: a fact was restored, not padding added. It
+        # moved by three for the queue's recorded shape (job j-0258): a flag, a default and the
+        # two refusals. The number is a cap, not a target; a later section that earns a line
+        # moves this number in the same commit.
+        self.assertLessEqual(len(read_skill().splitlines()), 590)
 
 
 class AsciiTest(unittest.TestCase):
