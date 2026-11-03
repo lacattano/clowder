@@ -780,7 +780,12 @@ def changed_for_owner(data: BoardData, *, since: float | None) -> list[str]:
     entries: list[tuple[float, str]] = []
     for job in data.jobs:
         moment = to_epoch(job.merged_at)
-        if moment is None or (since is not None and moment <= since):
+        # Both stamps are whole seconds, so the look and a landing can share one. A
+        # landing at the look's own second has landed and must show; hiding it made
+        # the page say nothing had landed while it had (d-0102, proved by t-1214).
+        # The cost is that a landing a moment before the look, in the same second,
+        # can show once: a repeat is visible, a hidden landing is not.
+        if moment is None or (since is not None and moment < since):
             continue
         what = (job.effect or "").strip() or job.name_in_words
         entries.append((moment, f"Now live: {_e(what)}"))
