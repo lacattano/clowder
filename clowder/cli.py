@@ -2148,6 +2148,7 @@ def cmd_step_report(args: argparse.Namespace) -> int:
     task.closed_at = task.reported_at
     task.close_reason = "the step reported"
     task.status = CLOSED
+    _store_owner_line(store, task, owner_line(answer))
     store.save()
 
     who = (args.by or task.agent or config.front_door_name or "unknown").strip()
@@ -2189,6 +2190,27 @@ def cmd_step_report(args: argparse.Namespace) -> int:
         print(f"{INDENT}{task.job} is free for the next step")
     print(f"{INDENT}audit: {audit_file}")
     return 0
+
+
+def _store_owner_line(store: StateStore, task: Task, line: str | None) -> None:
+    """Keep the review's owner-facing line on the job, for the board's waiting row.
+
+    The reviewer's own report already ends with that line, so it is the honest source:
+    nothing has to be typed twice, and the words are the ones a person wrote for the
+    owner. Only the reviewer's step on a job writes here - the job names that agent and
+    the commit it checked - so a writer's report cannot overwrite the summary. A review
+    that reported without a usable line clears the old one, which would otherwise
+    describe a commit that is no longer the one in front of the owner.
+    """
+    if not task.job:
+        return
+    try:
+        job = store.get_job(task.job)
+    except StateError:
+        return
+    if job.reviewer != task.agent or not job.review_commit:
+        return
+    job.owner_line = line
 
 
 def _resolve_session(

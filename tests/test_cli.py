@@ -5930,6 +5930,107 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(StateStore(self.state).get("t-0001").status, CLOSED)
 
+    def test_a_review_step_report_stores_its_owner_line_on_the_job(self) -> None:
+        # The reviewer's report already ends with the line he reads, so the job takes it
+        # from there and the board's waiting row can show it without anyone typing it
+        # twice.
+        self.write_job(
+            "j-0001",
+            branch="task/refund",
+            commit="1a2b3c4",
+            reviewer="myrepo-maker",
+            review_commit="1a2b3c4",
+        )
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id="t-0001",
+                question="is the refund page right?",
+                brief="scout: check the refund page",
+                shape="scout",
+                agent="myrepo-maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                job="j-0001",
+                status=DISPATCHED,
+                dispatched_at=now_iso(),
+            )
+        )
+        store.save()
+        body = self.root / "answer.md"
+        body.write_text(
+            "The page is right."
+            + chr(10)
+            + "For the owner: The refund page now tells a customer what they get back. "
+            "Nothing else changes.",
+            encoding="utf-8",
+        )
+        code, _, err = self.cli(
+            "step",
+            "report",
+            "t-0001",
+            "--headline",
+            "checked",
+            "--answer-file",
+            str(body),
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            StateStore(self.state).get_job("j-0001").owner_line,
+            "The refund page now tells a customer what they get back. Nothing else changes.",
+        )
+
+    def test_a_writers_report_does_not_overwrite_the_owner_line(self) -> None:
+        # Only the agent the job names as its reviewer writes the summary.
+        self.write_job(
+            "j-0001",
+            branch="task/refund",
+            commit="1a2b3c4",
+            reviewer="myrepo-reviewer",
+            review_commit="1a2b3c4",
+        )
+        store = StateStore(self.state)
+        store.get_job("j-0001").owner_line = "The reviewer's own words about the change."
+        store.add(
+            Task(
+                id="t-0001",
+                question="add the refund page",
+                brief="ship: add the refund page",
+                shape="ship",
+                agent="myrepo-maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                job="j-0001",
+                status=DISPATCHED,
+                dispatched_at=now_iso(),
+            )
+        )
+        store.save()
+        body = self.root / "answer.md"
+        body.write_text(
+            "Done."
+            + chr(10)
+            + "For the owner: Something else entirely happened here today, and it is a "
+            "long tale about a different change.",
+            encoding="utf-8",
+        )
+        code, _, err = self.cli(
+            "step",
+            "report",
+            "t-0001",
+            "--headline",
+            "done",
+            "--answer-file",
+            str(body),
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            StateStore(self.state).get_job("j-0001").owner_line,
+            "The reviewer's own words about the change.",
+        )
+
     def test_a_step_reported_twice_closes_once(self) -> None:
         # Both intake paths, twice each. `step report` is the worker writing the
         # record itself; `inbox` is the front door's cheap check. Neither may write

@@ -178,6 +178,11 @@ class Job:
     # changes for him. Both fall back to the label when not given.
     title: str | None = None
     effect: str | None = None
+    # What the change does, in the owner's words, taken from the "For the owner:" line
+    # of the review step's own report when it closes. The board renders it under the
+    # waiting row, so he can decide without asking the front door what the item is.
+    # None means no review has reported a usable line yet, and the row says so.
+    owner_line: str | None = None
     # Reserved tag families the board colours by prefix: `sev:` (severity) and
     # `phase:` (lifecycle). One list, set with a repeatable flag, so a new family
     # needs no new field.
