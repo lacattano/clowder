@@ -51,6 +51,26 @@ ACTIONS = {
     WALKTHROUGH: "reply pass, or what to change",
 }
 
+# The second line of a change's body: what his answer does. Stable per kind, so it is
+# written once here and not typed by the front door. The first line is the reviewer's
+# own "For the owner:" report, stored on the job; when there is none the row says so
+# rather than looking complete.
+CONSEQUENCE = {
+    MERGE: "Your word lets it be merged; nothing merges without it.",
+    WALKTHROUGH: "Your answer is the walkthrough: pass it so it can be published, or say "
+    "what to change.",
+}
+NO_SUMMARY = (
+    "No plain-words summary of this change was recorded with the review. Ask the front "
+    "door what it changes before you answer."
+)
+
+
+def _change_body(job: Job, kind: str) -> str:
+    """What the change does, then what his answer decides: two short wrapped lines."""
+    summary = " ".join((job.owner_line or "").split()) or NO_SUMMARY
+    return summary + "\n" + CONSEQUENCE[kind]
+
 
 def answered_by(item: Waiting, number: int) -> str:
     """The exact words that answer one line.
@@ -196,6 +216,7 @@ def waiting_on_owner(
                         action=ACTIONS[MERGE],
                         since=job.published_at or job.created_at,
                         id=job.id,
+                        detail=_change_body(job, MERGE),
                     )
                 )
             continue
@@ -237,6 +258,7 @@ def waiting_on_owner(
                     action=ACTIONS[WALKTHROUGH],
                     since=job.handed_over_at or job.created_at,
                     id=job.id,
+                    detail=_change_body(job, WALKTHROUGH),
                 )
             )
 

@@ -685,6 +685,75 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("a step does not close when it reports", worker)
         self.assertIn("not enough", worker, "bumping the count is refused as a fix")
 
+    def test_a_waiting_change_shows_the_reviewers_owner_line(self) -> None:
+        # The owner could not decide from the row: it named the change and the commit,
+        # but not what the change does. The reviewer's own report line is the body.
+        held = job(
+            "j-0001",
+            reviewer="reviewer",
+            review_commit="1a2b3c4",
+            handed_over_at=now_iso(),
+            owner_line="The refund page now tells a customer what they get back.",
+        )
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("The refund page now tells a customer what they get back.", waiting[0])
+        self.assertIn("pass it so it can be published", waiting[0])
+        self.assertIn("reply pass", waiting[0], "the reply words are unchanged")
+        self.assertIn("<b>1.</b>", waiting[0], "the number is unchanged")
+        self.assertIn("owner-detail", waiting[0], "the body is rendered under the row")
+
+    def test_a_waiting_change_with_no_summary_says_so(self) -> None:
+        held = job(
+            "j-0001",
+            reviewer="reviewer",
+            review_commit="1a2b3c4",
+            handed_over_at=now_iso(),
+        )
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertIn("No plain-words summary of this change was recorded", waiting[0])
+        self.assertIn("pass it so it can be published", waiting[0])
+
+    def test_a_merge_row_body_says_what_the_word_does(self) -> None:
+        passed = job(
+            "j-0001",
+            pass_at=now_iso(),
+            published_at=now_iso(),
+            owner_line="The refund page now tells a customer what they get back.",
+        )
+        waiting = waiting_on_you(data(jobs=[passed]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("Your word lets it be merged; nothing merges without it.", waiting[0])
+        self.assertIn("reply merge", waiting[0], "the reply words are unchanged")
+
+    def test_the_change_body_carries_no_internals(self) -> None:
+        # His words only: no handle, no command, no file. The page keeps its draw stamp.
+        held = job(
+            "j-0001",
+            reviewer="reviewer",
+            review_commit="1a2b3c4",
+            handed_over_at=now_iso(),
+            owner_line="The refund page now tells a customer what they get back.",
+        )
+        page = data(
+            jobs=[held],
+            generated_at="2026-09-27 10:00",
+            drawn_at="2026-09-27T10:00:00",
+        )
+        html = render_board(page)
+        body = html.split("class='owner-detail'", 1)[1].split("</div>", 1)[0]
+        for internals in (
+            "j-000",
+            "t-000",
+            "clowder",
+            "commit",
+            "state.json",
+            "ship:",
+            "scout:",
+        ):
+            self.assertNotIn(internals, body)
+        self.assertIn("Drawn at 2026-09-27 10:00.", html)
+
     def test_a_cleared_owner_item_does_not_wait(self) -> None:
         self.assertEqual(waiting_on_you(data(tasks=[task()])), [])
 
