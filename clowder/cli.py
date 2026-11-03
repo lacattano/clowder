@@ -4364,8 +4364,12 @@ def _board_data(
         agents=agents,
         state_path=str(store.path),
         generated_at=now_stamp(),
+        # The same draw at whole seconds, so the next draw can compare it with the
+        # record's last change without falling back to minutes.
+        drawn_at=now_iso(),
         last_looked=store.catchup_at,
         last_change=stamp_of(activity) if activity is not None else None,
+        last_change_at=activity.isoformat() if activity is not None else None,
         live_ok=live_ok,
         note=note,
         front_door_name=config.front_door_name,

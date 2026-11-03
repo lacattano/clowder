@@ -11,6 +11,7 @@ rows' data come from that list.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,8 +47,22 @@ TITLE = "clowder board"
 # skill uses, and both take it from here so they cannot drift.
 CHANGED_HEADING = "What landed since you last looked"
 
-# An open tab follows along on its own: no server, no network. The one script is
-# the page's own filter loop, inline; nothing is fetched.
+# The page's draw stamp and the newest record moment it was drawn from, both in the
+# head so the next draw can read them back. A page on disk has no server, so this is
+# the only way a redraw can tell whether anything moved while the page it replaces was
+# in his browser. The comparison is record with record: a command that writes and draws
+# inside one second leaves two equal draw and record stamps, and comparing those would
+# report a change that did not happen (the same-second false alarm, j-0266).
+DRAWN_META = "clowder-drawn"
+RECORD_META = "clowder-record"
+
+# One plain sentence about a look, used wherever the page needs to say it. A draw is
+# not a look, and no wording should make him think it is.
+LOOK_RULE = "Only opening the page counts as a look; a page that refreshes itself does not."
+
+# An open tab follows along on its own: no server, no network. The one script filters
+# the rows and refreshes on the way back from a hidden tab; it is inline, and nothing is
+# fetched.
 REFRESH_SECONDS = 30
 # How many landed changes the "Changed" section prints. His complaint was a wall of
 # text, and the first draw of an old record can hold months of merges; the newest few
@@ -79,6 +94,7 @@ h2 {
   letter-spacing: .06em; color: var(--muted);
 }
 .meta { color: var(--muted); margin: 0 0 1.5rem; font-size: .85rem; }
+.moved { color: var(--warn); font-weight: 600; }
 code, .id { font-family: Consolas, "Cascadia Mono", monospace; font-size: .87em; }
 section {
   background: var(--card); border: 1px solid var(--line); border-radius: 10px;
@@ -176,6 +192,16 @@ details.more .full { margin-top: .25rem; }
 # stored anywhere.
 FILTER_SCRIPT = """
 (function () {
+  // A page on disk cannot see the record change while it sits in a background tab, so
+  // it refreshes on the way back instead: never while it is being read, and never on a
+  // timer of its own. A tab that was hidden and comes back is where a stale copy would
+  // have been read.
+  var away = false;
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { away = true; return; }
+    if (away) { window.location.reload(); }
+  });
+
   var bar = document.querySelector('[data-filters]');
   if (!bar) { return; }
   var bodies = document.querySelectorAll('tbody[data-rows]');
@@ -423,14 +449,19 @@ class BoardData:
     # `generated_at` is the local stamp a person reads, and the page's own age for the
     # footer. It is not the reference point for the catch-up: a draw is not a look.
     generated_at: str = ""
+    # The same moment at whole seconds (ISO), written into the head so the next draw can
+    # read it back and say what moved since this page. `generated_at` is for reading.
+    drawn_at: str = ""
     # When the owner last looked, as an ISO timestamp, or None if he never has. This
     # is the reference point for the landed-work section. Drawing the page never moves
     # it; opening the page does. Read from the state file's `catchup_at`.
     last_looked: str | None = None
     # The newest moment any record was touched, as a display stamp. This is the honest
     # clock for "nothing has changed since": a page redrawn at 13:10 with no new record
-    # says 12:40, not 13:10.
+    # says 12:40, not 13:10. `last_change_at` is the same moment at whole seconds, written
+    # in the head beside the draw stamp so the next draw can compare record with record.
     last_change: str | None = None
+    last_change_at: str | None = None
     live_ok: bool = True
     note: str | None = None
     # The front door's own name, for text that means it and not the owner.
@@ -1230,7 +1261,69 @@ def _kanban(data: BoardData) -> str:
     )
 
 
-def render_board(data: BoardData) -> str:
+def _record_moved(previous_record: str | None, now: float | None) -> bool | None:
+    """Did the record move since the replaced page, or can that not be told?
+
+    The stamp is the newest record moment that page was drawn from, empty when the
+    record held no moments. Any difference counts, not only a later moment: the newest
+    moment can move backwards when the queue item holding it is dropped, and the page
+    must not say nothing changed while something left. Equal stamps are no change.
+    A page with no such tag at all is an older page that cannot speak, so it claims
+    nothing.
+    """
+    if previous_record is None:
+        return None
+    if previous_record == "":
+        return now is not None  # the record was empty; the first moment is a change
+    if now is None:
+        return True  # the record had moments, and now has none
+    before = to_epoch(previous_record)
+    if before is None:
+        return None
+    return now != before
+
+
+def _drawn_line(data: BoardData, previous_draw: str | None, previous_record: str | None) -> str:
+    """What the page says about its own draw, and what moved since the last one.
+
+    Record is compared with record - the newest moment in the record now against the
+    newest moment the replaced page was drawn from - so a command that wrote and drew in
+    the same second does not read as a later change, and a newest moment that fell still
+    reads as one. The draw label is printed once: when the two draws fall in the same
+    minute, the copy he had open is named instead of the same time twice.
+    """
+    label = _display_stamp(data.drawn_at) if data.drawn_at else data.generated_at
+    drawn_label = label or "an unrecorded time"
+    parts = [f"Drawn at {_e(drawn_label)}."]
+    previous_label = _display_stamp(previous_draw) if previous_draw else None
+    now = to_epoch(data.last_change_at or data.last_change)
+    moved = _record_moved(previous_record, now)
+    same_minute = previous_label is not None and previous_label == drawn_label
+    if previous_label and moved is True:
+        if same_minute:
+            parts.append(
+                "<span class='moved'>The copy you had open was out of date. "
+                "This one is current.</span>"
+            )
+        else:
+            parts.append(
+                "<span class='moved'>Something has changed since the page drawn at "
+                f"{_e(previous_label)}.</span>"
+            )
+    elif previous_label and moved is False:
+        parts.append(
+            "Nothing has changed since the copy you had open."
+            if same_minute
+            else f"Nothing has changed since the page drawn at {_e(previous_label)}."
+        )
+    parts.append(_e(LOOK_RULE))
+    parts.append("<a href=''>Reload the page</a>")
+    return " ".join(parts)
+
+
+def render_board(
+    data: BoardData, *, previous_draw: str | None = None, previous_record: str | None = None
+) -> str:
     """The whole page, as one self-contained file.
 
     The catch-up comes first, in his words: what he has not read yet, then the four
@@ -1263,7 +1356,7 @@ def render_board(data: BoardData) -> str:
             "recorded; a report the front door holds in its words will not appear here."
         )
 
-    idle_line = "No step is open. This page does not reload itself when idle."
+    idle_line = "No step is open."
     running_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in running) + "</ul>"
         if running
@@ -1335,8 +1428,10 @@ def render_board(data: BoardData) -> str:
         )
     changed_html = (
         "<p class='why'>This lists the work that landed since you last looked, and "
-        "nothing else: a step that started is under Running now. Only opening the page "
-        "records a look; a redraw by another command does not.</p>" + changed_html
+        "nothing else: a step that started is under Running now. "
+        + _e(LOOK_RULE)
+        + "</p>"
+        + changed_html
     )
 
     kanban_html = _kanban(data)
@@ -1436,7 +1531,9 @@ def render_board(data: BoardData) -> str:
     )
 
     # Reload only while something is in flight. The browser re-reads this file; the box
-    # draws nothing until a command rewrites it, so an idle reload is pure flicker.
+    # draws nothing until a command rewrites it, so an idle timer is pure flicker. When
+    # idle, the page refreshes as it comes back from a hidden tab instead - the moment a
+    # stale copy would otherwise be read - and the script below does it.
     refresh_meta = (
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if in_flight else ""
     )
@@ -1444,15 +1541,17 @@ def render_board(data: BoardData) -> str:
         f"This page reloads every {REFRESH_SECONDS}s while work is running, and stops when "
         "nothing is running."
         if in_flight
-        else "Nothing is running, so this page does not reload itself. It changes when a "
-        "clowder command rewrites it."
+        else "Nothing is running, so this page refreshes when you come back to it."
     )
+    drawn_html = _drawn_line(data, previous_draw, previous_record)
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="{DRAWN_META}" content="{_e(data.drawn_at or data.generated_at)}">
+<meta name="{RECORD_META}" content="{_e(data.last_change_at or data.last_change or "")}">
 {refresh_meta}
 <title>{_e(TITLE)}</title>
 <style>{STYLE}</style>
@@ -1461,6 +1560,7 @@ def render_board(data: BoardData) -> str:
 <main>
 <h1>{_e(TITLE)}</h1>
 <p class="meta">What waits on you, what is running, what is queued, and what changed.</p>
+<p class="meta" id="drawn">{drawn_html}</p>
 <p class="meta" id="freshness">{_e(freshness)} {_e(reload_line)}</p>
 {_section("Since you last looked", len(data.catchup), catch_html, css="needs")}
 {_section("For you", len(for_you), needs_html, css="needs")}
@@ -1493,8 +1593,37 @@ def _cost(task: Task) -> str:
     return format_cost(float(total)) if isinstance(total, (int, float)) else "-"
 
 
+def _meta_value(text: str, name: str) -> str | None:
+    # An empty content attribute is a real value - a record with no moments - and is kept
+    # as "", so the next draw can tell it apart from an older page with no tag at all.
+    match = re.search(rf'<meta name="{name}" content="([^"]*)"', text)
+    return match.group(1) if match else None
+
+
+def read_stamps(path: str | Path) -> tuple[str | None, str | None]:
+    """The draw and record stamps embedded in an existing page, or (None, None).
+
+    A page on disk has no server, so this is how the next draw learns which page it is
+    replacing and which record moment that page showed. A missing or unreadable file, or
+    a page written before a stamp existed, reads as None for that stamp, and the new page
+    makes no claim it cannot support.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    return _meta_value(text, DRAWN_META), _meta_value(text, RECORD_META)
+
+
 def write_board(data: BoardData, path: str | Path) -> Path:
+    """Draw the page, saying what moved since the page it replaces.
+
+    The old file's stamps are read here, before the write, so `render_board` stays a
+    pure function of what it is handed and the page stays one self-contained file.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_board(data), encoding="utf-8")
+    previous_draw, previous_record = read_stamps(target)
+    page = render_board(data, previous_draw=previous_draw, previous_record=previous_record)
+    target.write_text(page, encoding="utf-8")
     return target
