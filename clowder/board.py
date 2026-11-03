@@ -47,10 +47,14 @@ TITLE = "clowder board"
 # skill uses, and both take it from here so they cannot drift.
 CHANGED_HEADING = "What landed since you last looked"
 
-# The page's draw stamp, written into the head so the next draw can read it back. A
-# page on disk has no server, so this is the only way a redraw can tell whether the
-# record moved while the page it replaces was in his browser.
+# The page's draw stamp and the newest record moment it was drawn from, both in the
+# head so the next draw can read them back. A page on disk has no server, so this is
+# the only way a redraw can tell whether anything moved while the page it replaces was
+# in his browser. The comparison is record with record: a command that writes and draws
+# inside one second leaves two equal draw and record stamps, and comparing those would
+# report a change that did not happen (the same-second false alarm, j-0266).
 DRAWN_META = "clowder-drawn"
+RECORD_META = "clowder-record"
 
 # One plain sentence about a look, used wherever the page needs to say it. A draw is
 # not a look, and no wording should make him think it is.
@@ -454,8 +458,8 @@ class BoardData:
     last_looked: str | None = None
     # The newest moment any record was touched, as a display stamp. This is the honest
     # clock for "nothing has changed since": a page redrawn at 13:10 with no new record
-    # says 12:40, not 13:10. `last_change_at` is the same moment at whole seconds, for
-    # comparing with the draw stamp of the page this one replaces.
+    # says 12:40, not 13:10. `last_change_at` is the same moment at whole seconds, written
+    # in the head beside the draw stamp so the next draw can compare record with record.
     last_change: str | None = None
     last_change_at: str | None = None
     live_ok: bool = True
@@ -1257,36 +1261,44 @@ def _kanban(data: BoardData) -> str:
     )
 
 
-def _drawn_line(data: BoardData, previous_draw: str | None) -> str:
+def _drawn_line(data: BoardData, previous_draw: str | None, previous_record: str | None) -> str:
     """What the page says about its own draw, and what moved since the last one.
 
-    The comparison is at whole seconds, the resolution both stamps are stored at, so a
-    change in the same second as the previous draw counts as after it: a visible repeat
-    is safer than a hidden change (d-0102). The label he reads stays at minutes.
+    Record is compared with record - the newest moment in the record now against the
+    newest moment the replaced page was drawn from - so a command that wrote and drew in
+    the same second does not read as a later change. A page that cannot read either
+    stamp claims nothing: a missing sentence is honest, a false "nothing has changed" is
+    not.
     """
     label = _display_stamp(data.drawn_at) if data.drawn_at else data.generated_at
-    parts = [f"Drawn at {_e(label or 'an unrecorded time')}."]
-    if previous_draw:
-        previous_label = _e(_display_stamp(previous_draw))
-        previous_at = to_epoch(previous_draw)
-        change_at = to_epoch(data.last_change_at or data.last_change)
-        if change_at is not None and previous_at is not None and change_at >= previous_at:
-            parts.append(
-                "<span class='moved'>The record has changed since the page drawn at "
-                f"{previous_label}, so that copy was out of date. This one is current.</span>"
-            )
-        elif previous_at is not None:
-            parts.append(
-                f"Nothing has changed in the record since the page drawn at {previous_label}."
-            )
-        # An unreadable previous stamp claims nothing: a missing sentence is honest, a
-        # false "nothing has changed" is not.
+    drawn_label = label or "an unrecorded time"
+    parts = [f"Drawn at {_e(drawn_label)}."]
+    previous_label = _display_stamp(previous_draw) if previous_draw else None
+    before = to_epoch(previous_record)
+    now = to_epoch(data.last_change_at or data.last_change)
+    if previous_label and before is not None and now is not None:
+        if now > before:
+            if previous_label == drawn_label:
+                # Two draws inside one minute: printing the same time twice says nothing.
+                parts.append(
+                    "<span class='moved'>The copy you had open was out of date. "
+                    "This one is current.</span>"
+                )
+            else:
+                parts.append(
+                    "<span class='moved'>Something has changed since the page drawn at "
+                    f"{_e(previous_label)}.</span>"
+                )
+        else:
+            parts.append(f"Nothing has changed since the page drawn at {_e(previous_label)}.")
     parts.append(_e(LOOK_RULE))
     parts.append("<a href=''>Reload the page</a>")
     return " ".join(parts)
 
 
-def render_board(data: BoardData, *, previous_draw: str | None = None) -> str:
+def render_board(
+    data: BoardData, *, previous_draw: str | None = None, previous_record: str | None = None
+) -> str:
     """The whole page, as one self-contained file.
 
     The catch-up comes first, in his words: what he has not read yet, then the four
@@ -1506,7 +1518,7 @@ def render_board(data: BoardData, *, previous_draw: str | None = None) -> str:
         if in_flight
         else "Nothing is running, so this page refreshes when you come back to it."
     )
-    drawn_html = _drawn_line(data, previous_draw)
+    drawn_html = _drawn_line(data, previous_draw, previous_record)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1514,6 +1526,7 @@ def render_board(data: BoardData, *, previous_draw: str | None = None) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="{DRAWN_META}" content="{_e(data.drawn_at or data.generated_at)}">
+<meta name="{RECORD_META}" content="{_e(data.last_change_at or data.last_change or "")}">
 {refresh_meta}
 <title>{_e(TITLE)}</title>
 <style>{STYLE}</style>
@@ -1555,29 +1568,35 @@ def _cost(task: Task) -> str:
     return format_cost(float(total)) if isinstance(total, (int, float)) else "-"
 
 
-def read_drawn_at(path: str | Path) -> str | None:
-    """The draw stamp embedded in an existing page, or None.
+def _meta_value(text: str, name: str) -> str | None:
+    match = re.search(rf'<meta name="{name}" content="([^"]*)"', text)
+    return (match.group(1) or None) if match else None
 
-        A page on disk has no server, so this is how the next draw learns which page it is
-        replacing. A missing or unreadable file, or a page written before the stamp
-    existed, reads as None and the new page simply makes no claim about a previous one.
+
+def read_stamps(path: str | Path) -> tuple[str | None, str | None]:
+    """The draw and record stamps embedded in an existing page, or (None, None).
+
+    A page on disk has no server, so this is how the next draw learns which page it is
+    replacing and which record moment that page showed. A missing or unreadable file, or
+    a page written before a stamp existed, reads as None for that stamp, and the new page
+    makes no claim it cannot support.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return None
-    match = re.search(rf'<meta name="{DRAWN_META}" content="([^"]*)"', text)
-    return match.group(1) if match else None
+        return None, None
+    return _meta_value(text, DRAWN_META), _meta_value(text, RECORD_META)
 
 
 def write_board(data: BoardData, path: str | Path) -> Path:
     """Draw the page, saying what moved since the page it replaces.
 
-    The old file's stamp is read here, before the write, so `render_board` stays a pure
-    function of what it is handed and the page stays one self-contained file.
+    The old file's stamps are read here, before the write, so `render_board` stays a
+    pure function of what it is handed and the page stays one self-contained file.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    previous = read_drawn_at(target)
-    target.write_text(render_board(data, previous_draw=previous), encoding="utf-8")
+    previous_draw, previous_record = read_stamps(target)
+    page = render_board(data, previous_draw=previous_draw, previous_record=previous_record)
+    target.write_text(page, encoding="utf-8")
     return target

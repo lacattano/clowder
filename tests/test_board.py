@@ -170,11 +170,11 @@ class RenderTest(unittest.TestCase):
                 last_change_at="2026-09-27T09:45:00",
             ),
             previous_draw="2026-09-27T09:30:00",
+            previous_record="2026-09-27T09:30:00",
         )
         self.assertIn("Drawn at 2026-09-27 10:00.", html)
-        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", html)
-        self.assertIn("that copy was out of date", html)
-        self.assertIn("This one is current.", html)
+        self.assertIn("Something has changed since the page drawn at 2026-09-27 09:30.", html)
+        self.assertNotIn("record", html.split('id="drawn"', 1)[1].split("</p>", 1)[0])
 
     def test_a_page_with_nothing_new_since_the_last_draw_says_so(self) -> None:
         html = render_board(
@@ -183,12 +183,57 @@ class RenderTest(unittest.TestCase):
                 last_change_at="2026-09-27T09:20:00",
             ),
             previous_draw="2026-09-27T09:30:00",
+            previous_record="2026-09-27T09:20:00",
         )
-        self.assertIn(
-            "Nothing has changed in the record since the page drawn at 2026-09-27 09:30",
-            html,
-        )
+        self.assertIn("Nothing has changed since the page drawn at 2026-09-27 09:30.", html)
         self.assertNotIn("out of date", html)
+
+    def test_a_write_and_a_draw_in_the_same_second_are_not_a_change(self) -> None:
+        # The reviewer's case 4: a command wrote the record at 09:15:07 and drew the page
+        # in that same second, so the old draw stamp equalled the newest record moment.
+        # A redraw with nothing written must not claim the copy was out of date.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:15:07",
+                    last_change_at="2026-09-27T09:15:07",
+                ),
+                path,
+            )
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:16:00",
+                    last_change_at="2026-09-27T09:15:07",
+                ),
+                path,
+            )
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("Nothing has changed since the page drawn at 2026-09-27 09:15.", html)
+        self.assertNotIn("out of date", html)
+        self.assertNotIn("Something has changed", html)
+
+    def test_a_change_inside_one_minute_does_not_print_the_same_time_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.html"
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:15:10",
+                    last_change_at="2026-09-27T09:15:10",
+                ),
+                path,
+            )
+            write_board(
+                data(
+                    drawn_at="2026-09-27T09:15:50",
+                    last_change_at="2026-09-27T09:15:40",
+                ),
+                path,
+            )
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("The copy you had open was out of date. This one is current.", html)
+        drawn = html.split('id="drawn"', 1)[1].split("</p>", 1)[0]
+        self.assertEqual(drawn.count("09:15"), 1, "the same minute is named once")
 
     def test_a_redraw_reads_the_older_stamp_and_detects_the_change(self) -> None:
         # The page a command replaces is the one in his browser. Its stamp is read back
@@ -217,7 +262,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn(
             "Drawn at 2026-09-27 10:00.", second, "a redraw reports the current stamp"
         )
-        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", second)
+        self.assertIn("Something has changed since the page drawn at 2026-09-27 09:30.", second)
 
     def test_a_quiet_record_still_reports_a_change_since_the_last_draw(self) -> None:
         # The change is caught by the stamps, not by the in-flight reload: with nothing
@@ -228,9 +273,10 @@ class RenderTest(unittest.TestCase):
                 last_change_at="2026-09-27T09:45:00",
             ),
             previous_draw="2026-09-27T09:30:00",
+            previous_record="2026-09-27T09:30:00",
         )
         self.assertNotIn('<meta http-equiv="refresh"', html)
-        self.assertIn("The record has changed since the page drawn at 2026-09-27 09:30", html)
+        self.assertIn("Something has changed since the page drawn at 2026-09-27 09:30.", html)
 
     def test_the_drawn_line_carries_no_internals(self) -> None:
         # His words: no file, no command, no render machinery - and one plain sentence
@@ -241,6 +287,7 @@ class RenderTest(unittest.TestCase):
                 last_change_at="2026-09-27T09:45:00",
             ),
             previous_draw="2026-09-27T09:30:00",
+            previous_record="2026-09-27T09:30:00",
         )
         drawn = html.split('id="drawn"', 1)[1].split("</p>", 1)[0]
         for internals in ("state.json", "redraw", "command", "meta ", "generated", "JSON"):

@@ -791,8 +791,10 @@ well". Measured on this box: a plain command took 0.9s, `clowder agents` 3.3s, `
   CPU per hour per open page, plus a process to start and stop. The meta refresh costs a file read
   and no daemon, so it is the cheaper one and there is still no server or port to manage. A page
   on disk cannot see the file change, so idle it refreshes on the way back from a hidden tab - the
-  moment a stale copy would be read. Its head carries a whole-second draw stamp, so each redraw can
-  say whether the record moved since the page it replaced, in his words and without a server.
+  moment a stale copy would be read. Its head carries a whole-second draw stamp and the newest
+  record moment the page showed; a redraw compares record with record, so a command that wrote and
+  drew in the same second is not read as a later change, and says in his words whether anything
+  has changed since the page it replaced - without a server.
 - **Not live means "not checked", not "busy" or "idle".** The roster is not read on a normal draw,
   so the page says what it can: a step whose record has not changed for the quiet threshold is
   marked "nothing recorded for 6h" under Running now, and the worker section repeats it as "not

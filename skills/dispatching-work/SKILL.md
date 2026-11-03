@@ -61,9 +61,9 @@ The newer pieces, so a fresh you does not have to discover them:
 - The board is drawn from the state file, so it asks the multiplexer nothing; add `--live` when
   you need the live roster, and the page says which it shows. It is rewritten by every command
   that changes state, so it is current without anyone running `clowder board`.
-- The page says when it was drawn and whether the record moved since the page before it. It
-  reloads every 30s while work is in flight, and when idle it refreshes as it comes back to his
-  screen. Relay "nothing has landed since ..." as it stands; do not add news.
+- The page says when it was drawn and whether anything has changed since the page before it.
+  It reloads every 30s while work is in flight, and when idle it refreshes as it comes back to
+  his screen. Relay "nothing has landed since ..." as it stands; do not add news.
 
 What a refresh cannot recover: anything you kept only in your own words. If it is not on a job, a
 task or a queue item, a fresh you will not know it.
@@ -564,9 +564,9 @@ queue), and "What landed since you last looked", which counts from his last look
 page records it (`--open`), and `--looked` records it after you relay the page. Relay his section
 in words. Do not paste the HTML at the user.
 
-The page is a snapshot. It says when it was drawn and what moved since the page before it. While
-work runs it reloads every 30s; idle, it refreshes when he returns. Its "nothing landed" line is
-relayed as it stands, and only a clowder command rewrites the file - run `clowder board` to relay.
+The page is a snapshot. It says when it was drawn and what has changed since the page before it.
+While work runs it reloads every 30s; idle, it refreshes when he returns. Its "nothing landed"
+line is relayed as it stands; to relay a stale one, run `clowder board` first.
 
 ## Walking the owner through a change
 
