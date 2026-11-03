@@ -324,10 +324,18 @@ class QueuedTest(unittest.TestCase):
         self.assertEqual(reloaded.question, "the refund page?")
         self.assertEqual(reloaded.target, "maker")
 
+    def test_a_record_with_no_shape_reads_as_a_ship(self) -> None:
+        # Every item written before the shape was stored still behaves as it did.
+        item = Queued.from_dict(
+            {"id": "q-0009", "brief": "b", "repo": "myrepo", "why": "w", "agent": "maker"}
+        )
+        self.assertEqual(item.shape, "ship")
+
     def test_a_role_only_item_targets_the_role(self) -> None:
         store = StateStore(self.path)
         store.add_queued(make_queued(agent=None, role="verifier"))
         store.save()
+
         reloaded = StateStore(self.path).get_queued("q-0001")
         self.assertEqual(reloaded.target, "verifier")
 

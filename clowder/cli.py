@@ -623,7 +623,13 @@ def build_parser() -> argparse.ArgumentParser:
     q_add.add_argument("--role", choices=ROLES, help="the role it is for")
     q_add.add_argument("--why", required=True, help="why it is not sent yet")
     q_add.add_argument("--question", metavar="TEXT")
-    q_add.add_argument("--shape", choices=SHAPES, default="ship")
+    q_add.add_argument(
+        "--shape",
+        choices=SHAPES,
+        default="ship",
+        help="what the step does: ship changes the code, scout changes nothing "
+        "(default: ship). The send replays it, so a scout item needs no job",
+    )
     q_add.add_argument(
         "--cost",
         choices=box.COSTS,
@@ -657,14 +663,23 @@ def build_parser() -> argparse.ArgumentParser:
     q_list.set_defaults(handler=cmd_queue_list)
 
     q_send = queue_parser("send", "send one queued item, once its block has cleared")
+    q_send.description = (
+        "Send the item and replay the shape it was recorded with. A scout item changes "
+        "nothing, so it needs no job. A ship item needs one - see --job."
+    )
     q_send.add_argument("id")
     q_send.add_argument(
         "--job",
         metavar="ID",
-        help="give or correct the job it belongs to, if any",
+        help="the job a ship item belongs to, given or corrected at send time; "
+        "a scout item needs none",
     )
-    q_send.add_argument("--force", action="store_true")
-    q_send.add_argument("--dry-run", action="store_true")
+    q_send.add_argument(
+        "--force", action="store_true", help="send even if the box has no room for the cost"
+    )
+    q_send.add_argument(
+        "--dry-run", action="store_true", help="print what would be sent, and send nothing"
+    )
     q_send.add_argument("--json", action="store_true")
     q_send.set_defaults(handler=cmd_queue_send, refreshes_board=True)
 
@@ -3358,9 +3373,19 @@ def cmd_queue_drop(args: argparse.Namespace) -> int:
 def cmd_queue_send(args: argparse.Namespace) -> int:
     config, store = _context(args)
     item = store.get_queued(args.id)
+    shape = item.shape.strip().lower()
+    if shape not in SHAPES:
+        # A send replays the stored shape, so an unknown one would be sent as
+        # neither a ship nor a scout. Refuse it and name the fix.
+        raise UsageError(
+            f"{item.id} was recorded with shape {item.shape!r}, which is not one of "
+            f"{', '.join(SHAPES)}. Drop it and queue it again with "
+            f"`{PROGRAM} queue add ... --shape ship|scout`."
+        )
+    item.shape = shape
     agent = _queue_target_agent(config, item)
     job = (args.job or item.job or "").strip() or None
-    if item.shape.lower() == "ship" and not job:
+    if shape == "ship" and not job:
         # A queued item carries no worktree, so its job is the only place its save
         # can go. Sending a write item with neither would put it on no branch, and
         # nothing would be there to read.
