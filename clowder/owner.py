@@ -56,19 +56,32 @@ ACTIONS = {
 # own "For the owner:" report, stored on the job; when there is none the row says so
 # rather than looking complete.
 CONSEQUENCE = {
-    MERGE: "Your word lets it be merged; nothing merges without it.",
+    MERGE: "Your word lets it be merged; nothing merges without it. The checks run "
+    "before the merge.",
     WALKTHROUGH: "Your answer is the walkthrough: pass it so it can be published, or say "
-    "what to change.",
+    "what to change. A pass lets it be published and the checks then run; merging is a "
+    "separate word from you.",
 }
 NO_SUMMARY = (
     "No plain-words summary of this change was recorded with the review. Ask the front "
     "door what it changes before you answer."
 )
+# The row also knows when the job moved past the checked commit, or when the current
+# commit could not be read. The summary on the job was written for the earlier check, so
+# showing it under this commit is exactly how he would read it as describing the code in
+# front of him. The old words are withheld and the row says why.
+STALE_SUMMARY = (
+    "The summary on record was written for an earlier check, and the reviewer has not "
+    "confirmed this commit. Ask the front door what changed before you answer."
+)
 
 
-def _change_body(job: Job, kind: str) -> str:
+def _change_body(job: Job, kind: str, *, stale: bool = False) -> str:
     """What the change does, then what his answer decides: two short wrapped lines."""
-    summary = " ".join((job.owner_line or "").split()) or NO_SUMMARY
+    if stale:
+        summary = STALE_SUMMARY
+    else:
+        summary = " ".join((job.owner_line or "").split()) or NO_SUMMARY
     return summary + "\n" + CONSEQUENCE[kind]
 
 
@@ -232,6 +245,7 @@ def waiting_on_owner(
                 )
             continue
         if job.reviewer and job.review_commit and not busy:
+            stale = job.id in notes or job.id in unconfirmed
             if job.id in notes:
                 note = (
                     f"checked at {(job.review_commit or '')[:7]} but moved to "
@@ -258,7 +272,7 @@ def waiting_on_owner(
                     action=ACTIONS[WALKTHROUGH],
                     since=job.handed_over_at or job.created_at,
                     id=job.id,
-                    detail=_change_body(job, WALKTHROUGH),
+                    detail=_change_body(job, WALKTHROUGH, stale=stale),
                 )
             )
 

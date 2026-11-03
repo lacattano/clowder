@@ -699,6 +699,8 @@ class WaitingTest(unittest.TestCase):
         self.assertEqual(len(waiting), 1)
         self.assertIn("The refund page now tells a customer what they get back.", waiting[0])
         self.assertIn("pass it so it can be published", waiting[0])
+        self.assertIn("the checks then run", waiting[0], "what a pass commits him to")
+        self.assertIn("merging is a separate word from you", waiting[0])
         self.assertIn("reply pass", waiting[0], "the reply words are unchanged")
         self.assertIn("<b>1.</b>", waiting[0], "the number is unchanged")
         self.assertIn("owner-detail", waiting[0], "the body is rendered under the row")
@@ -724,7 +726,33 @@ class WaitingTest(unittest.TestCase):
         waiting = waiting_on_you(data(jobs=[passed]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("Your word lets it be merged; nothing merges without it.", waiting[0])
+        self.assertIn("The checks run before the merge.", waiting[0])
         self.assertIn("reply merge", waiting[0], "the reply words are unchanged")
+
+    def test_a_change_that_moved_past_the_checked_commit_hides_the_old_summary(self) -> None:
+        # The reviewer's real job: a review at 46a15d2 stored the line, the branch moved
+        # to 2241842, and the row showed the earlier summary under the new commit. That
+        # is exactly when he would read it as describing the code in front of him.
+        held = job(
+            "j-0001",
+            reviewer="reviewer",
+            review_commit="46a15d2",
+            handed_over_at=now_iso(),
+            owner_line="The refund page now tells a customer what they get back.",
+        )
+        waiting = waiting_on_you(data(jobs=[held], rereview={"j-0001": "2241842"}))
+        self.assertEqual(len(waiting), 1)
+        self.assertNotIn(
+            "tells a customer what they get back", waiting[0], "stale words withheld"
+        )
+        self.assertIn("written for an earlier check", waiting[0])
+        self.assertIn("has not confirmed this commit", waiting[0])
+        self.assertIn("moved to 2241842", waiting[0], "the note still names both commits")
+        self.assertIn("reply pass", waiting[0], "the reply words are unchanged")
+
+        unconfirmed = waiting_on_you(data(jobs=[held], review_unconfirmed={"j-0001"}))
+        self.assertNotIn("tells a customer what they get back", unconfirmed[0])
+        self.assertIn("has not confirmed this commit", unconfirmed[0])
 
     def test_the_change_body_carries_no_internals(self) -> None:
         # His words only: no handle, no command, no file. The page keeps its draw stamp.
