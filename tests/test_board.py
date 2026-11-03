@@ -725,8 +725,10 @@ class WaitingTest(unittest.TestCase):
         )
         waiting = waiting_on_you(data(jobs=[passed]))
         self.assertEqual(len(waiting), 1)
-        self.assertIn("Your word lets it be merged; nothing merges without it.", waiting[0])
-        self.assertIn("The checks run before the merge.", waiting[0])
+        self.assertIn("The checks must pass before the merge.", waiting[0])
+        self.assertEqual(
+            waiting[0].count("checks"), 1, "the checks fact is said once in one glance"
+        )
         self.assertIn("reply merge", waiting[0], "the reply words are unchanged")
 
     def test_a_change_that_moved_past_the_checked_commit_hides_the_old_summary(self) -> None:
@@ -746,13 +748,20 @@ class WaitingTest(unittest.TestCase):
             "tells a customer what they get back", waiting[0], "stale words withheld"
         )
         self.assertIn("written for an earlier check", waiting[0])
-        self.assertIn("has not confirmed this commit", waiting[0])
+        self.assertIn("wait for the reviewer", waiting[0], "waiting is the obvious move")
+        self.assertNotIn("could not be read", waiting[0], "the moved case says only that")
         self.assertIn("moved to 2241842", waiting[0], "the note still names both commits")
         self.assertIn("reply pass", waiting[0], "the reply words are unchanged")
 
         unconfirmed = waiting_on_you(data(jobs=[held], review_unconfirmed={"j-0001"}))
         self.assertNotIn("tells a customer what they get back", unconfirmed[0])
-        self.assertIn("has not confirmed this commit", unconfirmed[0])
+        self.assertIn("the current commit could not be read", unconfirmed[0])
+        self.assertIn("wait for the reviewer", unconfirmed[0])
+        self.assertNotIn(
+            "written for an earlier check",
+            unconfirmed[0],
+            "the unread case must not claim the check is old",
+        )
 
     def test_the_change_body_carries_no_internals(self) -> None:
         # His words only: no handle, no command, no file. The page keeps its draw stamp.
