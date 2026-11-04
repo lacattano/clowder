@@ -467,6 +467,28 @@ def file_lock(path: Path) -> Iterator[None]:
             handle.close()
 
 
+@dataclass(frozen=True)
+class Reservation:
+    """What a reservation read before it took the lock, and after.
+
+    `moved` means another command wrote while this one was working, so the id this
+    command would have minted was already taken and the locked read gave it another.
+    """
+
+    rev_before: int
+    rev_after: int
+    seq_before: int
+
+    @property
+    def moved(self) -> bool:
+        return self.rev_after != self.rev_before
+
+    @property
+    def would_have_been(self) -> str:
+        """The task id this command would have taken without the locked read."""
+        return f"t-{self.seq_before + 1:04d}"
+
+
 class StateStore:
     """Read and write the state file. One instance per command run."""
 
@@ -495,6 +517,9 @@ class StateStore:
         self._base_jobs: dict[str, dict[str, object]] = {}
         self._base_queued: dict[str, dict[str, object]] = {}
         self._thread_lock = threading.Lock()
+        # True while `reserved()` holds the file lock, so a save inside that block
+        # writes without taking it a second time.
+        self._in_file_lock = False
 
     # -- io ----------------------------------------------------------------
 
@@ -603,40 +628,94 @@ class StateStore:
 
     def save(self) -> None:
         self.load()
+        if self._in_file_lock:
+            # A reservation already holds the lock and read the file inside it, so
+            # there is nothing to fold in and nothing to wait for.
+            self._write_locked()
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._thread_lock, file_lock(self._lock_file()):
             self._fold_in_other_writers()
-            payload = {
-                "schema": SCHEMA_VERSION,
-                "rev": self._base_rev + 1,
-                "seq": self._seq,
-                "job_seq": self._job_seq,
-                "queue_seq": self._queue_seq,
-                "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
-                "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
-                "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
-                "seen": dict(self._seen),
-                "catchup_at": self._catchup_at,
-            }
-            # A key a newer copy wrote is carried through untouched, never dropped by a
-            # save that only knows this much.
-            for key, value in self._extras.items():
-                payload.setdefault(key, value)
-            text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-            temp = self._temp_path()
+            self._write_locked()
+
+    @contextlib.contextmanager
+    def reserved(self) -> Iterator[Reservation]:
+        """Hold the state lock while a command mints an id and writes its record.
+
+        A command reads the file when it starts and writes it when it finishes, and
+        two commands that start together would both mint the same next id. Inside
+        this block the file is read again under the lock, so the second command
+        mints from what the first one wrote. Nothing is sent inside the block: it
+        holds the lock, and a send can take seconds.
+        """
+        self.load()
+        before_rev = self._base_rev
+        before_seq = self._seq
+        with self._thread_lock, file_lock(self._lock_file()):
+            self._reload()
+            self._in_file_lock = True
             try:
-                temp.write_text(text, encoding="utf-8")
-                os.replace(temp, self.path)
-            except OSError as exc:
-                raise StateError(f"{self.path}: cannot write: {exc}") from exc
+                yield Reservation(
+                    rev_before=before_rev,
+                    rev_after=self._base_rev,
+                    seq_before=before_seq,
+                )
             finally:
-                if temp.exists() and temp != self.path:
-                    try:
-                        temp.unlink()
-                    except OSError:
-                        pass
-            self._base_rev += 1
-            self._snapshot_base()
+                self._in_file_lock = False
+
+    def _reload(self) -> None:
+        """Read the file again, dropping what this command had in memory.
+
+        Only a reservation calls this, and only before the command has changed
+        anything: its job is to see the file as the last writer left it.
+        """
+        self._loaded = False
+        self._tasks.clear()
+        self._jobs.clear()
+        self._queued.clear()
+        self._seen.clear()
+        self._catchup_at = None
+        self._extras.clear()
+        self._seq = 0
+        self._job_seq = 0
+        self._queue_seq = 0
+        self._base_rev = 0
+        self.load()
+
+    def _write_locked(self) -> None:
+        """Write the payload. The caller holds the file lock."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "rev": self._base_rev + 1,
+            "seq": self._seq,
+            "job_seq": self._job_seq,
+            "queue_seq": self._queue_seq,
+            "tasks": {tid: task.to_dict() for tid, task in self._tasks.items()},
+            "jobs": {jid: job.to_dict() for jid, job in self._jobs.items()},
+            "queued": {qid: item.to_dict() for qid, item in self._queued.items()},
+            "seen": dict(self._seen),
+            "catchup_at": self._catchup_at,
+        }
+        # A key a newer copy wrote is carried through untouched, never dropped by a
+        # save that only knows this much.
+        for key, value in self._extras.items():
+            payload.setdefault(key, value)
+        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        temp = self._temp_path()
+        try:
+            temp.write_text(text, encoding="utf-8")
+            os.replace(temp, self.path)
+        except OSError as exc:
+            raise StateError(f"{self.path}: cannot write: {exc}") from exc
+        finally:
+            if temp.exists() and temp != self.path:
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
+        self._base_rev += 1
+        self._snapshot_base()
 
     def _lock_file(self) -> Path:
         return self.path.with_name(self.path.name + ".lock")
@@ -837,6 +916,19 @@ class StateStore:
         if task.id in self._tasks:
             raise StateError(f"task {task.id} already exists")
         self._tasks[task.id] = task
+        return task
+
+    def remove_task(self, task_id: str) -> Task:
+        """Drop a row a command wrote and then could not use.
+
+        Only a step that was reserved and never reached a pane is removed. The id
+        stays spent: a sequence that went backwards could be minted again by the
+        next command.
+        """
+        self.load()
+        task = self._tasks.pop(task_id, None)
+        if task is None:
+            raise StateError(f"no task {task_id!r} in {self.path}")
         return task
 
     def get(self, task_id: str) -> Task:

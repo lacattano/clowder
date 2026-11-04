@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +31,8 @@ from tests.support import (
     write_fake_state,
     write_session,
 )
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 def reading(
@@ -7521,6 +7525,123 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("waiting on you: 1", out)
+
+
+# A command run as its own process, the way two panes run two commands.
+RUN_CLI = (
+    "import json, sys\nfrom clowder.cli import main\nsys.exit(main(json.loads(sys.argv[1])))\n"
+)
+
+
+class TwoCommandsAtOnceTest(unittest.TestCase):
+    """Two clowder commands started together. d-0064."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / "ws"
+        self.repo_path = self.workspace / "myrepo"
+        self.repo_path.mkdir(parents=True)
+        CliTest.make_repo(self.repo_path)
+        self.launcher = make_mux_launcher(self.root / "bin")
+        self.state = self.root / "state.json"
+        self.config = write_config(
+            self.root / "clowder.config.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            sessions={"root": str(self.root / "sessions")},
+            state={"path": str(self.state)},
+        )
+        self.log = self.root / "calls.jsonl"
+        self.mux_state = write_fake_state(
+            self.root / "mux-state.json",
+            agents=[
+                {"name": "maker", "pane_id": "w1:p1", "cwd": str(self.repo_path)},
+                {"name": "verifier", "pane_id": "w1:p2", "cwd": str(self.repo_path)},
+            ],
+        )
+
+    def dispatch(self, agent: str, brief: str, *, prompt_delay: float = 0.0):
+        env = {
+            key: value for key, value in os.environ.items() if not key.startswith("CLOWDER_")
+        }
+        env["CLOWDER_FAKE_STATE"] = str(self.mux_state)
+        env["CLOWDER_FAKE_LOG"] = str(self.log)
+        if prompt_delay:
+            env["CLOWDER_FAKE_PROMPT_DELAY"] = str(prompt_delay)
+        argv = [
+            "--config",
+            str(self.config),
+            "dispatch",
+            agent,
+            "myrepo",
+            brief,
+            "--shape",
+            "scout",
+        ]
+        return subprocess.Popen(
+            [sys.executable, "-c", RUN_CLI, json.dumps(argv)],
+            cwd=str(REPO),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def prompts(self) -> list[tuple[str, str]]:
+        if not self.log.is_file():
+            return []
+        rows = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        return [(row[2], row[3]) for row in rows if row[:2] == ["agent", "prompt"]]
+
+    def test_a_slow_send_and_a_fast_one_do_not_share_an_id(self) -> None:
+        # The slow brief is held in the pane's queue for 1.5 seconds. Before the
+        # fix, both commands minted t-0001 from the file they read at start, and
+        # the slow one delivered under that id before its save was refused.
+        slow = self.dispatch("verifier", "scout: check the terms page", prompt_delay=1.5)
+        fast = self.dispatch("maker", "scout: check the refund page")
+        outs = []
+        for proc in (slow, fast):
+            out, err = proc.communicate(timeout=120)
+            self.assertEqual(proc.returncode, 0, err)
+            outs.append(out)
+
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(len(tasks), 2, outs)
+        briefs = {
+            "maker": "scout: check the refund page",
+            "verifier": "scout: check the terms page",
+        }
+        sent = self.prompts()
+        self.assertEqual(len(sent), 2, sent)
+        seen: set[str] = set()
+        for target, text in sent:
+            matches = [tid for tid in tasks if text.startswith(f"[clowder job {tid} |")]
+            self.assertEqual(len(matches), 1, text[:60])
+            tid = matches[0]
+            seen.add(tid)
+            # The id on the brief is the row recorded for *this* pane and this
+            # brief, so neither command delivered under the other's id.
+            self.assertEqual(tasks[tid]["agent"], target, text[:60])
+            self.assertEqual(tasks[tid]["brief"], briefs[target])
+        self.assertEqual(len(seen), 2, "two commands shared one id")
+
+    def test_a_second_send_to_the_same_pane_is_refused_before_it_is_delivered(self) -> None:
+        first = self.dispatch("maker", "scout: check the refund page")
+        second = self.dispatch("maker", "scout: check the terms page", prompt_delay=1.5)
+        codes = []
+        for proc in (first, second):
+            _, err = proc.communicate(timeout=120)
+            codes.append((proc.returncode, err))
+
+        refused = [err for code, err in codes if code != 0]
+        self.assertEqual(len(refused), 1, codes)
+        self.assertIn("already holds open work", refused[0])
+        # One task, one brief in the pane: the refused command sent nothing.
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(len(self.prompts()), 1)
 
 
 if __name__ == "__main__":
