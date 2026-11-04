@@ -995,6 +995,31 @@ incomplete. Those stayed.
   one second apart; and a running line drops the shape label and any job or task handle the
   brief's first line carried, while an English sentence such as "scout the area" is left alone.
 
+### 42. Verification is per repo, and clowder has none
+
+Decided by the owner on 2026-09-28, in his words: the verifier is for tancat, so it should only
+check the tancat changes, and he does not expect it to check clowder. A verifier in clowder is
+possible but he sees no value in it at this stage, because clowder has no user acceptance process
+for it to run.
+
+- **A verifier serves the repo its pane was opened in.** It checks that repo's changes and no
+  other repo's; `job handover` fills the reviewer's copy from the job's own repo, at the job's own
+  commit. A dispatch that names a different repo is refused, unless `--force` overrides it.
+- **clowder has no verifier at this stage, on purpose.** There is no acceptance process for it to
+  run: nothing defines what a correct change in clowder does for a user, so a verifier would hold
+  a check with no standard behind it. Do not propose one until such a process exists.
+- **The front door does not offer one.** For a repo with no acceptance process there is nothing
+  for a verifier to check, so offering one spends a turn and implies a check the crew has no
+  standard to run. The rule is in the front-door skill.
+- **CI is not a verifier pass.** CI says the tests pass. A verifier says the change does what it
+  claims. A green build is not acceptance; the owner's walkthrough and pass still come first
+  (section 21).
+
+The record is honest about what landed without one. Two commits landed on 2026-09-28 with no
+verifier pass: the second B-097 commit (`1e71813`, in `AI-Playwright-Test-Generator`) and the
+agent-creation fix (`9d3594b`, in this repo). They are named here so a later reader does not take
+the log for a record in which every change was verified.
+
 ## What step 1 built
 
 `src`-less, flat `clowder/` package. No dependencies, so `py -3.15 -m clowder ...` works from
