@@ -270,9 +270,8 @@ branch name on it. The writer keeps its branch and can carry on.
 - All of this is on the user's disk. **Nothing is pushed between agents.**
 - One reviewer serves a repo. `job handover` makes one there if the repo has none, and reuses the
   one it finds. It checks the change and walks the owner through it; the next change waits its turn.
-- **A verifier checks only its own repo.** It serves the repo its pane was opened in, and cannot
-  check another repo. Do not offer one for a repo with no acceptance process; clowder has none at
-  this stage.
+- **A verifier checks only the repo its pane was opened in.** Do not offer one for a repo with no
+  acceptance process; clowder has none at this stage.
 - The reviewer walks and checks, and nothing else. It may discuss only the change in front of the
   owner and what he asks about it; it does not take new work, dispatch, route, or answer a
   research question. If the owner asks it for anything else, it points at you.

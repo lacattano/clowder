@@ -191,6 +191,13 @@ class SkillTest(unittest.TestCase):
             "skills/reviewing-changes/SKILL.md", text, "the pointer names the new skill"
         )
         self.assertIn("passed, or what to change", text)
+        # The owner's scope rule, 2026-09-28: a verifier serves its own repo, and a repo with no
+        # acceptance process gets none. Delete the bullet and this fails (job j-0274).
+        self.assertIn(
+            "**A verifier checks only the repo its pane was opened in.** Do not offer one for "
+            "a repo with no acceptance process; clowder has none at this stage.",
+            text,
+        )
 
     def test_the_crew_skill_carries_the_gate_and_the_safety_rules(self) -> None:
         # A fresh install has no local rules file, so the gate chain and the safety
@@ -714,9 +721,9 @@ class MessageDisciplineTest(unittest.TestCase):
         # moved by three for the queue's recorded shape (job j-0258): a flag, a default and the
         # two refusals, and by one for the board's draw stamp (job j-0266), replacing a line
         # that had become false. The number is a cap, not a target; a later section that earns a
-        # line moves this number in the same commit. It moved by three for the verifier's scope
-        # (t-1263): which repo a verifier serves, and when not to offer one.
-        self.assertLessEqual(len(read_skill().splitlines()), 594)
+        # line moves this number in the same commit. It moved by two for the verifier's scope
+        # (job j-0274): which repo a verifier serves, and when not to offer one.
+        self.assertLessEqual(len(read_skill().splitlines()), 593)
 
 
 class AsciiTest(unittest.TestCase):

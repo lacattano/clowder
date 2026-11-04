@@ -1003,16 +1003,14 @@ possible but he sees no value in it at this stage, because clowder has no user a
 for it to run.
 
 - **A verifier serves the repo its pane was opened in.** It checks that repo's changes and no
-  other repo's. The handover already works this way: `job handover` fills the reviewer's copy from
-  the job's own repo, at the job's own commit. A verifier cannot check another repo at all - it
-  has no copy of that repo and no branch to read - so a request that crosses repos is refused,
-  not attempted.
+  other repo's; `job handover` fills the reviewer's copy from the job's own repo, at the job's own
+  commit. A dispatch that names a different repo is refused, unless `--force` overrides it.
 - **clowder has no verifier at this stage, on purpose.** There is no acceptance process for it to
-  run: nothing in clowder states what a correct change does for a user, so a verifier would hold
+  run: nothing defines what a correct change in clowder does for a user, so a verifier would hold
   a check with no standard behind it. Do not propose one until such a process exists.
 - **The front door does not offer one.** For a repo with no acceptance process there is nothing
-  for a verifier to check, so offering one spends a turn and implies a check that cannot happen.
-  The rule is one line in the front-door skill.
+  for a verifier to check, so offering one spends a turn and implies a check the crew has no
+  standard to run. The rule is in the front-door skill.
 - **CI is not a verifier pass.** CI says the tests pass. A verifier says the change does what it
   claims. A green build is not acceptance; the owner's walkthrough and pass still come first
   (section 21).
