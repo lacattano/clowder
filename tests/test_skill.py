@@ -714,8 +714,9 @@ class MessageDisciplineTest(unittest.TestCase):
         # moved by three for the queue's recorded shape (job j-0258): a flag, a default and the
         # two refusals, and by one for the board's draw stamp (job j-0266), replacing a line
         # that had become false. The number is a cap, not a target; a later section that earns a
-        # line moves this number in the same commit.
-        self.assertLessEqual(len(read_skill().splitlines()), 591)
+        # line moves this number in the same commit. It moved by three for the verifier's scope
+        # (t-1263): which repo a verifier serves, and when not to offer one.
+        self.assertLessEqual(len(read_skill().splitlines()), 594)
 
 
 class AsciiTest(unittest.TestCase):
