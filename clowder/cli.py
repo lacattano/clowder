@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 import shlex
 import sys
@@ -102,12 +103,51 @@ RECORD_UNREADABLE = 4
 RECENT_DEFECT_DAYS = 7
 
 
+class _VersionAction(argparse.Action):
+    """Print what a bug report needs, then exit."""
+
+    def __init__(self, option_strings: Sequence[str], dest: str) -> None:
+        super().__init__(option_strings, dest, nargs=0)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        print(_version_text())
+        parser.exit()
+
+
+def _version_text() -> str:
+    """The version, the commit it was built from, Python and the machine.
+
+    A bug report that names only "0.1.0" cannot be matched to a tree, a language
+    version or an OS. The commit is read from the checkout when this is one, and
+    left out when it is not - an installed copy still answers.
+    """
+    detail = [f"python {platform.python_version()}", platform.platform()]
+    commit = gitcmd.head_commit(Path(__file__).resolve().parent.parent)
+    if commit:
+        detail.insert(0, f"commit {commit}")
+    return f"{PROGRAM} {__version__} (" + ", ".join(detail) + ")"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description="Dispatch and state for a crew of coding agents.",
+        description=(
+            "One front door sends work to a crew of agent panes on this machine, and the\n"
+            "tool keeps the record of what was sent, what came back, and what still waits.\n"
+            "\n"
+            "First run:\n"
+            "  clowder config    what this machine resolved, and from which file\n"
+            "  clowder start     the handover a fresh front door reads first"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"{PROGRAM} {__version__}")
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument("--config", metavar="PATH", help="config file to use")
     parser.add_argument("--state", metavar="PATH", help="state file to use (beats the config)")
 
@@ -704,8 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
             "The three pools in plain words: the RAM fitted and the GPU's share of it, "
             "the GPU side, and the CPU side with the page file. Each line names the "
             "metric it came from. It ends with what the cost gate would decide now. "
-            "`clowder capacity` would suggest a configured limit; this is a live "
-            "reading of the box the crew runs on."
+            "This is a live reading of the box the crew runs on."
         ),
     )
     box_cmd.add_argument("--json", action="store_true")
@@ -843,7 +882,9 @@ def build_parser() -> argparse.ArgumentParser:
     h_write.add_argument("--json", action="store_true")
     h_write.set_defaults(handler=cmd_handover_write)
 
-    state = sub.add_parser("state", help="inspect or repair the state file", parents=[common])
+    state = sub.add_parser(
+        "state", help="repair the state file: drop a field no copy knows", parents=[common]
+    )
     state_sub = state.add_subparsers(dest="state_command", required=True)
     s_repair = state_sub.add_parser(
         "repair",
@@ -4749,11 +4790,11 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     reason = (args.reason or "").strip() or None
     if state == ACCEPTED and not reason:
         raise UsageError(
-            "--state accepted-workaround needs --reason: what the workaround is and what "
+            "--status accepted-workaround needs --reason: what the workaround is and what "
             "it costs, so a later session can judge it."
         )
     if state == HAS_JOB and not args.job:
-        raise UsageError("--state has-job needs --job ID")
+        raise UsageError("--status has-job needs --job ID")
     if args.job:
         named = store.get_job(args.job)  # refuse an id that names nothing
         # A closed job is not a fix in flight. It is still valid as the record of

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
+import ast
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import time
@@ -7521,6 +7524,83 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("waiting on you: 1", out)
+
+
+def _parser_texts(parser: argparse.ArgumentParser) -> list[str]:
+    """Every help string below this parser, including each subcommand's."""
+    texts = [parser.description or "", parser.epilog or ""]
+    for action in parser._actions:
+        texts.append(action.help or "")
+        choices = getattr(action, "choices", None)
+        if isinstance(choices, dict):
+            for sub in choices.values():
+                texts.extend(_parser_texts(sub))
+    return texts
+
+
+def _real_names(
+    parser: argparse.ArgumentParser, prefix: tuple[str, ...] = ()
+) -> tuple[set[tuple[str, ...]], set[str]]:
+    """The command paths and the flags this parser really accepts."""
+    commands: set[tuple[str, ...]] = set()
+    flags: set[str] = set()
+    for action in parser._actions:
+        flags.update(action.option_strings)
+        choices = getattr(action, "choices", None)
+        if isinstance(choices, dict):
+            for name, sub in choices.items():
+                commands.add(prefix + (name,))
+                sub_commands, sub_flags = _real_names(sub, prefix + (name,))
+                commands |= sub_commands
+                flags |= sub_flags
+    return commands, flags
+
+
+def _source_texts() -> list[str]:
+    """Every string constant in the command-line module.
+
+    The error messages are not reachable from the parser, and one of them was the
+    lie this test exists to catch: `--state` where the flag is `--status`.
+    """
+    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+class HelpTruthTest(unittest.TestCase):
+    def test_help_and_errors_name_only_real_commands_and_flags(self) -> None:
+        parser = cli.build_parser()
+        commands, flags = _real_names(parser)
+        texts = _parser_texts(parser) + _source_texts()
+
+        # Flags this tool passes to another program, named in its own strings:
+        # Pi is started with --continue, and gh gets --merge.
+        other_programs = {"--continue", "--merge"}
+
+        bad_commands: list[str] = []
+        bad_flags: list[str] = []
+        for text in texts:
+            for match in re.finditer(
+                r"`clowder ([a-z][a-z0-9-]*)(?: ([a-z][a-z0-9-]*))?", text
+            ):
+                first, second = match.group(1), match.group(2)
+                if (first,) not in commands:
+                    bad_commands.append(f"clowder {first}")
+                elif second and any(cmd[:2] == (first, second) for cmd in commands):
+                    continue  # a real verb of a real group, e.g. `clowder job merge`
+            for match in re.finditer(r"(?<![\w-])(--[a-z][a-z0-9-]*)", text):
+                if match.group(1) not in flags and match.group(1) not in other_programs:
+                    bad_flags.append(match.group(1))
+
+        self.assertEqual(
+            sorted(set(bad_commands)), [], "help names a command that does not exist"
+        )
+        self.assertEqual(
+            sorted(set(bad_flags)), [], "a message names a flag that does not exist"
+        )
 
 
 if __name__ == "__main__":
