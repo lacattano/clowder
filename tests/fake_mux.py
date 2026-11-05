@@ -30,6 +30,8 @@ behaves like the real thing, so a created agent appears on the next list.
     CLOWDER_FAKE_SESSION_DIR  where a created agent's session file is recorded
     CLOWDER_FAKE_LIST_FAIL    "1" makes the agent list fail
     CLOWDER_FAKE_PROMPT_FAIL  "1" makes prompt submission fail
+    CLOWDER_FAKE_PROMPT_DELAY  seconds a prompt takes before it answers, so a
+                              slow send can be made to overlap a fast one
     CLOWDER_FAKE_START_FAIL   "1" makes agent start fail
     CLOWDER_FAKE_START_BUSY   how many starts refuse with "not an available
                               shell" before one lands; "always" never clears
@@ -169,6 +171,9 @@ def main(argv: list[str]) -> int:
             return _fail("agent_blocked", "the agent is waiting at a dialog")
         target = argv[2] if len(argv) > 2 else ""
         text = argv[3] if len(argv) > 3 else ""
+        delay = os.environ.get("CLOWDER_FAKE_PROMPT_DELAY")
+        if delay:
+            time.sleep(float(delay))
         return _emit({"ok": True, "target": target, "chars": len(text)})
 
     if argv[:2] == ["pane", "split"]:

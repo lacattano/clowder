@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -19,7 +21,17 @@ from clowder.board import BoardData, waiting_on_you
 from clowder.board import waiting_on_you as board_waiting_on_you
 from clowder.config import load_config
 from clowder.mux import MuxResult
-from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
+from clowder.state import (
+    ABANDONED,
+    CLOSED,
+    DISPATCHED,
+    OPEN,
+    REPORTED,
+    Job,
+    Reservation,
+    StateStore,
+    Task,
+)
 from clowder.timeutil import now_iso, to_iso
 from tests.support import (
     clean_env,
@@ -29,6 +41,8 @@ from tests.support import (
     write_fake_state,
     write_session,
 )
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 def reading(
@@ -7521,6 +7535,381 @@ class CliTest(unittest.TestCase):
         code, out, err = self.cli("start", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertIn("waiting on you: 1", out)
+
+
+# A command that takes the state lock and holds it: it mints a step id in "mint"
+# mode, and only moves the file on in "touch" mode. It writes its signal file once
+# it is inside, so a test can start the real dispatch at a known point.
+HOLD_LOCK = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "from clowder.state import StateStore, Task\n"
+    "path, mode, hold, signal = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]\n"
+    "store = StateStore(path)\n"
+    "with store.reserved():\n"
+    "    Path(signal).write_text('holding', encoding='utf-8')\n"
+    "    time.sleep(hold)\n"
+    "    if mode == 'mint':\n"
+    "        store.add(Task(id=store.next_id(), question='q', brief='held',\n"
+    "                       shape='scout', agent='helper', repo='myrepo',\n"
+    "                       repo_path='C:/repo'))\n"
+    "    else:\n"
+    "        store.record_read({}, at='2026-11-04T10:00:00Z')\n"
+    "    store.save()\n"
+)
+
+# A command run as its own process, the way two panes run two commands.
+RUN_CLI = (
+    "import json, sys\nfrom clowder.cli import main\nsys.exit(main(json.loads(sys.argv[1])))\n"
+)
+
+
+class TwoCommandsAtOnceTest(unittest.TestCase):
+    """Two clowder commands started together. d-0064."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / "ws"
+        self.repo_path = self.workspace / "myrepo"
+        self.repo_path.mkdir(parents=True)
+        CliTest.make_repo(self.repo_path)
+        self.launcher = make_mux_launcher(self.root / "bin")
+        self.state = self.root / "state.json"
+        self.config = write_config(
+            self.root / "clowder.config.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            sessions={"root": str(self.root / "sessions")},
+            state={"path": str(self.state)},
+        )
+        self.log = self.root / "calls.jsonl"
+        self.mux_state = write_fake_state(
+            self.root / "mux-state.json",
+            agents=[
+                {"name": "maker", "pane_id": "w1:p1", "cwd": str(self.repo_path)},
+                {"name": "verifier", "pane_id": "w1:p2", "cwd": str(self.repo_path)},
+            ],
+        )
+
+    def hold_lock(self, mode: str, *, hold: float = 4.0) -> subprocess.Popen:
+        """Start a command that holds the state lock, then mints an id or not."""
+        signal = self.root / f"holding-{mode}"
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                HOLD_LOCK,
+                str(self.state),
+                mode,
+                str(hold),
+                str(signal),
+            ],
+            cwd=str(REPO),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 15
+        while not signal.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(signal.exists(), "the holder never took the lock")
+        return proc
+
+    def dispatch(
+        self,
+        agent: str,
+        brief: str,
+        *,
+        prompt_delay: float = 0.0,
+        timeout: float | None = None,
+    ):
+        env = {
+            key: value for key, value in os.environ.items() if not key.startswith("CLOWDER_")
+        }
+        env["CLOWDER_FAKE_STATE"] = str(self.mux_state)
+        env["CLOWDER_FAKE_LOG"] = str(self.log)
+        if prompt_delay:
+            env["CLOWDER_FAKE_PROMPT_DELAY"] = str(prompt_delay)
+        argv = [
+            "--config",
+            str(self.config),
+            "dispatch",
+            agent,
+            "myrepo",
+            brief,
+            "--shape",
+            "scout",
+        ]
+        if timeout is not None:
+            argv.extend(["--timeout", str(timeout)])
+        return subprocess.Popen(
+            [sys.executable, "-c", RUN_CLI, json.dumps(argv)],
+            cwd=str(REPO),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def prompts(self) -> list[tuple[str, str]]:
+        if not self.log.is_file():
+            return []
+        rows = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        return [(row[2], row[3]) for row in rows if row[:2] == ["agent", "prompt"]]
+
+    def test_a_slow_send_and_a_fast_one_do_not_share_an_id(self) -> None:
+        # The slow brief is held in the pane's queue for 1.5 seconds. Before the
+        # fix, both commands minted t-0001 from the file they read at start, and
+        # the slow one delivered under that id before its save was refused.
+        slow = self.dispatch("verifier", "scout: check the terms page", prompt_delay=1.5)
+        fast = self.dispatch("maker", "scout: check the refund page")
+        outs = []
+        for proc in (slow, fast):
+            out, err = proc.communicate(timeout=120)
+            self.assertEqual(proc.returncode, 0, err)
+            outs.append(out)
+
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(len(tasks), 2, outs)
+        briefs = {
+            "maker": "scout: check the refund page",
+            "verifier": "scout: check the terms page",
+        }
+        sent = self.prompts()
+        self.assertEqual(len(sent), 2, sent)
+        seen: set[str] = set()
+        for target, text in sent:
+            matches = [tid for tid in tasks if text.startswith(f"[clowder job {tid} |")]
+            self.assertEqual(len(matches), 1, text[:60])
+            tid = matches[0]
+            seen.add(tid)
+            # The id on the brief is the row recorded for *this* pane and this
+            # brief, so neither command delivered under the other's id.
+            self.assertEqual(tasks[tid]["agent"], target, text[:60])
+            self.assertEqual(tasks[tid]["brief"], briefs[target])
+        self.assertEqual(len(seen), 2, "two commands shared one id")
+
+    def test_a_real_collision_writes_the_line_it_reads_back(self) -> None:
+        # The holder takes the lock with the file unwritten and mints t-0001. The
+        # dispatch reads the file before that save, waits on the lock, then takes
+        # t-0002 from the file the holder left. The line must say exactly that.
+        holder = self.hold_lock("mint")
+        dispatch = self.dispatch("maker", "scout: check the refund page")
+        _, err = dispatch.communicate(timeout=120)
+        self.assertEqual(dispatch.returncode, 0, err)
+        _, herr = holder.communicate(timeout=120)
+        self.assertEqual(holder.returncode, 0, herr)
+
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(sorted(tasks), ["t-0001", "t-0002"])
+        rows = [
+            row
+            for row in audit.read_audit(self.state)
+            if row.get("action") == "dispatch-id-reserved"
+        ]
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["task"], "t-0002")
+        self.assertEqual(row["agent"], "maker")
+        self.assertEqual(row["repo"], "myrepo")
+        self.assertEqual(row["would_have_been"], "t-0001")
+        self.assertEqual(row["seq_before"], 0)
+        self.assertEqual(row["seq_after"], 1)
+        self.assertIs(row["sent"], True)
+
+    def test_a_write_that_took_no_id_between_read_and_lock_writes_no_line(self) -> None:
+        # The review's case: the holder moves the file on (a record_read) but mints
+        # no id. The revision changed, the step counter did not, so nothing was
+        # taken and there is no collision to record. c0e7d42 wrote a line here.
+        holder = self.hold_lock("touch")
+        dispatch = self.dispatch("maker", "scout: check the refund page")
+        _, err = dispatch.communicate(timeout=120)
+        self.assertEqual(dispatch.returncode, 0, err)
+        _, herr = holder.communicate(timeout=120)
+        self.assertEqual(holder.returncode, 0, herr)
+
+        payload = json.loads(self.state.read_text(encoding="utf-8"))
+        # The file really moved (the holder's write and the dispatch's own two),
+        # and no second id was minted: one task on seq 1.
+        self.assertGreater(payload["rev"], 1)
+        self.assertEqual(payload["seq"], 1)
+        self.assertEqual(sorted(payload["tasks"]), ["t-0001"])
+        rows = [
+            row
+            for row in audit.read_audit(self.state)
+            if row.get("action") == "dispatch-id-reserved"
+        ]
+        self.assertEqual(rows, [])
+
+    def test_a_timed_out_send_does_not_claim_it_went_or_did_not(self) -> None:
+        # The brief may have landed before the timeout killed the process, so the
+        # line says "unknown" rather than either fact.
+        holder = self.hold_lock("mint")
+        dispatch = self.dispatch(
+            "maker", "scout: check the terms page", prompt_delay=2.0, timeout=0.5
+        )
+        _, err = dispatch.communicate(timeout=120)
+        self.assertEqual(dispatch.returncode, 2, err)
+        _, herr = holder.communicate(timeout=120)
+        self.assertEqual(holder.returncode, 0, herr)
+
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(tasks["t-0002"]["status"], "failed")
+        self.assertIn("did not return", tasks["t-0002"]["mux_error"])
+        rows = [
+            row
+            for row in audit.read_audit(self.state)
+            if row.get("action") == "dispatch-id-reserved"
+        ]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["task"], "t-0002")
+        self.assertEqual(rows[0]["sent"], "unknown")
+
+    def test_a_second_send_to_the_same_pane_is_refused_before_it_is_delivered(self) -> None:
+        first = self.dispatch("maker", "scout: check the refund page")
+        second = self.dispatch("maker", "scout: check the terms page", prompt_delay=1.5)
+        codes = []
+        for proc in (first, second):
+            _, err = proc.communicate(timeout=120)
+            codes.append((proc.returncode, err))
+
+        refused = [err for code, err in codes if code != 0]
+        self.assertEqual(len(refused), 1, codes)
+        self.assertIn("already holds open work", refused[0])
+        # One task, one brief in the pane: the refused command sent nothing.
+        tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(len(self.prompts()), 1)
+
+
+class AuditLineTest(unittest.TestCase):
+    """The audit lines a dispatch writes, read back from the file."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / "ws"
+        self.repo_path = self.workspace / "myrepo"
+        self.repo_path.mkdir(parents=True)
+        CliTest.make_repo(self.repo_path)
+        self.launcher = make_mux_launcher(self.root / "bin")
+        self.session_file = self.root / "sessions" / "s.jsonl"
+        self.session_file.parent.mkdir(parents=True, exist_ok=True)
+        self.session_file.write_text("", encoding="utf-8")
+        self.state = self.root / "state.json"
+        self.config = write_config(
+            self.root / "clowder.config.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            sessions={"root": str(self.root / "sessions")},
+            state={"path": str(self.state)},
+            # No wait before the dirty-box refusal, so this test stays quick.
+            dispatch={"input_wait": 0},
+        )
+
+    def cli(self, *args: str, env: dict[str, object] | None = None):
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            clean_env(**(env or {})),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = cli.main(["--config", str(self.config), *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def fake_env(self, **extra: object) -> dict[str, object]:
+        return {
+            "CLOWDER_FAKE_SESSION": str(self.session_file),
+            "CLOWDER_FAKE_CWD": str(self.workspace / "myrepo"),
+            **extra,
+        }
+
+    def rows(self, action: str) -> list[dict[str, object]]:
+        return [row for row in audit.read_audit(self.state) if row.get("action") == action]
+
+    def test_a_send_refused_by_the_input_box_is_read_back_from_the_audit(self) -> None:
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: check the terms page",
+            "--shape",
+            "scout",
+            env=self.fake_env(CLOWDER_FAKE_INPUT="half a sentence I was still writing"),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("input box is not empty", err)
+
+        rows = self.rows("dispatch-refused-before-send")
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["task"], "t-0001")
+        self.assertEqual(row["agent"], "maker")
+        self.assertEqual(row["repo"], "myrepo")
+        self.assertIn("input box is not empty", str(row["reason"]))
+        # Nothing reached a pane, so no step is left waiting for an answer.
+        self.assertEqual(json.loads(self.state.read_text(encoding="utf-8"))["tasks"], {})
+
+    def test_a_collision_line_carries_the_task_its_agent_and_its_repo(self) -> None:
+        task = Task(
+            id="t-0002",
+            question="q",
+            brief="b",
+            shape="scout",
+            agent="verifier",
+            repo="myrepo",
+            repo_path="C:/code/myrepo",
+            dispatched_at="2026-11-04T10:00:00Z",
+        )
+        cli._record_reservation(
+            self.state, task, Reservation(seq_before=0, seq_after=1), sent=True
+        )
+
+        rows = self.rows("dispatch-id-reserved")
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["task"], "t-0002")
+        self.assertEqual(row["agent"], "verifier")
+        self.assertEqual(row["repo"], "myrepo")
+        self.assertEqual(row["would_have_been"], "t-0001")
+        self.assertEqual(row["seq_before"], 0)
+        self.assertEqual(row["seq_after"], 1)
+        self.assertIs(row["sent"], True)
+
+    def test_a_write_that_took_no_id_is_not_a_collision_and_writes_no_line(self) -> None:
+        # The review's case: a board read (or any other write) moved the file on
+        # between this command's read and its lock, but minted no step id. That is
+        # not a collision, and the old revision test said it was.
+        task = Task(
+            id="t-0006",
+            question="q",
+            brief="b",
+            shape="scout",
+            agent="maker",
+            repo="myrepo",
+            repo_path="C:/code/myrepo",
+        )
+        cli._record_reservation(
+            self.state, task, Reservation(seq_before=5, seq_after=5), sent=True
+        )
+        self.assertEqual(self.rows("dispatch-id-reserved"), [])
+
+    def test_a_plain_send_writes_neither_line(self) -> None:
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: check the refund page",
+            "--shape",
+            "scout",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.rows("dispatch-id-reserved"), [])
+        self.assertEqual(self.rows("dispatch-refused-before-send"), [])
 
 
 if __name__ == "__main__":
