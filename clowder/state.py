@@ -439,10 +439,10 @@ def file_lock(path: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            handle.seek(0)
-            if handle.seek(0, os.SEEK_END) == 0:
-                handle.write(b"\0")
-                handle.flush()
+            # Lock one byte at the start. Windows locks past the end of an empty
+            # file happily, and writing a first byte here would race another
+            # command locking that same byte at the same moment: the write fails
+            # with a permission error while the other holds the range.
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
         else:

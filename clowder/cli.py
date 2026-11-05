@@ -1153,7 +1153,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
 
     store.save()
 
-    _record_reservation(store.path, task, held, sent=result.ok)
+    _record_reservation(store.path, task, held, sent=_sent_state(result))
 
     if overridden is not None:
         # A forced send is a person overruling a measurement, so the record says so.
@@ -1197,11 +1197,25 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
     return 0 if result.ok else 2
 
 
-def _record_reservation(path: Path, task: Task, held: Reservation, *, sent: bool) -> None:
+def _sent_state(result: MuxResult) -> bool | str:
+    """What a send's own result can honestly say about delivery.
+
+    True is the multiplexer's acceptance, False its refusal, and "unknown" a
+    timeout: the process may have delivered the brief before it was killed, so a
+    timeout supports neither answer.
+    """
+    if result.timed_out:
+        return "unknown"
+    return result.ok
+
+
+def _record_reservation(path: Path, task: Task, held: Reservation, *, sent: bool | str) -> None:
     """One line when two commands met, and none when nothing was taken.
 
     The step counter decides it. A board read or any other write that mints no id
     moves the file on without taking an id, and that is not a collision.
+
+    `sent` is True, False, or "unknown" when the send timed out (see `_sent_state`).
     """
     if not held.moved:
         return
