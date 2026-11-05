@@ -53,6 +53,7 @@ from .state import (
     STATUSES,
     Job,
     Queued,
+    Reservation,
     StateStore,
     Task,
     step_in_flight,
@@ -1078,7 +1079,9 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         _restore_writer_branch(job, agent_info, args)
 
     task = Task(
-        id=store.next_id(),
+        # Minted under the state lock just before the send, so two commands that
+        # start together cannot both take it.
+        id="",
         question=question,
         brief=brief,
         shape=args.shape,
@@ -1117,12 +1120,15 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
     sender = (args.sender or config.front_door_name or DEFAULT_SENDER).strip()
     use_marker = config.dispatch_marker and not args.no_marker
     task.sender = sender if use_marker else None
-    message = (
-        apply_marker(brief, task.id, args.shape, args.repo, sender) if use_marker else brief
-    )
+
+    def composed(task_id: str) -> str:
+        return (
+            apply_marker(brief, task_id, args.shape, args.repo, sender) if use_marker else brief
+        )
 
     if args.dry_run:
-        argv = mux.build_prompt_argv(args.agent, message)
+        task.id = store.next_id()
+        argv = mux.build_prompt_argv(args.agent, composed(task.id))
         task.mux_argv = argv
         if args.json:
             _emit_json({"dry_run": True, "argv": argv, "task": task.to_dict()})
@@ -1132,6 +1138,31 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
             print(f"worktree: {worktree or '(main checkout)'}")
         return 0
 
+    # The id is claimed on disk before the brief leaves this process: two commands
+    # that start together mint from the same file in turn, and a command refused
+    # here has sent nothing. This is the whole fix for the double dispatch of
+    # 2026-10-30, where a brief reached a pane under an id another command had
+    # already recorded.
+    with store.reserved() as held:
+        # The guards below read state, so they run again on the file as it is now.
+        # A step another command just opened is seen, and refused, here.
+        if job is not None and not args.force:
+            job = store.get_job(job.id)
+            if not job.is_open:
+                raise DispatchError(
+                    f"{job.id} was closed by another command. Nothing was sent."
+                )
+        if agent_info is not None and not args.force:
+            _refuse_open_work(args, agent_info, store, job)
+        task.id = store.next_id()
+        # The multiplexer's limit is on the whole message, and the marker carries
+        # the id, so this check can only land after the id is known - and still
+        # before anything is sent or written. An over-long brief is refused with
+        # no record of a step that never was.
+        mux.build_prompt_argv(args.agent, composed(task.id))
+        store.add(task)
+        store.save()
+
     if args.shape.lower() not in brief.lower():
         print(
             f"{PROGRAM}: note: the brief does not say {args.shape!r}. "
@@ -1139,7 +1170,26 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
             file=sys.stderr,
         )
 
-    result = _deliver(mux, args, config, message, agent_info)
+    try:
+        result = _deliver(mux, args, config, composed(task.id), agent_info)
+    except (DispatchError, MuxError) as exc:
+        # The row was written before the send so two commands could not share an
+        # id. Nothing reached a pane, so release it and say where it went. The id
+        # stays spent; a re-run takes the next one.
+        store.remove_task(task.id)
+        store.save()
+        audit.append_audit(
+            store.path,
+            {
+                "action": "dispatch-refused-before-send",
+                "at": now_iso(),
+                "task": task.id,
+                "agent": task.agent,
+                "repo": task.repo,
+                "reason": str(exc),
+            },
+        )
+        raise
     task.mux_argv = list(result.argv)
     task.mux_returncode = result.returncode
     task.dispatched_at = now_iso()
@@ -1149,8 +1199,9 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         task.status = FAILED
         task.mux_error = result.error_text()
 
-    store.add(task)
     store.save()
+
+    _record_reservation(store.path, task, held, sent=_sent_state(result))
 
     if overridden is not None:
         # A forced send is a person overruling a measurement, so the record says so.
@@ -1192,6 +1243,44 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         print(f"{PROGRAM}: recorded as {task.id} ({FAILED})", file=sys.stderr)
 
     return 0 if result.ok else 2
+
+
+def _sent_state(result: MuxResult) -> bool | str:
+    """What a send's own result can honestly say about delivery.
+
+    True is the multiplexer's acceptance, False its refusal, and "unknown" a
+    timeout: the process may have delivered the brief before it was killed, so a
+    timeout supports neither answer.
+    """
+    if result.timed_out:
+        return "unknown"
+    return result.ok
+
+
+def _record_reservation(path: Path, task: Task, held: Reservation, *, sent: bool | str) -> None:
+    """One line when two commands met, and none when nothing was taken.
+
+    The step counter decides it. A board read or any other write that mints no id
+    moves the file on without taking an id, and that is not a collision.
+
+    `sent` is True, False, or "unknown" when the send timed out (see `_sent_state`).
+    """
+    if not held.moved:
+        return
+    audit.append_audit(
+        path,
+        {
+            "action": "dispatch-id-reserved",
+            "at": task.dispatched_at,
+            "task": task.id,
+            "agent": task.agent,
+            "repo": task.repo,
+            "would_have_been": held.would_have_been,
+            "seq_before": held.seq_before,
+            "seq_after": held.seq_after,
+            "sent": sent,
+        },
+    )
 
 
 def _deliver(

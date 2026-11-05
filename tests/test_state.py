@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -33,6 +34,25 @@ WRITER = (
     "store.add(Task(id=tid, question='q', brief='b', shape='ship',\n"
     "               agent='maker', repo='repo', repo_path='C:/repo'))\n"
     "store.save()\n"
+)
+
+# A writer that claims its id inside the reservation, and can hold the lock a
+# moment, so a second writer is made to wait outside it. It writes its signal
+# file once it is inside, so a test can start the second writer at a known point.
+RESERVER = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "from clowder.state import StateStore, Task\n"
+    "path, agent, hold, signal = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]\n"
+    "store = StateStore(path)\n"
+    "with store.reserved() as held:\n"
+    "    if signal:\n"
+    "        Path(signal).write_text('holding', encoding='utf-8')\n"
+    "    time.sleep(hold)\n"
+    "    store.add(Task(id=store.next_id(), question='q', brief=agent, shape='scout',\n"
+    "                   agent=agent, repo='repo', repo_path='C:/repo'))\n"
+    "    store.save()\n"
+    "print(held.would_have_been, held.moved)\n"
 )
 
 
@@ -431,6 +451,45 @@ class ConcurrencyTest(unittest.TestCase):
 
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(set(payload["tasks"]), {"t-0001", "t-0002"})
+
+    def test_a_reservation_reads_the_file_another_command_just_wrote(self) -> None:
+        # The first writer holds the lock before it mints its id. The second starts
+        # behind it and must wait, then mint the id after the first one, not the
+        # same id from a file it read earlier. d-0064.
+        signal = Path(self.tmp.name) / "holding"
+        first = subprocess.Popen(
+            [sys.executable, "-c", RESERVER, str(self.path), "maker", "3.0", str(signal)],
+            cwd=str(REPO),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # Start the second writer only once the first is inside the lock with the
+        # file unwritten, so it is certain to read the older file and then wait.
+        deadline = time.monotonic() + 10
+        while not signal.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(signal.exists(), "the first writer never took the lock")
+        second = subprocess.Popen(
+            [sys.executable, "-c", RESERVER, str(self.path), "verifier", "0", ""],
+            cwd=str(REPO),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        outs: list[str] = []
+        for proc in (first, second):
+            out, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err)
+            outs.append(out.strip())
+
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        tasks = payload["tasks"]
+        self.assertEqual(sorted(tasks), ["t-0001", "t-0002"])
+        self.assertEqual({task["agent"] for task in tasks.values()}, {"maker", "verifier"})
+        # Neither writer clashes, and the second one says which id it would have
+        # taken from the file it read before it waited.
+        self.assertEqual(outs, ["t-0001 False", "t-0001 True"])
 
     def test_a_second_writer_folds_in_a_new_record(self) -> None:
         base = StateStore(self.path)
