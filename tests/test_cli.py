@@ -7559,8 +7559,11 @@ def _real_names(
 def _source_texts() -> list[str]:
     """Every string constant in the command-line module.
 
-    The error messages are not reachable from the parser, and one of them was the
-    lie this test exists to catch: `--state` where the flag is `--status`.
+    The error messages are not reachable from the parser, so this walks the module
+    and takes every string it holds: that is what lets a message naming a command
+    or a flag that does not exist be found. It cannot see a real flag used for the
+    wrong thing - `--state` where `--status` was meant - because both are real;
+    that one was found by reading and is fixed by hand.
     """
     tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
     return [
@@ -7576,6 +7579,24 @@ class HelpTruthTest(unittest.TestCase):
         commands, flags = _real_names(parser)
         texts = _parser_texts(parser) + _source_texts()
 
+        # A floor on the scan, so a walk that silently returns nothing fails here
+        # instead of passing. 2431 strings, 48 command paths and 73 flags when this
+        # was written. A later change that moves any of them moves the floor in the
+        # same commit, as the skill's line cap does.
+        self.assertGreaterEqual(len(texts), 2431, "the scan lost text")
+        self.assertGreaterEqual(len(commands), 48, "the walk lost command paths")
+        self.assertGreaterEqual(len(flags), 73, "the walk lost flags")
+        self.assertIn(("job", "merge"), commands, "a group's own verb must resolve")
+        self.assertIn("--status", flags)
+
+        # A command that has verbs of its own: a second word after it must be one
+        # of those verbs, so `clowder job merg` is caught, not only `clowder job`.
+        groups = {
+            cmd[0]
+            for cmd in commands
+            if len(cmd) == 1 and any(other[:1] == cmd and len(other) == 2 for other in commands)
+        }
+
         # Flags this tool passes to another program, named in its own strings:
         # Pi is started with --continue, and gh gets --merge.
         other_programs = {"--continue", "--merge"}
@@ -7583,14 +7604,16 @@ class HelpTruthTest(unittest.TestCase):
         bad_commands: list[str] = []
         bad_flags: list[str] = []
         for text in texts:
+            # The backtick is optional: the first-run lines name clowder without
+            # one, and they are the lines most likely to rot.
             for match in re.finditer(
-                r"`clowder ([a-z][a-z0-9-]*)(?: ([a-z][a-z0-9-]*))?", text
+                r"`?clowder ([a-z][a-z0-9-]*)(?: ([a-z][a-z0-9-]*))?", text
             ):
                 first, second = match.group(1), match.group(2)
                 if (first,) not in commands:
                     bad_commands.append(f"clowder {first}")
-                elif second and any(cmd[:2] == (first, second) for cmd in commands):
-                    continue  # a real verb of a real group, e.g. `clowder job merge`
+                elif second and first in groups and (first, second) not in commands:
+                    bad_commands.append(f"clowder {first} {second}")
             for match in re.finditer(r"(?<![\w-])(--[a-z][a-z0-9-]*)", text):
                 if match.group(1) not in flags and match.group(1) not in other_programs:
                     bad_flags.append(match.group(1))

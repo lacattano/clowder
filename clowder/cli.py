@@ -106,8 +106,10 @@ RECENT_DEFECT_DAYS = 7
 class _VersionAction(argparse.Action):
     """Print what a bug report needs, then exit."""
 
-    def __init__(self, option_strings: Sequence[str], dest: str) -> None:
-        super().__init__(option_strings, dest, nargs=0)
+    def __init__(
+        self, option_strings: Sequence[str], dest: str, help: str | None = None
+    ) -> None:
+        super().__init__(option_strings, dest, nargs=0, help=help)
 
     def __call__(
         self,
@@ -138,16 +140,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
         description=(
-            "One front door sends work to a crew of agent panes on this machine, and the\n"
-            "tool keeps the record of what was sent, what came back, and what still waits.\n"
+            "One front door (the agent you talk to) sends work to a crew of agent\n"
+            "panes on this machine, and the tool keeps the record of what was sent,\n"
+            "what came back, and what still waits.\n"
             "\n"
             "First run:\n"
             "  clowder config    what this machine resolved, and from which file\n"
-            "  clowder start     the handover a fresh front door reads first"
+            "  clowder start     the handover (a written record a new session reads)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action=_VersionAction)
+    parser.add_argument(
+        "--version",
+        action=_VersionAction,
+        help="print the version, the commit, Python and the platform",
+    )
     parser.add_argument("--config", metavar="PATH", help="config file to use")
     parser.add_argument("--state", metavar="PATH", help="state file to use (beats the config)")
 
