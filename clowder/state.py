@@ -469,19 +469,20 @@ def file_lock(path: Path) -> Iterator[None]:
 
 @dataclass(frozen=True)
 class Reservation:
-    """What a reservation read before it took the lock, and after.
+    """The step counter before this command took the lock, and after.
 
-    `moved` means another command wrote while this one was working, so the id this
-    command would have minted was already taken and the locked read gave it another.
+    `moved` means another command minted a step id while this one was working, so
+    the id this command would have taken was already spent. Only the step counter
+    can say that: the file's revision also moves for a write that mints no id, such
+    as a board read, and a revision that moved on its own is not a collision.
     """
 
-    rev_before: int
-    rev_after: int
     seq_before: int
+    seq_after: int
 
     @property
     def moved(self) -> bool:
-        return self.rev_after != self.rev_before
+        return self.seq_after != self.seq_before
 
     @property
     def would_have_been(self) -> str:
@@ -649,17 +650,12 @@ class StateStore:
         holds the lock, and a send can take seconds.
         """
         self.load()
-        before_rev = self._base_rev
         before_seq = self._seq
         with self._thread_lock, file_lock(self._lock_file()):
             self._reload()
             self._in_file_lock = True
             try:
-                yield Reservation(
-                    rev_before=before_rev,
-                    rev_after=self._base_rev,
-                    seq_before=before_seq,
-                )
+                yield Reservation(seq_before=before_seq, seq_after=self._seq)
             finally:
                 self._in_file_lock = False
 

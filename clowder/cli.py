@@ -52,6 +52,7 @@ from .state import (
     STATUSES,
     Job,
     Queued,
+    Reservation,
     StateStore,
     Task,
     step_in_flight,
@@ -1152,21 +1153,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
 
     store.save()
 
-    if held.moved:
-        # Two commands met on the state file. The record says so, and says the
-        # brief went out under the id the locked read gave it, not the stale one.
-        audit.append_audit(
-            store.path,
-            {
-                "action": "dispatch-id-reserved",
-                "at": task.dispatched_at,
-                "task": task.id,
-                "would_have_been": held.would_have_been,
-                "rev_before": held.rev_before,
-                "rev_after": held.rev_after,
-                "sent": result.ok,
-            },
-        )
+    _record_reservation(store.path, task, held, sent=result.ok)
 
     if overridden is not None:
         # A forced send is a person overruling a measurement, so the record says so.
@@ -1208,6 +1195,30 @@ def _dispatch(args: argparse.Namespace, config: Config, store: StateStore) -> in
         print(f"{PROGRAM}: recorded as {task.id} ({FAILED})", file=sys.stderr)
 
     return 0 if result.ok else 2
+
+
+def _record_reservation(path: Path, task: Task, held: Reservation, *, sent: bool) -> None:
+    """One line when two commands met, and none when nothing was taken.
+
+    The step counter decides it. A board read or any other write that mints no id
+    moves the file on without taking an id, and that is not a collision.
+    """
+    if not held.moved:
+        return
+    audit.append_audit(
+        path,
+        {
+            "action": "dispatch-id-reserved",
+            "at": task.dispatched_at,
+            "task": task.id,
+            "agent": task.agent,
+            "repo": task.repo,
+            "would_have_been": held.would_have_been,
+            "seq_before": held.seq_before,
+            "seq_after": held.seq_after,
+            "sent": sent,
+        },
+    )
 
 
 def _deliver(

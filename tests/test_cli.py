@@ -21,7 +21,17 @@ from clowder.board import BoardData, waiting_on_you
 from clowder.board import waiting_on_you as board_waiting_on_you
 from clowder.config import load_config
 from clowder.mux import MuxResult
-from clowder.state import ABANDONED, CLOSED, DISPATCHED, OPEN, REPORTED, Job, StateStore, Task
+from clowder.state import (
+    ABANDONED,
+    CLOSED,
+    DISPATCHED,
+    OPEN,
+    REPORTED,
+    Job,
+    Reservation,
+    StateStore,
+    Task,
+)
 from clowder.timeutil import now_iso, to_iso
 from tests.support import (
     clean_env,
@@ -7642,6 +7652,134 @@ class TwoCommandsAtOnceTest(unittest.TestCase):
         tasks = json.loads(self.state.read_text(encoding="utf-8"))["tasks"]
         self.assertEqual(len(tasks), 1)
         self.assertEqual(len(self.prompts()), 1)
+
+
+class AuditLineTest(unittest.TestCase):
+    """The audit lines a dispatch writes, read back from the file."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / "ws"
+        self.repo_path = self.workspace / "myrepo"
+        self.repo_path.mkdir(parents=True)
+        CliTest.make_repo(self.repo_path)
+        self.launcher = make_mux_launcher(self.root / "bin")
+        self.session_file = self.root / "sessions" / "s.jsonl"
+        self.session_file.parent.mkdir(parents=True, exist_ok=True)
+        self.session_file.write_text("", encoding="utf-8")
+        self.state = self.root / "state.json"
+        self.config = write_config(
+            self.root / "clowder.config.toml",
+            workspace={"root": str(self.workspace)},
+            mux={"bin": str(self.launcher)},
+            sessions={"root": str(self.root / "sessions")},
+            state={"path": str(self.state)},
+            # No wait before the dirty-box refusal, so this test stays quick.
+            dispatch={"input_wait": 0},
+        )
+
+    def cli(self, *args: str, env: dict[str, object] | None = None):
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            clean_env(**(env or {})),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = cli.main(["--config", str(self.config), *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def fake_env(self, **extra: object) -> dict[str, object]:
+        return {
+            "CLOWDER_FAKE_SESSION": str(self.session_file),
+            "CLOWDER_FAKE_CWD": str(self.workspace / "myrepo"),
+            **extra,
+        }
+
+    def rows(self, action: str) -> list[dict[str, object]]:
+        return [row for row in audit.read_audit(self.state) if row.get("action") == action]
+
+    def test_a_send_refused_by_the_input_box_is_read_back_from_the_audit(self) -> None:
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: check the terms page",
+            "--shape",
+            "scout",
+            env=self.fake_env(CLOWDER_FAKE_INPUT="half a sentence I was still writing"),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("input box is not empty", err)
+
+        rows = self.rows("dispatch-refused-before-send")
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["task"], "t-0001")
+        self.assertEqual(row["agent"], "maker")
+        self.assertEqual(row["repo"], "myrepo")
+        self.assertIn("input box is not empty", str(row["reason"]))
+        # Nothing reached a pane, so no step is left waiting for an answer.
+        self.assertEqual(json.loads(self.state.read_text(encoding="utf-8"))["tasks"], {})
+
+    def test_a_collision_line_carries_the_task_its_agent_and_its_repo(self) -> None:
+        task = Task(
+            id="t-0002",
+            question="q",
+            brief="b",
+            shape="scout",
+            agent="verifier",
+            repo="myrepo",
+            repo_path="C:/code/myrepo",
+            dispatched_at="2026-11-04T10:00:00Z",
+        )
+        cli._record_reservation(
+            self.state, task, Reservation(seq_before=0, seq_after=1), sent=True
+        )
+
+        rows = self.rows("dispatch-id-reserved")
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["task"], "t-0002")
+        self.assertEqual(row["agent"], "verifier")
+        self.assertEqual(row["repo"], "myrepo")
+        self.assertEqual(row["would_have_been"], "t-0001")
+        self.assertEqual(row["seq_before"], 0)
+        self.assertEqual(row["seq_after"], 1)
+        self.assertIs(row["sent"], True)
+
+    def test_a_write_that_took_no_id_is_not_a_collision_and_writes_no_line(self) -> None:
+        # The review's case: a board read (or any other write) moved the file on
+        # between this command's read and its lock, but minted no step id. That is
+        # not a collision, and the old revision test said it was.
+        task = Task(
+            id="t-0006",
+            question="q",
+            brief="b",
+            shape="scout",
+            agent="maker",
+            repo="myrepo",
+            repo_path="C:/code/myrepo",
+        )
+        cli._record_reservation(
+            self.state, task, Reservation(seq_before=5, seq_after=5), sent=True
+        )
+        self.assertEqual(self.rows("dispatch-id-reserved"), [])
+
+    def test_a_plain_send_writes_neither_line(self) -> None:
+        code, _, err = self.cli(
+            "dispatch",
+            "maker",
+            "myrepo",
+            "scout: check the refund page",
+            "--shape",
+            "scout",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.rows("dispatch-id-reserved"), [])
+        self.assertEqual(self.rows("dispatch-refused-before-send"), [])
 
 
 if __name__ == "__main__":
