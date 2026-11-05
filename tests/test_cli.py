@@ -6570,6 +6570,87 @@ class CliTest(unittest.TestCase):
         leftovers = sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp"))
         self.assertEqual(leftovers, [])
 
+    def test_a_recorded_defect_writes_one_audit_line_and_names_the_file(self) -> None:
+        code, out, err = self.cli(
+            "defects", "add", "--line", "a step does not close", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("audit:", out)
+        self.assertIn(str(self.root / "state.json.audit"), out)
+
+        rows = [r for r in audit.read_audit(self.state) if r.get("action") == "defect-recorded"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["defect"], "d-0001")
+        self.assertEqual(rows[0]["line"], "a step does not close")
+        self.assertEqual(rows[0]["count"], 1)
+        self.assertIs(rows[0]["created"], True)
+
+        # A second sighting is a change too, and gets its own line.
+        self.cli("defects", "add", "--line", "a step does not close", env=self.fake_env())
+        rows = [r for r in audit.read_audit(self.state) if r.get("action") == "defect-recorded"]
+        self.assertEqual([row["count"] for row in rows], [1, 2])
+        self.assertIs(rows[1]["created"], False)
+
+    def test_a_correction_with_no_writable_trail_leaves_the_record_alone(self) -> None:
+        self.cli("defects", "add", "--line", "the original line", env=self.fake_env())
+        trail = self.root / "state.json.audit"
+        trail.unlink()
+        trail.mkdir()  # opening a directory for append cannot work
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "a changed line",
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write the audit line", err)
+        self.assertIn(str(trail), err)
+        # The change and its trail are one act: no trail, no change.
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["defects"]["d-0001"]["line"], "the original line")
+
+    def test_both_defect_commands_take_a_line_from_the_same_cap(self) -> None:
+        too_long = "x" * 501
+        longest = "y" * 500
+
+        code, _, err = self.cli("defects", "add", "--line", too_long, env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("at most 500", err)
+        self.assertFalse((self.root / "defects.json").exists())
+
+        code, _, err = self.cli("defects", "add", "--line", longest, env=self.fake_env())
+        self.assertEqual(code, 0, err)
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            too_long,
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("at most 500", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "z" * 500,
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+
     def test_a_defect_needs_one_line_a_reason_for_an_acceptance_and_a_real_job(self) -> None:
         code, _, err = self.cli("defects", "add", "--line", "one\ntwo", env=self.fake_env())
         self.assertEqual(code, 1)

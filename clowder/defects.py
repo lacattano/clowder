@@ -24,7 +24,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +48,12 @@ STATES = (OPEN, HAS_JOB, FIXED, ACCEPTED)
 # The states a second sighting does not need to act on. Everything else does: a job
 # or an explicit accepted workaround with the reason.
 SETTLED = (FIXED, ACCEPTED)
+
+# What a change looked like, handed to the caller inside the write lock and before
+# the record is written. The caller turns it into an audit line and appends it; only
+# when that returns is the record committed. A change therefore cannot be on the disk
+# with its trail missing, which is the one property a hand edit breaks.
+Trail = Callable[[dict[str, object]], None]
 
 
 def defects_path(state_path: str | Path) -> Path:
@@ -410,6 +416,7 @@ class DefectStore:
         first_seen: str | None = None,
         last_seen: str | None = None,
         count: int = 1,
+        trail: Trail | None = None,
     ) -> tuple[Defect, bool]:
         """Record one sighting. Returns the defect and whether it is new.
 
@@ -478,11 +485,25 @@ class DefectStore:
                     current.detail = detail.strip() or None
             if current.state == HAS_JOB and not current.linked_jobs:
                 current.state = OPEN
+            if trail is not None:
+                trail(
+                    {
+                        "defect": current.id,
+                        "line": current.line,
+                        "count": current.count,
+                        "created": created,
+                    }
+                )
             self._save()
         return current, created
 
     def correct(
-        self, defect_id: str, line: str, *, detail: str | None = None
+        self,
+        defect_id: str,
+        line: str,
+        *,
+        detail: str | None = None,
+        trail: Trail | None = None,
     ) -> tuple[str, str | None, Defect]:
         """Rewrite a defect's one line, and return what it said before.
 
@@ -511,6 +532,16 @@ class DefectStore:
             defect.line = text
             if detail is not None:
                 defect.detail = detail.strip() or None
+            if trail is not None:
+                change: dict[str, object] = {
+                    "defect": defect.id,
+                    "old_line": previous_line,
+                    "new_line": defect.line,
+                }
+                if detail is not None and previous_detail != defect.detail:
+                    change["old_detail"] = previous_detail
+                    change["new_detail"] = defect.detail
+                trail(change)
             self._save()
         return previous_line, previous_detail, defect
 

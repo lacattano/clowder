@@ -4902,14 +4902,10 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     here, and on the board, that it now needs a job or an accepted workaround.
     """
     config, store = _context(args)
-    line = " ".join((args.line or "").split())
-    if not line:
-        raise UsageError("--line is required: the defect in one line")
-    if "\n" in (args.line or ""):
-        raise UsageError(
-            "--line is one line. Split it into separate defects, or keep the detail out "
-            "of the record: a defect is a line, not a report."
-        )
+    try:
+        line = one_line(args.line or "")
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
     state = args.status
     reason = (args.reason or "").strip() or None
     if state == ACCEPTED and not reason:
@@ -4947,6 +4943,16 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
 
     detail = _owner_detail(args)
     defects = _defect_store(config)
+    who = (config.front_door_name or "unknown").strip()
+
+    def record_change(change: dict[str, object]) -> None:
+        # Called inside the record's write lock, before the record is written, so a
+        # change cannot land with its trail missing. See defects.Trail.
+        audit.append_audit(
+            store.path,
+            {"action": "defect-recorded", "at": now_iso(), "by": who, **change},
+        )
+
     try:
         defect, created = defects.sighting(
             line,
@@ -4957,9 +4963,11 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
             first_seen=args.first_seen,
             last_seen=args.last_seen,
             count=args.count if args.count is not None else 1,
+            trail=record_change,
         )
     except StateError as exc:
         raise UsageError(str(exc)) from exc
+    audit_file = audit.audit_path(store.path)
 
     if args.json:
         _emit_json(
@@ -4980,6 +4988,7 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     warning = merge_warning(defect)
     if warning:
         print(warning)
+    print(f"{INDENT}audit: {audit_file}")
     return 0
 
 
@@ -5003,35 +5012,36 @@ def cmd_defects_correct(args: argparse.Namespace) -> int:
         )
     detail = args.detail if args.detail is None else args.detail.strip()
     defects = _defect_store(config)
+    who = (args.by or config.front_door_name or "unknown").strip()
+
+    def record_change(change: dict[str, object]) -> None:
+        # Called inside the record's write lock, before the record is written. If the
+        # trail cannot be written, the record is not changed: the change and its trail
+        # stay one act, which is what the hand edit broke.
+        record: dict[str, object] = {
+            "action": "defects-corrected",
+            "at": now_iso(),
+            "by": who,
+            "why": why,
+            "defects": [change["defect"]],
+        }
+        for key in ("old_line", "new_line", "old_detail", "new_detail"):
+            if key in change:
+                record[key] = change[key]
+        audit.append_audit(store.path, record)
+
     try:
-        old_line, old_detail, defect = defects.correct(args.id, line, detail=detail)
+        old_line, _, defect = defects.correct(args.id, line, detail=detail, trail=record_change)
     except StateError as exc:
         raise UsageError(str(exc)) from exc
-
-    who = (args.by or config.front_door_name or "unknown").strip()
-    record: dict[str, object] = {
-        "action": "defects-corrected",
-        "at": now_iso(),
-        "by": who,
-        "defects": [defect.id],
-        "old_line": old_line,
-        "new_line": defect.line,
-        "why": why,
-    }
-    if detail is not None and old_detail != defect.detail:
-        # The detail is one current body, so a replaced one leaves the record. Keep
-        # the old text in the trail, or the change would have no trace at all.
-        record["old_detail"] = old_detail
-        record["new_detail"] = defect.detail
-    audit.append_audit(store.path, record)
+    audit_file = audit.audit_path(store.path)
 
     if args.json:
         _emit_json({"defect": defect.to_dict(), "corrected": True, "old_line": old_line})
         return 0
     print(f"{defect.id} corrected: {defect.line}")
     print(f"old line: {old_line}")
-    if old_detail != defect.detail:
-        print("detail replaced")
+    print(f"{INDENT}audit: {audit_file}")
     return 0
 
 

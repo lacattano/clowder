@@ -90,7 +90,7 @@ changed since a given time. It needs no server.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the dispatching-work skill, spaces and jobs, and the board.** 989
+**Steps 1 to 4 are built: the CLI, the dispatching-work skill, spaces and jobs, and the board.** 992
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
