@@ -6,7 +6,16 @@ import unittest
 
 from clowder import owner
 from clowder.owner import DECISION, MERGE, WALKTHROUGH, waiting_on_owner
-from clowder.state import CLOSED, DISPATCHED, OPEN, REPORTED, Job, Task
+from clowder.state import (
+    CHANGES_REQUESTED,
+    CLOSED,
+    DISPATCHED,
+    OPEN,
+    PASSED,
+    REPORTED,
+    Job,
+    Task,
+)
 from clowder.timeutil import now_iso
 
 
@@ -57,6 +66,7 @@ class WaitingOnOwnerTest(unittest.TestCase):
                     "j-0002",
                     reviewer="verifier",
                     review_commit="a" * 40,
+                    review_verdict=PASSED,
                     handed_over_at=now_iso(),
                 ),
             ],
@@ -68,7 +78,15 @@ class WaitingOnOwnerTest(unittest.TestCase):
         # The j-0206 case: the old start counted decisions only and said zero while a
         # change waited for a walkthrough for a day.
         his, _ = waiting_on_owner(
-            [], [job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())]
+            [],
+            [
+                job(
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    review_verdict=PASSED,
+                    handed_over_at=now_iso(),
+                )
+            ],
         )
         self.assertEqual(self.kinds(his), [WALKTHROUGH])
         self.assertEqual(his[0].action, owner.ACTIONS[WALKTHROUGH])
@@ -201,12 +219,116 @@ class WaitingOnOwnerTest(unittest.TestCase):
     def test_the_review_notes_come_from_the_caller(self) -> None:
         # The board passes its re-review notes in; start passes none. The count is the
         # same either way, because the kind does not change.
-        base = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        base = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            review_verdict=PASSED,
+            handed_over_at=now_iso(),
+        )
         plain, _ = waiting_on_owner([], [base])
         moved, _ = waiting_on_owner([], [base], rereview={base.id: "b" * 40})
         self.assertEqual(self.kinds(plain), self.kinds(moved))
         self.assertIn("waiting for your walkthrough", plain[0].note)
         self.assertIn("moved to", moved[0].note)
+
+    def test_a_passed_change_carries_the_detail_written_for_him(self) -> None:
+        detail = (
+            "The refund page now says what a customer gets back."
+            + chr(10)
+            + "Passing means one read-through."
+            + chr(10)
+            + "Evidence: the review at aaaaaaa and 371 tests."
+        )
+        his, not_his = waiting_on_owner(
+            [],
+            [
+                job(
+                    "j-0001",
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    handed_over_at=now_iso(),
+                    review_verdict=PASSED,
+                    review_detail=detail,
+                )
+            ],
+        )
+        self.assertEqual(self.kinds(his), [WALKTHROUGH])
+        self.assertEqual(not_his, [])
+        self.assertIn("what a customer gets back", his[0].detail or "")
+        self.assertIn("Passing means one read-through.", his[0].detail or "")
+        self.assertIn("Evidence: the review at aaaaaaa", his[0].detail or "")
+        self.assertIn("pass it so it can be published", his[0].detail or "")
+
+    def test_a_passed_change_with_no_detail_says_it_was_not_recorded(self) -> None:
+        his, _ = waiting_on_owner(
+            [],
+            [
+                job(
+                    "j-0001",
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    handed_over_at=now_iso(),
+                    review_verdict=PASSED,
+                    owner_line="The reviewer's one line.",
+                )
+            ],
+        )
+        self.assertEqual(self.kinds(his), [WALKTHROUGH])
+        detail = his[0].detail or ""
+        self.assertIn("The review-ready detail was not recorded", detail)
+        self.assertIn("What the reviewer said: The reviewer's one line.", detail)
+        self.assertNotIn("Evidence", detail, "nothing is invented")
+
+    def test_a_changes_requested_change_is_never_offered_as_a_pass(self) -> None:
+        reviewed = job(
+            "j-0001",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at=now_iso(),
+            review_verdict=CHANGES_REQUESTED,
+        )
+        his, not_his = waiting_on_owner([], [reviewed])
+        self.assertEqual(his, [], "not his to pass")
+        self.assertEqual(len(not_his), 1)
+        self.assertIn("sent it back", not_his[0].note)
+        self.assertEqual(reviewed.state_in_words, "changes requested")
+
+    def test_a_review_with_no_recorded_verdict_is_not_offered(self) -> None:
+        # d-0145: a review step that reported is not a pass. Without a verdict the
+        # change is not put in front of him.
+        reviewed = job(
+            "j-0001",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at=now_iso(),
+        )
+        his, not_his = waiting_on_owner([], [reviewed])
+        self.assertEqual(his, [])
+        self.assertEqual(len(not_his), 1)
+        self.assertIn("verdict was not recorded", not_his[0].note)
+        self.assertEqual(reviewed.state_in_words, "review verdict not recorded")
+
+    def test_an_owner_item_naming_the_pass_is_the_only_line(self) -> None:
+        his, _ = waiting_on_owner(
+            [
+                task(
+                    job="j-0001",
+                    owner_item="reply pass on the refund change",
+                    owner_item_at=now_iso(),
+                )
+            ],
+            [
+                job(
+                    "j-0001",
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    handed_over_at=now_iso(),
+                    review_verdict=PASSED,
+                    review_detail="The detail.",
+                )
+            ],
+        )
+        self.assertEqual(self.kinds(his), [DECISION], "one decision, one line")
 
 
 if __name__ == "__main__":

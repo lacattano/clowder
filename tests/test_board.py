@@ -21,7 +21,16 @@ from clowder.board import (
     write_board,
 )
 from clowder.defects import Defect
-from clowder.state import CLOSED, FAILED, REPORTED, Job, Queued, Task
+from clowder.state import (
+    CHANGES_REQUESTED,
+    CLOSED,
+    FAILED,
+    PASSED,
+    REPORTED,
+    Job,
+    Queued,
+    Task,
+)
 from clowder.timeutil import now_iso, to_iso
 
 
@@ -543,6 +552,62 @@ class WaitingTest(unittest.TestCase):
             "the thing comes before the note about it",
         )
 
+    def test_a_passed_change_renders_the_detail_written_for_him(self) -> None:
+        # The page is drawn from the state file: no live read, no mux.
+        held = job(
+            "j-0001",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at=now_iso(),
+            review_verdict=PASSED,
+            review_detail=(
+                "The refund page now says what a customer gets back."
+                + chr(10)
+                + "Passing means one read-through."
+                + chr(10)
+                + "Evidence: 371 tests and a driver run."
+            ),
+        )
+        waiting = waiting_on_you(data(jobs=[held]))
+        self.assertEqual(len(waiting), 1)
+        self.assertIn("what a customer gets back", waiting[0])
+        self.assertIn("Passing means one read-through.", waiting[0])
+        self.assertIn("Evidence: 371 tests and a driver run.", waiting[0])
+        self.assertIn("owner-detail", waiting[0])
+
+    def test_a_changes_requested_change_is_never_in_for_you(self) -> None:
+        sent_back = job(
+            "j-0001",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at=now_iso(),
+            review_verdict=CHANGES_REQUESTED,
+        )
+        self.assertEqual(waiting_on_you(data(jobs=[sent_back])), [])
+        html = render_board(data(jobs=[sent_back]))
+        doing = html[html.index('id="rows-doing"') :]
+        self.assertIn("changes requested", doing)
+
+    def test_a_job_and_its_owner_item_are_one_line(self) -> None:
+        held = job(
+            "j-0001",
+            title="the refund change",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            handed_over_at=now_iso(),
+            review_verdict=PASSED,
+            review_detail="The detail.",
+        )
+        item = task(
+            job="j-0001",
+            owner_item="reply pass on the refund change",
+            owner_item_at=now_iso(),
+        )
+        waiting = waiting_on_you(data(jobs=[held], tasks=[item]))
+        self.assertEqual(len(waiting), 1, "one decision, one line")
+        self.assertIn("reply pass on the refund change", waiting[0])
+        self.assertNotIn("<b>2.</b>", waiting[0])
+
     def test_a_long_owner_item_is_shown_in_full(self) -> None:
         item = "read every word of this: " + "x" * 600
         waiting = waiting_on_you(data(tasks=[task(owner_item=item, owner_item_at=now_iso())]))
@@ -692,6 +757,7 @@ class WaitingTest(unittest.TestCase):
             "j-0001",
             reviewer="reviewer",
             review_commit="1a2b3c4",
+            review_verdict=PASSED,
             handed_over_at=now_iso(),
             owner_line="The refund page now tells a customer what they get back.",
         )
@@ -710,10 +776,11 @@ class WaitingTest(unittest.TestCase):
             "j-0001",
             reviewer="reviewer",
             review_commit="1a2b3c4",
+            review_verdict=PASSED,
             handed_over_at=now_iso(),
         )
         waiting = waiting_on_you(data(jobs=[held]))
-        self.assertIn("No plain-words summary of this change was recorded", waiting[0])
+        self.assertIn("The review-ready detail was not recorded", waiting[0])
         self.assertIn("pass it so it can be published", waiting[0])
 
     def test_a_merge_row_body_says_what_the_word_does(self) -> None:
@@ -739,6 +806,7 @@ class WaitingTest(unittest.TestCase):
             "j-0001",
             reviewer="reviewer",
             review_commit="46a15d2",
+            review_verdict=PASSED,
             handed_over_at=now_iso(),
             owner_line="The refund page now tells a customer what they get back.",
         )
@@ -769,6 +837,7 @@ class WaitingTest(unittest.TestCase):
             "j-0001",
             reviewer="reviewer",
             review_commit="1a2b3c4",
+            review_verdict=PASSED,
             handed_over_at=now_iso(),
             owner_line="The refund page now tells a customer what they get back.",
         )
@@ -814,6 +883,7 @@ class WaitingTest(unittest.TestCase):
         reviewed = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            review_verdict=PASSED,
             pass_at=now_iso(),
             published_at=now_iso(),
         )
@@ -825,7 +895,12 @@ class WaitingTest(unittest.TestCase):
         self.assertIn("your word", waiting[0])
 
     def test_a_held_change_waits_with_its_age(self) -> None:
-        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            review_verdict=PASSED,
+            handed_over_at=now_iso(),
+        )
         waiting = waiting_on_you(data(jobs=[held]))
         self.assertEqual(len(waiting), 1)
         self.assertIn("refund", waiting[0])
@@ -840,6 +915,7 @@ class WaitingTest(unittest.TestCase):
         held = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            review_verdict=PASSED,
             handed_over_at="2020-01-01T00:00:00Z",
         )
         waiting = waiting_on_you(data(jobs=[held]))
@@ -850,7 +926,12 @@ class WaitingTest(unittest.TestCase):
     def test_a_held_change_that_moved_after_review_needs_a_rereview(self) -> None:
         # The reviewer checked an old commit; the branch has moved. The owner must
         # not be invited to walk the stale one.
-        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            review_verdict=PASSED,
+            handed_over_at=now_iso(),
+        )
         waiting = waiting_on_you(data(jobs=[held], rereview={held.id: "b" * 40}))
         self.assertEqual(len(waiting), 1)
         self.assertIn("moved to", waiting[0])
@@ -876,7 +957,7 @@ class WaitingTest(unittest.TestCase):
         self.assertIn(">needs re-review<", doing)
 
     def test_the_row_data_state_matches_the_displayed_state_for_the_equal_tip(self) -> None:
-        held = job(reviewer="verifier", review_commit="a" * 40)
+        held = job(reviewer="verifier", review_commit="a" * 40, review_verdict=PASSED)
         html = render_board(data(jobs=[held]))
         doing = html[html.index('id="rows-doing"') :]
         row = re.search(r"<tr([^>]*)>", doing).group(1)
@@ -893,14 +974,24 @@ class WaitingTest(unittest.TestCase):
 
     def test_an_open_review_step_reads_under_review(self) -> None:
         # The owner must not be invited to walk while the reviewer is still going.
-        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            review_verdict=PASSED,
+            handed_over_at=now_iso(),
+        )
         html = render_board(data(jobs=[held], tasks=[task()]))
         doing = html[html.index("rows-doing") : html.index("rows-done")]
         self.assertIn("under review", doing)
         self.assertNotIn("waiting on a walkthrough", doing)
 
     def test_a_reported_review_step_returns_the_owner_word(self) -> None:
-        held = job(reviewer="verifier", review_commit="a" * 40, handed_over_at=now_iso())
+        held = job(
+            reviewer="verifier",
+            review_commit="a" * 40,
+            review_verdict=PASSED,
+            handed_over_at=now_iso(),
+        )
         html = render_board(data(jobs=[held], tasks=[task(status=REPORTED)]))
         doing = html[html.index("rows-doing") : html.index("rows-done")]
         self.assertIn("waiting on a walkthrough", doing)
@@ -911,6 +1002,7 @@ class WaitingTest(unittest.TestCase):
         passed = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            review_verdict=PASSED,
             pass_at=now_iso(),
             published_at=now_iso(),
         )
@@ -923,6 +1015,7 @@ class WaitingTest(unittest.TestCase):
         reviewed = job(
             reviewer="verifier",
             review_commit="a" * 40,
+            review_verdict=PASSED,
             pass_at=now_iso(),
             merge_word="merge",
             merge_word_at="2026-09-29T10:00:00Z",
@@ -1586,7 +1679,9 @@ class PlainNameTest(unittest.TestCase):
         ):
             produced.add(one.state_in_words)
         produced.add(
-            job(reviewer="verifier", review_commit="a" * 40).state_in_words_at("b" * 40)
+            job(
+                reviewer="verifier", review_commit="a" * 40, review_verdict=PASSED
+            ).state_in_words_at("b" * 40)
         )
         produced.add(
             job(reviewer="verifier", review_commit="a" * 40).state_in_words_at(
@@ -1620,8 +1715,22 @@ class PlainNameTest(unittest.TestCase):
         # Derived from the pass and merge word he actually gave, never stored.
         self.assertEqual(job().state_in_words, "in progress")
         self.assertEqual(
-            job(reviewer="verifier", review_commit="a" * 40).state_in_words,
+            job(
+                reviewer="verifier", review_commit="a" * 40, review_verdict=PASSED
+            ).state_in_words,
             "waiting on a walkthrough",
+        )
+        self.assertEqual(
+            job(
+                reviewer="verifier",
+                review_commit="a" * 40,
+                review_verdict=CHANGES_REQUESTED,
+            ).state_in_words,
+            "changes requested",
+        )
+        self.assertEqual(
+            job(reviewer="verifier", review_commit="a" * 40).state_in_words,
+            "review verdict not recorded",
         )
         self.assertEqual(job(pass_at="2026-09-27T10:00:00Z").state_in_words, "passed")
         self.assertEqual(

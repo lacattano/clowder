@@ -31,7 +31,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from .state import Job, Task
+from .state import CHANGES_REQUESTED, PASSED, Job, Task
 from .timeutil import elapsed_seconds, human_age
 
 # A change waiting for a walkthrough past this long is flagged, so a change cannot sit
@@ -64,8 +64,16 @@ CONSEQUENCE = {
     "separate word from you.",
 }
 NO_SUMMARY = (
-    "No plain-words summary of this change was recorded with the review. Ask the front "
-    "door what it changes before you answer."
+    "The review-ready detail was not recorded. Ask the front door what changes for you "
+    "and what passing means before you answer."
+)
+SENT_BACK = (
+    "the reviewer sent it back with changes requested; the writer fixes it and the "
+    "reviewer checks it again"
+)
+VERDICT_MISSING = (
+    "the review reported, but its verdict was not recorded; the front door records it "
+    "before the change is put in front of you"
 )
 # The row also knows when the job moved past the checked commit, or when the current
 # commit could not be read. The summary on the job was written for the earlier check, so
@@ -90,12 +98,20 @@ def _change_body(job: Job, kind: str, *, stale: str | None = None) -> str:
     the current commit could not be read, and None when the summary matches what is
     in front of him.
     """
+    detail = (job.review_detail or "").strip()
     if stale == "moved":
         summary = MOVED_SUMMARY
     elif stale == "unread":
         summary = UNREAD_SUMMARY
+    elif detail:
+        # The front door wrote this to be read cold: what changes, what passing
+        # means, the evidence. Rendered as written, newlines included.
+        summary = detail
     else:
-        summary = " ".join((job.owner_line or "").split()) or NO_SUMMARY
+        summary = NO_SUMMARY
+        reviewer_line = " ".join((job.owner_line or "").split())
+        if reviewer_line:
+            summary += " What the reviewer said: " + reviewer_line
     return summary + "\n" + CONSEQUENCE[kind]
 
 
@@ -142,6 +158,18 @@ class NotYours:
         return human_age(elapsed_seconds(self.since, None))
 
 
+def names_the_walkthrough(text: str) -> bool:
+    """Does an owner item name the walkthrough, so it is that decision already?
+
+    The same narrow rule as `names_the_merge`, for the same reason: a miss shows a
+    duplicate line (noise), a false hit could hide a decision. Only the words the
+    page itself uses count, so an item about what the change contains does not hide
+    the pass.
+    """
+    flat = " ".join(text.split()).lower()
+    return any(f" {word} " in f" {flat} " for word in ("pass", "walkthrough"))
+
+
 def names_the_merge(text: str) -> bool:
     """Does an owner item name the merge word, so it is the merge decision itself?
 
@@ -183,6 +211,7 @@ def waiting_on_owner(
 
     his: list[Waiting] = []
     named_by_item: set[str] = set()
+    pass_item_on_job: set[str] = set()
     for task in task_list:
         # A recorded question waits on him until it is cleared or answered, whatever
         # happened to the step that carried it. Seen 2026-10-27: three owner items sat
@@ -190,6 +219,8 @@ def waiting_on_owner(
         if task.owner_item:
             if task.job and names_the_merge(task.owner_item):
                 named_by_item.add(task.job)
+            if task.job and names_the_walkthrough(task.owner_item):
+                pass_item_on_job.add(task.job)
             his.append(
                 Waiting(
                     kind=DECISION,
@@ -280,17 +311,38 @@ def waiting_on_owner(
             seconds = elapsed_seconds(job.handed_over_at, None)
             if seconds >= HELD_QUIET_AFTER_SECONDS:
                 note += " - gone quiet"
-            his.append(
-                Waiting(
-                    kind=WALKTHROUGH,
-                    heading=job.name_in_words,
-                    note=note,
-                    action=ACTIONS[WALKTHROUGH],
-                    since=job.handed_over_at or job.created_at,
-                    id=job.id,
-                    detail=_change_body(job, WALKTHROUGH, stale=stale),
+            if job.review_verdict == CHANGES_REQUESTED:
+                # Not his: the writer fixes it. The board names the state plainly and
+                # the change is not offered as a pass (d-0145).
+                not_his.append(
+                    NotYours(
+                        heading=job.name_in_words,
+                        note=SENT_BACK,
+                        since=job.handed_over_at or job.created_at,
+                        id=job.id,
+                    )
                 )
-            )
+            elif job.review_verdict == PASSED and job.id not in pass_item_on_job:
+                his.append(
+                    Waiting(
+                        kind=WALKTHROUGH,
+                        heading=job.name_in_words,
+                        note=note,
+                        action=ACTIONS[WALKTHROUGH],
+                        since=job.handed_over_at or job.created_at,
+                        id=job.id,
+                        detail=_change_body(job, WALKTHROUGH, stale=stale),
+                    )
+                )
+            elif job.review_verdict not in (PASSED, CHANGES_REQUESTED):
+                not_his.append(
+                    NotYours(
+                        heading=job.name_in_words,
+                        note=VERDICT_MISSING,
+                        since=job.handed_over_at or job.created_at,
+                        id=job.id,
+                    )
+                )
 
     his.sort(key=lambda item: (item.since, item.kind, item.id))
     not_his.sort(key=lambda item: (item.since, item.id))
