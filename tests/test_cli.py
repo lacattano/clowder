@@ -3432,6 +3432,36 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("reply pass", owner, "not offered as a pass")
         self.assertIn("sent it back", page, "the front door sees it came back")
 
+    def test_an_unrelated_pass_word_does_not_hide_the_change_on_the_board(self) -> None:
+        # The reviewer's case, on a scratch state: the job is passed, and an item asks a
+        # different question with the word "pass" in it. Both decisions stay on the page.
+        self.write_held_job("j-0001", "task/held")
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id="t-0100",
+                question="which eval threshold?",
+                brief="scout: which eval threshold",
+                shape="scout",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                job="j-0001",
+                owner_item="Should the eval pass threshold be 0.8 or 0.9?",
+                owner_item_at=now_iso(),
+                status=CLOSED,
+            )
+        )
+        store.save()
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("Should the eval pass threshold be 0.8 or 0.9?", owner)
+        self.assertIn("reply pass", owner, "the change is still offered")
+        self.assertEqual(owner.count("owner-title"), 2, "two decisions, two lines")
+
     def test_job_verdict_refuses_without_a_review_and_after_the_pass(self) -> None:
         job_id, _ = self.open_a_job()
         code, _, err = self.cli(

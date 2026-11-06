@@ -206,9 +206,10 @@ class Job:
     handed_over_at: str | None = None
     # The review's verdict, recorded by the front door when the review reports, and
     # the detail the owner reads on the board. `review_detail` is what changes for
-    # him, what passing means and the evidence in one line, written to be read cold.
-    # None means the front door has not recorded it, and the board says so rather
-    # than filling the gap with the existence of a review.
+    # him and the evidence in one line, written to be read cold; the row states what
+    # passing means itself, so the detail is not asked to repeat it. None means the
+    # front door has not recorded it, and the board says so rather than filling the
+    # gap with the existence of a review.
     review_verdict: str | None = None
     review_detail: str | None = None
     released_at: str | None = None

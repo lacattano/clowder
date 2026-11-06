@@ -634,7 +634,7 @@ def build_parser() -> argparse.ArgumentParser:
     j_verdict.add_argument(
         "--detail",
         metavar="TEXT",
-        help="what changes for the owner, what passing means, and the evidence",
+        help="what changes for the owner and the evidence; the row adds what a pass decides",
     )
     j_verdict.add_argument(
         "--detail-file",

@@ -65,7 +65,7 @@ CONSEQUENCE = {
 }
 NO_SUMMARY = (
     "The review-ready detail was not recorded. Ask the front door what changes for you "
-    "and what passing means before you answer."
+    "before you answer."
 )
 SENT_BACK = (
     "the reviewer sent it back with changes requested; the writer fixes it and the "
@@ -161,13 +161,13 @@ class NotYours:
 def names_the_walkthrough(text: str) -> bool:
     """Does an owner item name the walkthrough, so it is that decision already?
 
-    The same narrow rule as `names_the_merge`, for the same reason: a miss shows a
-    duplicate line (noise), a false hit could hide a decision. Only the words the
-    page itself uses count, so an item about what the change contains does not hide
-    the pass.
+    The page's own words: "reply pass" or "walkthrough". A bare "pass" is not
+    enough - "should the eval pass threshold be 0.8 or 0.9?" is a different
+    question, and hiding the change he is asked to pass is the failure this rule
+    must not cause.
     """
     flat = " ".join(text.split()).lower()
-    return any(f" {word} " in f" {flat} " for word in ("pass", "walkthrough"))
+    return "walkthrough" in flat or "reply pass" in flat
 
 
 def names_the_merge(text: str) -> bool:

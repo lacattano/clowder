@@ -308,6 +308,57 @@ class WaitingOnOwnerTest(unittest.TestCase):
         self.assertIn("verdict was not recorded", not_his[0].note)
         self.assertEqual(reviewed.state_in_words, "review verdict not recorded")
 
+    def test_an_item_naming_the_walkthrough_is_the_only_line(self) -> None:
+        his, _ = waiting_on_owner(
+            [
+                task(
+                    job="j-0001",
+                    owner_item="the walkthrough for the refund change is ready",
+                    owner_item_at=now_iso(),
+                )
+            ],
+            [
+                job(
+                    "j-0001",
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    handed_over_at=now_iso(),
+                    review_verdict=PASSED,
+                    review_detail="The detail.",
+                )
+            ],
+        )
+        self.assertEqual(self.kinds(his), [DECISION], "one decision, one line")
+
+    def test_an_item_with_pass_in_an_unrelated_sentence_does_not_hide_the_change(
+        self,
+    ) -> None:
+        # The reviewer's case: "should the eval pass threshold be 0.8 or 0.9?" is a
+        # different question. It must not hide the change he is being asked to pass.
+        his, _ = waiting_on_owner(
+            [
+                task(
+                    job="j-0001",
+                    owner_item="Should the eval pass threshold be 0.8 or 0.9?",
+                    owner_item_at=now_iso(),
+                )
+            ],
+            [
+                job(
+                    "j-0001",
+                    title="the eval change",
+                    reviewer="verifier",
+                    review_commit="a" * 40,
+                    handed_over_at=now_iso(),
+                    review_verdict=PASSED,
+                    review_detail="The detail.",
+                )
+            ],
+        )
+        self.assertEqual(self.kinds(his), [DECISION, WALKTHROUGH], "two decisions, two lines")
+        self.assertIn("eval pass threshold", his[0].heading)
+        self.assertEqual(his[1].heading, "the eval change")
+
     def test_an_owner_item_naming_the_pass_is_the_only_line(self) -> None:
         his, _ = waiting_on_owner(
             [
