@@ -11,7 +11,10 @@ write lines a reader can scan the same way.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+from .errors import StateError
 
 
 def audit_path(state_path: str | Path) -> Path:
@@ -21,11 +24,22 @@ def audit_path(state_path: str | Path) -> Path:
 
 
 def append_audit(state_path: str | Path, record: dict[str, object]) -> Path:
-    """Append one audit line, and return the file it went to."""
+    """Append one audit line, and return the file it went to.
+
+    The line reaches the disk before this returns, so a caller that treats it as the
+    trail for a change can write the change afterwards and know the trail is already
+    there. An unwritable file is a clowder error naming the path, not a traceback:
+    the caller has to be able to say that the change did not happen.
+    """
     path = audit_path(state_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise StateError(f"{path}: cannot write the audit line: {exc}") from exc
     return path
 
 

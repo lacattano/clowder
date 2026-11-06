@@ -23,6 +23,7 @@ from clowder import owner as owner_mod
 from clowder.board import BoardData, waiting_on_you
 from clowder.board import waiting_on_you as board_waiting_on_you
 from clowder.config import load_config
+from clowder.defects import DefectStore
 from clowder.mux import MuxResult
 from clowder.state import (
     ABANDONED,
@@ -6566,6 +6567,226 @@ class CliTest(unittest.TestCase):
         # One record, beside the state file. Nothing else stores a defect.
         stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
         self.assertEqual(list(stored["defects"]), ["d-0001"])
+
+    def test_defects_correct_rewrites_the_line_and_shows_it_back(self) -> None:
+        for _ in range(2):
+            self.cli(
+                "defects",
+                "add",
+                "--line",
+                "the old summary says two of 28",
+                env=self.fake_env(),
+            )
+        code, out, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "the old summary says one of 28",
+            "--why",
+            "two runs measured one",
+            "--by",
+            "clowder-maker",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("d-0001 corrected", out)
+
+        code, out, err = self.cli("defects", "show", "d-0001", "--json", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        defect = json.loads(out)["defect"]
+        self.assertEqual(defect["line"], "the old summary says one of 28")
+        self.assertEqual(defect["id"], "d-0001")
+        self.assertEqual(defect["count"], 2, "the count is the record, not the words")
+        self.assertNotIn("x", defect["line"])
+
+    def test_the_correction_writes_one_audit_line_with_both_lines(self) -> None:
+        self.cli("defects", "add", "--line", "the old line", env=self.fake_env())
+        self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "the new line",
+            "--why",
+            "the old one named the wrong cause",
+            "--by",
+            "clowder-maker",
+            env=self.fake_env(),
+        )
+        rows = [
+            row
+            for row in audit.read_audit(self.state)
+            if row.get("action") == "defects-corrected"
+        ]
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(row["defects"], ["d-0001"])
+        self.assertEqual(row["old_line"], "the old line")
+        self.assertEqual(row["new_line"], "the new line")
+        self.assertEqual(row["why"], "the old one named the wrong cause")
+        self.assertEqual(row["by"], "clowder-maker")
+        self.assertIn("at", row)
+
+    def test_defects_correct_needs_a_reason(self) -> None:
+        self.cli("defects", "add", "--line", "a line", env=self.fake_env())
+        with self.assertRaises(SystemExit) as caught:
+            self.cli(
+                "defects", "correct", "d-0001", "--line", "another line", env=self.fake_env()
+            )
+        self.assertEqual(caught.exception.code, 2, "--why is required")
+
+    def test_defects_correct_refuses_an_unknown_id(self) -> None:
+        self.cli("defects", "add", "--line", "a line", env=self.fake_env())
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0099",
+            "--line",
+            "another line",
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("no defect", err)
+
+    def test_defects_correct_refuses_a_second_line_and_a_line_over_the_cap(self) -> None:
+        self.cli("defects", "add", "--line", "a line", env=self.fake_env())
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "one" + chr(10) + "two",
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("one line", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "x" * 501,
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("at most 500", err)
+        # Neither refusal changed the record.
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["defects"]["d-0001"]["line"], "a line")
+
+    def test_the_corrected_file_is_exactly_what_the_tool_would_write(self) -> None:
+        self.cli("defects", "add", "--line", "the old line", env=self.fake_env())
+        self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "the new line",
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        path = self.root / "defects.json"
+        text = path.read_text(encoding="utf-8")
+        # The tool's own serialisation, not a hand edit that happens to parse: two
+        # spaces, sorted keys, one trailing newline.
+        self.assertEqual(text, json.dumps(json.loads(text), indent=2, sort_keys=True) + chr(10))
+        # A fresh store reads the same record, so the file is the tool's format.
+        defect = DefectStore(path).get("d-0001")
+        self.assertEqual(defect.line, "the new line")
+        self.assertEqual(defect.count, 1)
+        # No writer temp survives beside it. The lock file is meant to stay.
+        leftovers = sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp"))
+        self.assertEqual(leftovers, [])
+
+    def test_a_recorded_defect_writes_one_audit_line_and_names_the_file(self) -> None:
+        code, out, err = self.cli(
+            "defects", "add", "--line", "a step does not close", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("audit:", out)
+        self.assertIn(str(self.root / "state.json.audit"), out)
+
+        rows = [r for r in audit.read_audit(self.state) if r.get("action") == "defect-recorded"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["defect"], "d-0001")
+        self.assertEqual(rows[0]["line"], "a step does not close")
+        self.assertEqual(rows[0]["count"], 1)
+        self.assertIs(rows[0]["created"], True)
+
+        # A second sighting is a change too, and gets its own line.
+        self.cli("defects", "add", "--line", "a step does not close", env=self.fake_env())
+        rows = [r for r in audit.read_audit(self.state) if r.get("action") == "defect-recorded"]
+        self.assertEqual([row["count"] for row in rows], [1, 2])
+        self.assertIs(rows[1]["created"], False)
+
+    def test_a_correction_with_no_writable_trail_leaves_the_record_alone(self) -> None:
+        self.cli("defects", "add", "--line", "the original line", env=self.fake_env())
+        trail = self.root / "state.json.audit"
+        trail.unlink()
+        trail.mkdir()  # opening a directory for append cannot work
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "a changed line",
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write the audit line", err)
+        self.assertIn(str(trail), err)
+        # The change and its trail are one act: no trail, no change.
+        stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["defects"]["d-0001"]["line"], "the original line")
+
+    def test_both_defect_commands_take_a_line_from_the_same_cap(self) -> None:
+        too_long = "x" * 501
+        longest = "y" * 500
+
+        code, _, err = self.cli("defects", "add", "--line", too_long, env=self.fake_env())
+        self.assertEqual(code, 1)
+        self.assertIn("at most 500", err)
+        self.assertFalse((self.root / "defects.json").exists())
+
+        code, _, err = self.cli("defects", "add", "--line", longest, env=self.fake_env())
+        self.assertEqual(code, 0, err)
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            too_long,
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("at most 500", err)
+
+        code, _, err = self.cli(
+            "defects",
+            "correct",
+            "d-0001",
+            "--line",
+            "z" * 500,
+            "--why",
+            "w",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
 
     def test_a_defect_needs_one_line_a_reason_for_an_acceptance_and_a_real_job(self) -> None:
         code, _, err = self.cli("defects", "add", "--line", "one\ntwo", env=self.fake_env())

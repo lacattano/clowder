@@ -32,6 +32,7 @@ from .defects import (
     DefectStore,
     matches_line,
     merge_warning,
+    one_line,
     read_defects,
     recently_seen,
     short_date,
@@ -871,6 +872,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     d_add.add_argument("--json", action="store_true")
     d_add.set_defaults(handler=cmd_defects_add, refreshes_board=True)
+
+    d_correct = defects_parser(
+        "correct", "rewrite a defect's one line, keeping its count and its links"
+    )
+    d_correct.add_argument("id", help="defect id, e.g. d-0007")
+    d_correct.add_argument(
+        "--line",
+        required=True,
+        metavar="TEXT",
+        help="the corrected line, in the owner's words (required)",
+    )
+    d_correct.add_argument(
+        "--why",
+        required=True,
+        metavar="TEXT",
+        help="what the old line got wrong, and where the new one comes from (required)",
+    )
+    d_correct.add_argument(
+        "--detail",
+        metavar="TEXT",
+        help="replace the body behind the line; leave it out to keep the body",
+    )
+    d_correct.add_argument(
+        "--by", metavar="NAME", help="who is correcting it (goes in the audit line)"
+    )
+    d_correct.add_argument("--json", action="store_true")
+    d_correct.set_defaults(handler=cmd_defects_correct, refreshes_board=True)
 
     d_list = defects_parser("list", "every known defect, or only the ones needing action")
     d_list.add_argument(
@@ -4964,14 +4992,10 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     here, and on the board, that it now needs a job or an accepted workaround.
     """
     config, store = _context(args)
-    line = " ".join((args.line or "").split())
-    if not line:
-        raise UsageError("--line is required: the defect in one line")
-    if "\n" in (args.line or ""):
-        raise UsageError(
-            "--line is one line. Split it into separate defects, or keep the detail out "
-            "of the record: a defect is a line, not a report."
-        )
+    try:
+        line = one_line(args.line or "")
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
     state = args.status
     reason = (args.reason or "").strip() or None
     if state == ACCEPTED and not reason:
@@ -5009,6 +5033,16 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
 
     detail = _owner_detail(args)
     defects = _defect_store(config)
+    who = (config.front_door_name or "unknown").strip()
+
+    def record_change(change: dict[str, object]) -> None:
+        # Called inside the record's write lock, before the record is written, so a
+        # change cannot land with its trail missing. See defects.Trail.
+        audit.append_audit(
+            store.path,
+            {"action": "defect-recorded", "at": now_iso(), "by": who, **change},
+        )
+
     try:
         defect, created = defects.sighting(
             line,
@@ -5019,9 +5053,11 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
             first_seen=args.first_seen,
             last_seen=args.last_seen,
             count=args.count if args.count is not None else 1,
+            trail=record_change,
         )
     except StateError as exc:
         raise UsageError(str(exc)) from exc
+    audit_file = audit.audit_path(store.path)
 
     if args.json:
         _emit_json(
@@ -5042,6 +5078,60 @@ def cmd_defects_add(args: argparse.Namespace) -> int:
     warning = merge_warning(defect)
     if warning:
         print(warning)
+    print(f"{INDENT}audit: {audit_file}")
+    return 0
+
+
+def cmd_defects_correct(args: argparse.Namespace) -> int:
+    """Rewrite a defect's one line, and say why in the audit.
+
+    The line is the part a person reads first, and a wrong one costs more than none:
+    it names the wrong cause or the wrong count, and someone acts on it. The record
+    around it - the id, the count, the dates, every job link, the state - stays put.
+    """
+    config, store = _context(args)
+    try:
+        line = one_line(args.line or "")
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
+    why = (args.why or "").strip()
+    if not why:
+        raise UsageError(
+            "--why is required: what the old line got wrong, and where the new one "
+            "comes from. A correction with no reason is a second guess."
+        )
+    detail = args.detail if args.detail is None else args.detail.strip()
+    defects = _defect_store(config)
+    who = (args.by or config.front_door_name or "unknown").strip()
+
+    def record_change(change: dict[str, object]) -> None:
+        # Called inside the record's write lock, before the record is written. If the
+        # trail cannot be written, the record is not changed: the change and its trail
+        # stay one act, which is what the hand edit broke.
+        record: dict[str, object] = {
+            "action": "defects-corrected",
+            "at": now_iso(),
+            "by": who,
+            "why": why,
+            "defects": [change["defect"]],
+        }
+        for key in ("old_line", "new_line", "old_detail", "new_detail"):
+            if key in change:
+                record[key] = change[key]
+        audit.append_audit(store.path, record)
+
+    try:
+        old_line, _, defect = defects.correct(args.id, line, detail=detail, trail=record_change)
+    except StateError as exc:
+        raise UsageError(str(exc)) from exc
+    audit_file = audit.audit_path(store.path)
+
+    if args.json:
+        _emit_json({"defect": defect.to_dict(), "corrected": True, "old_line": old_line})
+        return 0
+    print(f"{defect.id} corrected: {defect.line}")
+    print(f"old line: {old_line}")
+    print(f"{INDENT}audit: {audit_file}")
     return 0
 
 

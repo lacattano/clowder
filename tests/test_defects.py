@@ -153,6 +153,55 @@ class StoreTest(unittest.TestCase):
         )
 
 
+class CorrectTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = defects_path(Path(self.tmp.name) / "state.json")
+        self.store = DefectStore(self.path)
+
+    def test_a_correction_keeps_the_count_the_dates_the_links_the_state_and_the_reason(
+        self,
+    ) -> None:
+        self.store.sighting(
+            "the old line says two of 28",
+            job="j-0007",
+            state=ACCEPTED,
+            reason="the fix costs more than the bug",
+            detail="the old body",
+        )
+        time.sleep(1.05)
+        seen, _ = self.store.sighting("the old line says two of 28")
+        self.assertEqual(seen.count, 2)
+        first_seen, last_seen = seen.first_seen, seen.last_seen
+
+        old_line, old_detail, corrected = self.store.correct(
+            "d-0001", "the old line says one of 28", detail="the new body"
+        )
+        self.assertEqual(old_line, "the old line says two of 28")
+        self.assertEqual(old_detail, "the old body")
+        self.assertEqual(corrected.id, "d-0001")
+        self.assertEqual(corrected.count, 2)
+        self.assertEqual(corrected.first_seen, first_seen)
+        self.assertEqual(corrected.last_seen, last_seen)
+        self.assertEqual(corrected.linked_jobs, ["j-0007"])
+        self.assertEqual(corrected.state, ACCEPTED)
+        self.assertEqual(corrected.reason, "the fix costs more than the bug")
+        self.assertEqual(corrected.line, "the old line says one of 28")
+        self.assertEqual(corrected.detail, "the new body")
+
+        # No --detail leaves the body alone; the record is one current body.
+        _, kept_detail, again = self.store.correct("d-0001", "the line, reworded")
+        self.assertEqual(kept_detail, "the new body")
+        self.assertEqual(again.detail, "the new body")
+        self.assertEqual(again.count, 2)
+
+    def test_a_correction_refuses_an_unknown_id(self) -> None:
+        with self.assertRaises(StateError) as caught:
+            self.store.correct("d-0099", "a new line")
+        self.assertIn("no defect", str(caught.exception))
+
+
 class LinkTest(unittest.TestCase):
     """A defect names the jobs that fix it, and the merge closes it."""
 
