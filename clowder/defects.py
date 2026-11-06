@@ -24,7 +24,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +48,12 @@ STATES = (OPEN, HAS_JOB, FIXED, ACCEPTED)
 # The states a second sighting does not need to act on. Everything else does: a job
 # or an explicit accepted workaround with the reason.
 SETTLED = (FIXED, ACCEPTED)
+
+# What a change looked like, handed to the caller inside the write lock and before
+# the record is written. The caller turns it into an audit line and appends it; only
+# when that returns is the record committed. A change therefore cannot be on the disk
+# with its trail missing, which is the one property a hand edit breaks.
+Trail = Callable[[dict[str, object]], None]
 
 
 def defects_path(state_path: str | Path) -> Path:
@@ -76,6 +82,38 @@ def matches_line(defect_line: str, query: str) -> bool:
     if not wanted:
         return False
     return wanted <= set(words(defect_line))
+
+
+# A defect is one line a person reads in the handover and in `start`; the body behind
+# it is the detail. There was no length cap when this was written - `defects add`
+# accepted 500 characters while the longest line in the record was 416 - so the cap
+# below was added with `defects correct`, to one helper both commands call. A cap is
+# a rule about the record, and two commands writing one rule must not hold two.
+DEFECT_LINE_LIMIT = 500
+
+
+def one_line(text: str) -> str:
+    """A defect's line, or a refusal.
+
+    A newline is refused because the record shows one line per defect and a second
+    line would sit outside every count and every handover window. A line over the
+    limit is refused for the same reason one step further out: the body belongs in
+    the detail, which is where a workaround or a citation goes.
+    """
+    if "\n" in text:
+        raise StateError(
+            "a defect is one line. Split it into separate defects, or keep the detail out "
+            "of the record: a defect is a line, not a report."
+        )
+    flat = " ".join(text.split())
+    if not flat:
+        raise StateError("a defect needs one line of text")
+    if len(flat) > DEFECT_LINE_LIMIT:
+        raise StateError(
+            f"the line is {len(flat)} characters, and a defect line is at most "
+            f"{DEFECT_LINE_LIMIT}. Keep the line one line and put the body in --detail."
+        )
+    return flat
 
 
 def normalise_line(text: str) -> str:
@@ -378,6 +416,7 @@ class DefectStore:
         first_seen: str | None = None,
         last_seen: str | None = None,
         count: int = 1,
+        trail: Trail | None = None,
     ) -> tuple[Defect, bool]:
         """Record one sighting. Returns the defect and whether it is new.
 
@@ -446,8 +485,65 @@ class DefectStore:
                     current.detail = detail.strip() or None
             if current.state == HAS_JOB and not current.linked_jobs:
                 current.state = OPEN
+            if trail is not None:
+                trail(
+                    {
+                        "defect": current.id,
+                        "line": current.line,
+                        "count": current.count,
+                        "created": created,
+                    }
+                )
             self._save()
         return current, created
+
+    def correct(
+        self,
+        defect_id: str,
+        line: str,
+        *,
+        detail: str | None = None,
+        trail: Trail | None = None,
+    ) -> tuple[str, str | None, Defect]:
+        """Rewrite a defect's one line, and return what it said before.
+
+        Only the line, and the detail when one is given, change. The id, the count,
+        the first and last seen dates, every job link, the state and an accepted
+        workaround's reason are the record around the line, and correcting the
+        words must not cost any of them.
+
+        `detail=None` leaves the body alone; a string replaces it, and an empty one
+        clears it. It is one current body, not a log: appending would carry the
+        wrong words for ever. The old text is returned so the caller can put it in
+        the audit line, where a change belongs.
+        """
+        text = one_line(line)
+        with self._thread_lock, file_lock(self.path.with_name(self.path.name + ".lock")):
+            self._loaded = False
+            self.load()
+            defect = self._defects.get(defect_id)
+            if defect is None:
+                raise StateError(
+                    f"no defect {defect_id!r} in {self.path}. List them with: "
+                    "clowder defects list"
+                )
+            previous_line = defect.line
+            previous_detail = defect.detail
+            defect.line = text
+            if detail is not None:
+                defect.detail = detail.strip() or None
+            if trail is not None:
+                change: dict[str, object] = {
+                    "defect": defect.id,
+                    "old_line": previous_line,
+                    "new_line": defect.line,
+                }
+                if detail is not None and previous_detail != defect.detail:
+                    change["old_detail"] = previous_detail
+                    change["new_detail"] = defect.detail
+                trail(change)
+            self._save()
+        return previous_line, previous_detail, defect
 
     def link(self, defect_id: str, job_id: str) -> Defect:
         """Name a job that fixes this defect. More than one is allowed.
