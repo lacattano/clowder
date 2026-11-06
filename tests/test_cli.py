@@ -30,6 +30,7 @@ from clowder.state import (
     CLOSED,
     DISPATCHED,
     OPEN,
+    PASSED,
     REPORTED,
     Job,
     Reservation,
@@ -3301,14 +3302,15 @@ class CliTest(unittest.TestCase):
         self.assertEqual(task["commit"], commit[:7], "the save it was told to check")
 
     def test_job_list_reads_under_review_while_the_review_runs(self) -> None:
-        # The owner is not invited to walk while the review step is still open.
+        # A handover is not a pass, and neither is a review step that merely reported:
+        # the change is worded from the verdict the front door records.
         job_id, maker_folder = self.open_a_job()
         self.save_something(maker_folder)
         self.handover(job_id)
 
         code, out, err = self.cli("job", "list", env=self.state_env())
         self.assertEqual(code, 0, err)
-        self.assertIn("waiting on a walkthrough", out, "no review step yet")
+        self.assertIn("review verdict not recorded", out, "a handover is not a pass")
 
         code, _, err = self.cli(
             "dispatch",
@@ -3329,8 +3331,163 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.cli("report", "t-0001", env=self.state_env())[0], 0)
         code, out, err = self.cli("job", "list", env=self.state_env())
         self.assertEqual(code, 0, err)
-        self.assertIn("waiting on a walkthrough", out, "the step reported")
+        self.assertIn(
+            "review verdict not recorded", out, "the step reported; nobody recorded a verdict"
+        )
+        self.assertNotIn("waiting on a walkthrough", out)
+
+        code, _, err = self.cli(
+            "job",
+            "verdict",
+            job_id,
+            "--verdict",
+            "passed",
+            "--detail",
+            "The refund page now says what a customer gets back.",
+            env=self.state_env(),
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli("job", "list", env=self.state_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting on a walkthrough", out)
         self.assertNotIn("under review", out)
+
+    def test_a_passed_verdict_puts_the_detail_in_front_of_him(self) -> None:
+        self.write_held_job("j-0001", "task/held", verdict=None)
+        detail = (
+            "The refund page now says what a customer gets back."
+            + chr(10)
+            + "Passing means one read-through."
+            + chr(10)
+            + "Evidence: the review at aaaaaaa and 371 tests."
+        )
+        code, out, err = self.cli(
+            "job",
+            "verdict",
+            "j-0001",
+            "--verdict",
+            "passed",
+            "--detail",
+            detail,
+            "--by",
+            "topcat",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("audit:", out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("what a customer gets back", owner)
+        self.assertIn("Passing means one read-through.", owner)
+        self.assertIn("Evidence: the review", owner)
+        self.assertIn("reply pass", owner)
+
+        rows = [r for r in audit.read_audit(self.state) if r.get("action") == "job-verdict"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["job"], "j-0001")
+        self.assertEqual(rows[0]["verdict"], "passed")
+        self.assertEqual(rows[0]["by"], "topcat")
+        self.assertIs(rows[0]["detail_recorded"], True)
+
+    def test_the_board_draws_a_verdict_row_from_the_state_file_alone(self) -> None:
+        self.write_held_job("j-0001", "task/held", verdict=None)
+        code, _, err = self.cli(
+            "job",
+            "verdict",
+            "j-0001",
+            "--verdict",
+            "passed",
+            "--detail",
+            "The refund page now says what a customer gets back.",
+            env=self.fake_env(),
+        )
+        self.assertEqual(code, 0, err)
+        with mock.patch.object(
+            cli, "Mux", side_effect=AssertionError("the board asked the multiplexer")
+        ):
+            code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        self.assertIn("what a customer gets back", page)
+
+    def test_a_changes_requested_verdict_moves_the_change_off_his_list(self) -> None:
+        self.write_held_job("j-0001", "task/held", verdict=None)
+        code, _, err = self.cli(
+            "job", "verdict", "j-0001", "--verdict", "changes-requested", env=self.fake_env()
+        )
+        self.assertEqual(code, 0, err)
+
+        code, out, err = self.cli("job", "list", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("changes requested", out)
+        self.assertNotIn("waiting on a walkthrough", out)
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertNotIn("reply pass", owner, "not offered as a pass")
+        self.assertIn("sent it back", page, "the front door sees it came back")
+
+    def test_an_unrelated_pass_word_does_not_hide_the_change_on_the_board(self) -> None:
+        # The reviewer's case, on a scratch state: the job is passed, and an item asks a
+        # different question with the word "pass" in it. Both decisions stay on the page.
+        self.write_held_job("j-0001", "task/held")
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id="t-0100",
+                question="which eval threshold?",
+                brief="scout: which eval threshold",
+                shape="scout",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                job="j-0001",
+                owner_item="Should the eval pass threshold be 0.8 or 0.9?",
+                owner_item_at=now_iso(),
+                status=CLOSED,
+            )
+        )
+        store.save()
+
+        code, _, err = self.cli("board", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        page = (self.root / "board.html").read_text(encoding="utf-8")
+        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        self.assertIn("Should the eval pass threshold be 0.8 or 0.9?", owner)
+        self.assertIn("reply pass", owner, "the change is still offered")
+        self.assertEqual(owner.count("owner-title"), 2, "two decisions, two lines")
+
+    def test_job_verdict_refuses_without_a_review_and_after_the_pass(self) -> None:
+        job_id, _ = self.open_a_job()
+        code, _, err = self.cli(
+            "job", "verdict", job_id, "--verdict", "passed", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("Hand it over first", err)
+
+        code, _, err = self.cli(
+            "job", "verdict", "j-0099", "--verdict", "passed", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("no job", err)
+
+        self.write_job(
+            "j-0002",
+            branch="task/passed",
+            reviewer="verifier",
+            review_commit="a" * 40,
+            pass_at=now_iso(),
+        )
+        code, _, err = self.cli(
+            "job", "verdict", "j-0002", "--verdict", "passed", env=self.state_env()
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already carries the owner's pass", err)
 
     def test_a_step_sent_to_a_copy_holding_the_wrong_code_is_refused(self) -> None:
         self.two_agents()
@@ -3657,6 +3814,7 @@ class CliTest(unittest.TestCase):
         pass_at: str | None = None,
         published_at: str | None = None,
         merge_word_at: str | None = None,
+        review_verdict: str | None = None,
         status: str = OPEN,
     ) -> None:
         store = StateStore(self.state)
@@ -3680,12 +3838,20 @@ class CliTest(unittest.TestCase):
                 pass_at=pass_at,
                 published_at=published_at,
                 merge_word_at=merge_word_at,
+                review_verdict=review_verdict,
                 status=status,
             )
         )
         store.save()
 
-    def write_held_job(self, job_id: str, branch: str, moved: bool) -> tuple[str, str]:
+    def write_held_job(
+        self,
+        job_id: str,
+        branch: str,
+        moved: bool = False,
+        *,
+        verdict: str | None = PASSED,
+    ) -> tuple[str, str]:
         """A branch holding a reviewed commit, optionally moved past it."""
         repo = self.repo_path
         gitcmd.switch_new_branch(repo, branch, "main")
@@ -3705,6 +3871,7 @@ class CliTest(unittest.TestCase):
             reviewer="verifier",
             review_commit=checked,
             handed_over_at="2026-10-01T00:00:00Z",
+            review_verdict=verdict,
         )
         return checked, tip
 

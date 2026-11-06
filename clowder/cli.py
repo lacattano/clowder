@@ -49,7 +49,9 @@ from .state import (
     DISPATCHED,
     FAILED,
     OWNER_GATE_WORDS,
+    PASSED,
     REPORTED,
+    REVIEW_VERDICTS,
     SHAPES,
     STATUSES,
     Job,
@@ -620,6 +622,30 @@ def build_parser() -> argparse.ArgumentParser:
     j_pass.add_argument("--by", required=True, metavar="NAME", help="who gave the pass")
     j_pass.add_argument("--json", action="store_true")
     j_pass.set_defaults(handler=cmd_job_pass, refreshes_board=True)
+
+    j_verdict = job_parser("verdict", "record the review's verdict for a job")
+    j_verdict.add_argument("id")
+    j_verdict.add_argument(
+        "--verdict",
+        required=True,
+        choices=REVIEW_VERDICTS,
+        help="what the review said: passed, or changes-requested",
+    )
+    j_verdict.add_argument(
+        "--detail",
+        metavar="TEXT",
+        help="what changes for the owner and the evidence; the row adds what a pass decides",
+    )
+    j_verdict.add_argument(
+        "--detail-file",
+        metavar="PATH",
+        help="read the detail from a file, for a long one",
+    )
+    j_verdict.add_argument(
+        "--by", metavar="NAME", help="who is recording it (goes in the audit line)"
+    )
+    j_verdict.add_argument("--json", action="store_true")
+    j_verdict.set_defaults(handler=cmd_job_verdict, refreshes_board=True)
 
     j_word = job_parser("word", "record the owner's merge word for a job")
     j_word.add_argument("id")
@@ -3225,6 +3251,70 @@ def cmd_job_pass(args: argparse.Namespace) -> int:
         _emit_json({"job": job.to_dict()})
         return 0
     print(f"{job.id}: the owner's pass recorded, by {by} at {job.pass_at}")
+    return 0
+
+
+def cmd_job_verdict(args: argparse.Namespace) -> int:
+    """Record the review's verdict, and the detail the owner reads on the board.
+
+    The board words a change from this verdict, not from the fact that a review step
+    reported. A review that came back with changes requested moves the change off the
+    owner's list; a pass puts it in front of him with the detail written for him.
+    """
+    config, store = _context(args)
+    job = store.get_job(args.id)
+    if not job.is_open:
+        raise StateError(
+            f"{job.id} is {job.state_in_words}, so there is no review in flight to record"
+        )
+    if not (job.reviewer and job.review_commit):
+        raise StateError(
+            f"{job.id} has no reviewer and no reviewed commit, so there is no review to "
+            f"record. Hand it over first: {PROGRAM} job handover {job.id}"
+        )
+    if job.has_pass:
+        raise StateError(
+            f"{job.id} already carries the owner's pass, which is the later word. "
+            "Recording a review after it would rewrite what he answered."
+        )
+    if args.detail and args.detail_file:
+        raise UsageError("pass --detail or --detail-file, not both")
+    detail = _owner_detail(args)
+    job.review_verdict = args.verdict
+    # A verdict is a fresh review, so its detail replaces the old one. A verdict with
+    # no detail clears it: the row then says the detail was not recorded, rather than
+    # showing words written for an earlier check.
+    job.review_detail = detail
+    store.save()
+
+    who = (args.by or config.front_door_name or "unknown").strip()
+    audit_file = audit.append_audit(
+        store.path,
+        {
+            "action": "job-verdict",
+            "at": now_iso(),
+            "by": who,
+            "job": job.id,
+            "verdict": job.review_verdict,
+            "detail_recorded": job.review_detail is not None,
+        },
+    )
+
+    if args.json:
+        _emit_json(
+            {
+                "job": job.to_dict(),
+                "verdict": job.review_verdict,
+                "audit": str(audit_file),
+            }
+        )
+        return 0
+    print(f"{job.id}: review verdict recorded: {job.review_verdict}")
+    if job.review_verdict != PASSED:
+        print(f"{INDENT}it is not offered to the owner; the writer fixes it")
+    elif job.review_detail is None:
+        print(f"{INDENT}no detail was recorded, so the board will say so")
+    print(f"{INDENT}audit: {audit_file}")
     return 0
 
 

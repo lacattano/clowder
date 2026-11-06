@@ -50,6 +50,13 @@ STATUSES = (DISPATCHED, REPORTED, FAILED, ABANDONED, CLOSED)
 
 SHAPES = ("ship", "scout")
 
+# What a review can say about a change. The front door records the verdict when the
+# review reports; the board words its line from this, never from the fact that a
+# review step exists - a change the reviewer sent back is not a pass (d-0145).
+PASSED = "passed"
+CHANGES_REQUESTED = "changes-requested"
+REVIEW_VERDICTS = (PASSED, CHANGES_REQUESTED)
+
 OPEN = "open"
 
 JOB_STATUSES = (OPEN, CLOSED)
@@ -197,6 +204,14 @@ class Job:
     reviewer: str | None = None
     review_commit: str | None = None
     handed_over_at: str | None = None
+    # The review's verdict, recorded by the front door when the review reports, and
+    # the detail the owner reads on the board. `review_detail` is what changes for
+    # him and the evidence in one line, written to be read cold; the row states what
+    # passing means itself, so the detail is not asked to repeat it. None means the
+    # front door has not recorded it, and the board says so rather than filling the
+    # gap with the existence of a review.
+    review_verdict: str | None = None
+    review_detail: str | None = None
     released_at: str | None = None
     held_ref: str | None = None
     # The owner's recorded words. A pass lets the branch be published; a merge
@@ -249,7 +264,11 @@ class Job:
         Derived, never stored, so it cannot drift from the pass and merge word
         the owner actually gave:
           merged -> closed -> waiting on the merge word -> passed
-          -> waiting on the walkthrough -> in progress
+          -> changes requested | waiting on the walkthrough -> in progress
+
+        The review's verdict decides between those last two. A review step that has
+        reported is not a pass: without a recorded verdict the word says so, and the
+        owner is not invited to answer.
 
         A closed job says so. Closing is a step in a change's history, and the
         owner reads this to learn the history; hiding a closed change, or
@@ -264,7 +283,11 @@ class Job:
         if self.has_pass:
             return "passed"
         if self.reviewer and (self.review_commit or self.handed_over_at):
-            return "waiting on a walkthrough"
+            if self.review_verdict == CHANGES_REQUESTED:
+                return "changes requested"
+            if self.review_verdict == PASSED:
+                return "waiting on a walkthrough"
+            return "review verdict not recorded"
         return "in progress"
 
     def needs_rereview(self, tip: str | None) -> bool:
@@ -329,14 +352,16 @@ class Job:
         return _with_extra(self)
 
 
-# The state words that invite the owner to walk or merge. While a step on the job
-# is still open, the work is not settled and these are premature; the board says
-# "under review" instead.
+# The state words a step still running on the job makes premature: the ones that
+# invite the owner to walk or merge, and the two review states a running review or
+# fix step is about to settle. Until it does, the board says "under review".
 OWNER_GATE_WORDS = (
     "waiting on a walkthrough",
     "needs re-review",
     "review unconfirmed",
     "waiting on your merge word",
+    "changes requested",
+    "review verdict not recorded",
 )
 
 

@@ -357,6 +357,8 @@ FILTERABLE_FIELDS: tuple[FilterField, ...] = (
             "under review",
             "needs re-review",
             "review unconfirmed",
+            "changes requested",
+            "review verdict not recorded",
             "passed",
             "waiting on your merge word",
             "merged",
@@ -1131,6 +1133,8 @@ def _job_details(job: Job) -> str:
         bits.append(f"commit {job.commit}")
     if job.reviewer:
         bits.append(f"reviewer {job.reviewer}")
+    if job.review_verdict:
+        bits.append(f"verdict {job.review_verdict}")
     bits.append(f"pass {'yes' if job.has_pass else 'no'}")
     bits.append(f"word {'yes' if job.has_merge_word else 'no'}")
     if job.parked_at:
