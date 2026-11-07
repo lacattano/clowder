@@ -29,9 +29,11 @@ from .defects import (
     ACCEPTED,
     FIXED,
     HAS_JOB,
+    Defect,
     DefectStore,
     matches_line,
     merge_warning,
+    normalise_line,
     one_line,
     read_defects,
     recently_seen,
@@ -5259,11 +5261,43 @@ def cmd_defects_unlink(args: argparse.Namespace) -> int:
     return 0
 
 
+def _correction_that_did_not_land(store_path: Path, defect: Defect) -> str | None:
+    """A correction line whose change the record does not hold, or None.
+
+    A correction writes its trail line before the record, on purpose: a trail with no
+    change is the safe direction. The trail is also where the mismatch can be seen -
+    when the last `defects-corrected` line for this id names a line the record does
+    not hold, the record write failed after its trail line, or the record was edited
+    by hand. One read of the audit for one id, on the command that shows it.
+    """
+    rows = audit.read_actions(store_path, "defects-corrected")
+    last = None
+    for row in rows:
+        ids = row.get("defects")
+        if isinstance(ids, list) and defect.id in ids:
+            last = row
+    if last is None:
+        return None
+    new_line = last.get("new_line")
+    if not isinstance(new_line, str):
+        return None
+    if normalise_line(new_line) == normalise_line(defect.line):
+        return None
+    return (
+        f"the last correction recorded for {defect.id} names a line the record does "
+        f"not hold ({new_line!r} against {defect.line!r}). The record write failed "
+        "after its trail line, or the record was edited by hand."
+    )
+
+
 def cmd_defects_show(args: argparse.Namespace) -> int:
     """One defect in full. This is the only place its detail lives."""
     config, store = _context(args)
     defects = _defect_store(config)
     defect = defects.get(args.id)
+    unmatched = _correction_that_did_not_land(store.path, defect)
+    if unmatched:
+        print(f"{PROGRAM}: warning: {unmatched}", file=sys.stderr)
     open_jobs = _open_job_ids(store)
 
     if args.json:
