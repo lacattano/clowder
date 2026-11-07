@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from .errors import StateError
+from .timeutil import parse_iso
 
 
 def audit_path(state_path: str | Path) -> Path:
@@ -43,8 +44,35 @@ def append_audit(state_path: str | Path, record: dict[str, object]) -> Path:
     return path
 
 
+def _legacy_row(text: str, number: int, reason: str) -> dict[str, object]:
+    """A line the tool cannot parse, kept as one named row.
+
+    The trail is the record of what happened, including the lines a person wrote by
+    hand before the format was enforced. A reader that refuses the whole file for
+    one hand-written line hides every fact after it, so an unreadable line becomes a
+    `legacy` row that carries its own text, its line number and why it could not be
+    parsed. Nothing is dropped and nothing is guessed.
+    """
+    row: dict[str, object] = {"action": "legacy", "line": number, "text": text, "why": reason}
+    first = text.split(" ", 1)[0]
+    try:
+        parse_iso(first)
+    except ValueError, TypeError:
+        pass  # a line with no timestamp keeps none; the line number still places it
+    else:
+        row["at"] = first  # the exact token, not a normalised copy of it
+    return row
+
+
 def read_audit(state_path: str | Path) -> list[dict[str, object]]:
-    """Every audit line, oldest first. A malformed line is an error, not a skip."""
+    """Every audit line, oldest first. A malformed line is kept as a `legacy` row.
+
+    The file holds hand-written lines from before the format was enforced, and a
+    record that cannot be read is worse than a record with a line that needs a
+    person's eye. An unparseable line, or a JSON value that is not an object, comes
+    back as `{"action": "legacy", ...}` with the original text and its line number,
+    so every caller sees the whole trail and none of them can die on it.
+    """
     path = audit_path(state_path)
     if not path.is_file():
         return []
@@ -53,9 +81,14 @@ def read_audit(state_path: str | Path) -> list[dict[str, object]]:
         text = line.strip()
         if not text:
             continue
-        payload = json.loads(text)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            rows.append(_legacy_row(text, number, "not JSON"))
+            continue
         if not isinstance(payload, dict):
-            raise ValueError(f"{path}:{number}: audit line is not an object")
+            rows.append(_legacy_row(text, number, "JSON, but not an object"))
+            continue
         rows.append(payload)
     return rows
 
@@ -63,10 +96,9 @@ def read_audit(state_path: str | Path) -> list[dict[str, object]]:
 def read_actions(state_path: str | Path, action: str) -> list[dict[str, object]]:
     """Every line for one action, oldest first. For display, so it never raises.
 
-    `read_audit` refuses a malformed line, because a record that cannot be read is
-    a fault. The board is a view: it must draw with one hand-written line that is
-    not JSON (there is one in the real file), so this skips what it cannot parse
-    and keeps the well-formed lines for the action asked for.
+    A hand-written line that is not JSON is not a fault to a view: it is skipped
+    here. `read_audit` returns it as a named `legacy` row, so a reader that
+    reconstructs the trail still sees it.
     """
     path = audit_path(state_path)
     if not path.is_file():

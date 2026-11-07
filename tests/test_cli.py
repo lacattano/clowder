@@ -6781,6 +6781,45 @@ class CliTest(unittest.TestCase):
         stored = json.loads((self.root / "defects.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["defects"]["d-0001"]["line"], "the original line")
 
+    def test_defects_show_names_a_correction_whose_record_write_failed(self) -> None:
+        self.cli("defects", "add", "--line", "the old line", env=self.fake_env())
+
+        # A correction line whose new line the record does not hold: the record save
+        # failed after the trail was written, or the record was edited by hand.
+        audit.append_audit(
+            self.state,
+            {
+                "action": "defects-corrected",
+                "at": now_iso(),
+                "by": "clowder-maker",
+                "defects": ["d-0001"],
+                "old_line": "the old line",
+                "new_line": "a line the record does not hold",
+                "why": "w",
+            },
+        )
+        code, _, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertIn("does not hold", err)
+        self.assertIn("d-0001", err)
+
+        # A later trail line that agrees with the record says nothing.
+        audit.append_audit(
+            self.state,
+            {
+                "action": "defects-corrected",
+                "at": now_iso(),
+                "by": "clowder-maker",
+                "defects": ["d-0001"],
+                "old_line": "a line the record does not hold",
+                "new_line": "the old line",
+                "why": "w",
+            },
+        )
+        code, _, err = self.cli("defects", "show", "d-0001", env=self.fake_env())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("does not hold", err)
+
     def test_both_defect_commands_take_a_line_from_the_same_cap(self) -> None:
         too_long = "x" * 501
         longest = "y" * 500
