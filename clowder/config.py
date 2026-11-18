@@ -77,28 +77,32 @@ class Config:
     delivery_mode: str = "local-only"
     git_name: str = DEFAULT_GIT_NAME
     git_email: str = DEFAULT_GIT_EMAIL
-    # The [gates] floors the class gate compares against, in GiB: what must still be
-    # free after a step of a stated cost starts. None switches that floor off. They
-    # replace the retired `heavy_max_memory`, a percent of a total that left out the
-    # memory the GPU reserves - so a resident 25 GiB model moved it not at all.
-    heavy_min_free_gib: float | None = 4.0
+    # The [gates] floors the class gate compares against: what must still be free
+    # after a step of a stated cost starts. The free floor is a share of the memory
+    # Windows can see, so it grows with the machine; the commit and GPU floors are
+    # GiB, because those two pools are limits. None switches that test off.
+    heavy_min_free_share: float | None = 0.10
     heavy_min_commit_gib: float | None = 6.0
     heavy_min_gpu_gib: float | None = 2.0
+    # The last-resort guard: free memory that must be left whatever the commit
+    # headroom says, below every proportional floor. None switches it off.
+    heavy_min_hard_gib: float | None = 1.0
     # Unix only: the 1-minute load average per CPU. Windows has no such metric, and
-    # its memory is already covered by the GiB floors above.
+    # its memory is already covered by the floors above.
     heavy_max_load: float | None = None
 
     @property
     def floors(self) -> box.Floors:
         """The gate floors, as the box module compares them.
 
-        The config holds the three numbers; `box` owns what they mean, so a test or a
+        The config holds the numbers; `box` owns what they mean, so a test or a
         second command cannot compare them a different way.
         """
         return box.Floors(
-            min_free_gib=self.heavy_min_free_gib,
+            min_free_share=self.heavy_min_free_share,
             min_commit_gib=self.heavy_min_commit_gib,
             min_gpu_gib=self.heavy_min_gpu_gib,
+            min_hard_free_gib=self.heavy_min_hard_gib,
         )
 
     @property
@@ -156,9 +160,10 @@ class Config:
             "delivery_mode": self.delivery_mode,
             "git_name": self.git_name,
             "git_email": self.git_email,
-            "heavy_min_free_gib": self.heavy_min_free_gib,
+            "heavy_min_free_share": self.heavy_min_free_share,
             "heavy_min_commit_gib": self.heavy_min_commit_gib,
             "heavy_min_gpu_gib": self.heavy_min_gpu_gib,
+            "heavy_min_hard_gib": self.heavy_min_hard_gib,
             "heavy_max_load": self.heavy_max_load,
         }
 
@@ -309,27 +314,46 @@ def load_config(explicit: str | Path | None = None) -> Config:
         raise ConfigError(
             f"{source}: gates.heavy_max_memory is retired. It was a percent of a total "
             "that left out the memory the GPU reserves, so a resident model moved it "
-            "not at all. Use gates.heavy_min_free_gib (default 4) and "
-            "gates.heavy_min_commit_gib (default 6): the GiB that must still be free "
-            "after a step of a stated cost starts."
+            "not at all. Use gates.heavy_min_free_share (default 0.10) and "
+            "gates.heavy_min_commit_gib (default 6): the share of visible memory, and "
+            "the GiB of commit headroom, that must still be free after a step of a "
+            "stated cost starts."
+        )
+    if "heavy_min_free_gib" in gates:
+        raise ConfigError(
+            f"{source}: gates.heavy_min_free_gib is retired. It was one fixed number "
+            "on boxes of very different sizes: 4 GiB is 12.6 percent of this box and "
+            "25 percent of a 16 GiB one, so it refused a step on the bigger box. Use "
+            "gates.heavy_min_free_share (default 0.10), a share of the memory Windows "
+            "can see."
         )
     known_gates = {
-        "heavy_min_free_gib",
+        "heavy_min_free_share",
         "heavy_min_commit_gib",
         "heavy_min_gpu_gib",
+        "heavy_min_hard_gib",
         "heavy_max_load",
     }
     unknown_gates = set(gates) - known_gates
     if unknown_gates:
         raise ConfigError(f"{source}: unknown gates keys: {sorted(unknown_gates)}")
-    heavy_min_free_gib = _opt_number(
-        gates.get("heavy_min_free_gib", 4.0), "gates.heavy_min_free_gib", source
+    heavy_min_free_share = _opt_number(
+        gates.get("heavy_min_free_share", 0.10), "gates.heavy_min_free_share", source
     )
+    if heavy_min_free_share is not None and not 0.0 <= heavy_min_free_share <= 1.0:
+        raise ConfigError(
+            f"{source}: gates.heavy_min_free_share is a share of the memory Windows "
+            f"can see, so it is between 0 and 1 (0.10 is ten percent); got "
+            f"{heavy_min_free_share}"
+        )
     heavy_min_commit_gib = _opt_number(
         gates.get("heavy_min_commit_gib", 6.0), "gates.heavy_min_commit_gib", source
     )
     heavy_min_gpu_gib = _opt_number(
         gates.get("heavy_min_gpu_gib", 2.0), "gates.heavy_min_gpu_gib", source
+    )
+    heavy_min_hard_gib = _opt_number(
+        gates.get("heavy_min_hard_gib", 1.0), "gates.heavy_min_hard_gib", source
     )
     heavy_max_load = _opt_number(gates.get("heavy_max_load"), "gates.heavy_max_load", source)
 
@@ -354,9 +378,10 @@ def load_config(explicit: str | Path | None = None) -> Config:
         delivery_mode=delivery,
         git_name=git_name,
         git_email=git_email,
-        heavy_min_free_gib=heavy_min_free_gib,
+        heavy_min_free_share=heavy_min_free_share,
         heavy_min_commit_gib=heavy_min_commit_gib,
         heavy_min_gpu_gib=heavy_min_gpu_gib,
+        heavy_min_hard_gib=heavy_min_hard_gib,
         heavy_max_load=heavy_max_load,
     )
 

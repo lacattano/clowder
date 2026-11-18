@@ -1150,8 +1150,9 @@ class CliTest(unittest.TestCase):
 
     def test_a_suite_and_a_model_leg_are_refused_with_the_numbers(self) -> None:
         # The case the class table exists for. A suite is running, the box has 8 GiB
-        # free, and a browser leg needs its own share plus the 4 GiB floor - so the
-        # refusal names the free memory, the held figure and the floor, not a percent.
+        # free, and a browser leg needs its own share plus the free floor - a tenth of
+        # the visible memory here - so the refusal names the free memory, the held
+        # figure and the floor, not a percent.
         self.seed_agents("myrepo-maker", "myrepo-verifier")
         code, _, err = self.cli(
             "dispatch",
@@ -1164,7 +1165,9 @@ class CliTest(unittest.TestCase):
             env=self.state_env(),
         )
         self.assertEqual(code, 0, err)
-        with mock.patch.object(box, "read", return_value=reading(available_gib=8.0)):
+        with mock.patch.object(
+            box, "read", return_value=reading(available_gib=8.0, commit_gib=8.0)
+        ):
             code, _, err = self.cli(
                 "dispatch",
                 "myrepo-verifier",
@@ -1181,7 +1184,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("8.0 GiB free", err)
         self.assertIn("3.0 GiB held", err)
         self.assertIn("6.0 GiB this browser step needs", err)
-        self.assertIn("4.0 GiB must stay free", err)
+        self.assertIn("3.2 GiB must stay free", err)
         self.assertIn("clowder box", err)
         self.assertEqual(len(self.load_state()["tasks"]), 1, "nothing new was sent")
 
@@ -1290,7 +1293,11 @@ class CliTest(unittest.TestCase):
 
     def test_a_heavy_step_is_refused_when_the_box_cannot_cover_it(self) -> None:
         # The reading is patched so the test does not depend on the machine it runs on.
-        with mock.patch.object(box, "read", return_value=reading(available_gib=5.0)):
+        # Both pools are short: 5 GiB free and 8 GiB of commit headroom, so the refusal
+        # names both tests rather than leaving the reader to guess which one refused.
+        with mock.patch.object(
+            box, "read", return_value=reading(available_gib=5.0, commit_gib=8.0)
+        ):
             code, _, err = self.cli(
                 "dispatch",
                 "maker",
@@ -1304,7 +1311,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("5.0 GiB free", err)
         self.assertIn("3.0 GiB this suite step needs", err)
-        self.assertIn("4.0 GiB must stay free", err)
+        self.assertIn("3.2 GiB must stay free", err)
+        self.assertIn("the commit and memory test refused it", err)
 
     def test_a_class_step_fails_open_when_the_box_cannot_be_read(self) -> None:
         # A broken probe must never block work, so the gate says it could not measure
@@ -1326,7 +1334,10 @@ class CliTest(unittest.TestCase):
         self.assertIn("was not measured", err)
 
     def test_force_sends_and_records_that_it_did(self) -> None:
-        with mock.patch.object(box, "read", return_value=reading(available_gib=1.0)):
+        # Both pools short, so the gate refuses and --force has a refusal to record.
+        with mock.patch.object(
+            box, "read", return_value=reading(available_gib=1.0, commit_gib=4.0)
+        ):
             code, out, err = self.cli(
                 "dispatch",
                 "maker",
@@ -1398,17 +1409,56 @@ class CliTest(unittest.TestCase):
         self.assertIn("GlobalMemoryStatusEx ullAvailPhys", out)
         self.assertIn("gate now, a suite step: sends", out)
 
+    def test_box_does_not_count_the_asking_step_as_running(self) -> None:
+        # A worker runs `box` from inside the step it is working on. That step really
+        # is running, so the crew line lists it, but the gate lines ask about one more
+        # step and must not subtract its cost twice - that is d-0171.
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id="t-0001",
+                question="q",
+                brief="b",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                cost="suite",
+                heavy=True,
+                pane_id="wB:p5",
+            )
+        )
+        store.save()
+        with mock.patch.object(box, "read", return_value=reading(available_gib=8.5)):
+            code, out, err = self.cli("box", env=self.fake_env(HERDR_PANE_ID="wB:p5"))
+        self.assertEqual(code, 0, err)
+        gate = next(line for line in out.splitlines() if "gate now, a suite step" in line)
+        self.assertIn("minus 0.0 GiB held and 3.0 GiB needed", gate)
+        self.assertIn("1 step(s) running", out, "the crew line still lists the asker")
+        with mock.patch.object(box, "read", return_value=reading(available_gib=8.5)):
+            code, out, err = self.cli("box", "--json", env=self.fake_env(HERDR_PANE_ID="wB:p5"))
+        payload = json.loads(out)
+        self.assertEqual(payload["asking"], "t-0001")
+        self.assertTrue(payload["suite"]["allowed"])
+        self.assertEqual(payload["floors"]["min_hard_free_gib"], 1.0)
+
     def test_box_json_names_every_pool_and_the_gate(self) -> None:
-        with mock.patch.object(box, "read", return_value=reading(available_gib=5.0)):
+        with mock.patch.object(
+            box, "read", return_value=reading(available_gib=5.0, commit_gib=8.0)
+        ):
             code, out, err = self.cli("box", "--json", env=self.fake_env())
         self.assertEqual(code, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["available_gib"], 5.0)
         self.assertEqual(payload["installed_gib"], 64.0)
         self.assertEqual(payload["gpu_carveout_gib"], 32.0)
-        self.assertEqual(payload["floors"]["min_free_gib"], 4.0)
+        self.assertEqual(payload["floors"]["min_free_share"], 0.10)
         self.assertTrue(payload["suite"]["allowed"] is False)
         self.assertIn("must stay free", " ".join(payload["suite"]["lines"]))
+        # And the json says which test refused, not only which pool fell short.
+        refused = [check for check in payload["tests"]["suite"] if check["name"] == "memory"]
+        self.assertEqual(len(refused), 1)
+        self.assertAlmostEqual(refused[0]["floor_gib"], 3.2, places=1)
 
     def test_start_shows_each_step_s_class_and_what_the_box_has_left(self) -> None:
         store = StateStore(self.state)
@@ -4257,7 +4307,9 @@ class CliTest(unittest.TestCase):
         self.queue_scout(
             "--agent", "myrepo-verifier", "--cost", "browser", env=self.state_env()
         )
-        with mock.patch.object(box, "read", return_value=reading(available_gib=10.0)):
+        with mock.patch.object(
+            box, "read", return_value=reading(available_gib=10.0, commit_gib=8.0)
+        ):
             code, _, err = self.cli("queue", "send", "q-0001", env=self.state_env())
         self.assertEqual(code, 2)
         self.assertIn("6.0 GiB this browser step needs", err)

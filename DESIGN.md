@@ -880,12 +880,45 @@ dedicated usage, and the page file's own use.
   `model` 4 GiB host side and 26 GiB of the GPU (the 27B resident is 25.35 GiB), about an hour.
   The model's host share is small because its weights sit on the card: charging 25 GiB to the CPU
   pool as well would refuse every model leg on a box that runs one perfectly well.
-- **The gate is a subtraction.** Free memory (the metric `load` already reads) minus what the
-  running steps hold, compared with the new step's class; the commit headroom and the GPU's
-  carved-out memory are compared the same way. Floors keep the box usable after the step starts:
-  4 GiB free, 6 GiB of commit headroom, 2 GiB of the GPU. The floors are the defaults and are
-  set in `[gates]` in GiB. `heavy_max_memory` is retired and refused with its replacement named,
-  because a config holding it would otherwise read as "no gate at all".
+- **The gate is a subtraction, and commit headroom decides it.** Each pool is measured, the
+  running steps' footprints are subtracted, and what is left is compared with a floor. The pool
+  that decides is commit headroom: on 2026-11-16 this box read 62.8 GiB of headroom and 7.2 GiB
+  free, and free physical is mostly warm file cache, so it described what was warm rather than
+  what the box could promise. Commit headroom, 6 GiB by default, is the test a step must clear.
+- **The free floor is a share of what Windows can see, not a fixed number.** A fixed 4 GiB is
+  12.6 percent of this box's 31.8 GiB and 25 percent of a 16 GiB machine, so it refused a suite
+  on the box with the room while allowing the same suite on the small one. The share is
+  `gates.heavy_min_free_share`, a tenth by default, held between 1.5 and 4.0 GiB: 3.18 GiB here,
+  which lets the measured 7.2 GiB free carry a 3.0 GiB suite; 1.6 GiB on a 16 GiB box, so a
+  small machine keeps a reserve worth having; and 4.0 GiB on a 128 GiB box, which would never
+  miss 12.8. The free test is a second gate and not a copy of the commit one, and it confirms a
+  refusal rather than making one: it refuses only when the commit headroom is under its floor
+  too, because free physical is mostly reclaimable file cache - 7.2 GiB free with 62.8 GiB of
+  commit headroom behind it is a box with work in it, not a box without room. It is not
+  redundant for that: it prints the second number the reader needs, and it is what says a
+  borderline commit refusal is real rather than a promise the box could actually keep. The
+  commit floor and the GPU floor stay GiB, because those pools are limits: 6 GiB of commit
+  headroom is a promise the box can still keep, and 2 GiB of the card keeps it usable. Both
+  retired keys are refused with their replacement named - `heavy_max_memory`, a percent of a
+  total that left out the GPU's memory, and `heavy_min_free_gib`, one number for boxes of every
+  size - because a config holding one would otherwise read as "no gate at all".
+- **One hard floor still refuses on free alone.** A step that would leave the box below
+  `HARD_MIN_FREE_GIB` (1 GiB, `gates.heavy_min_hard_gib`) is refused whatever the commit
+  headroom says, because below that Windows pages itself into a crawl. It is a guard, not a
+  reserve: every proportional floor is at least 1.5 GiB, so the guard sits strictly below them
+  and cannot fire in ordinary operation - not on this box at 7-10 GiB free, and not on a 16 GiB
+  box whose proportional floor already does the work. It is 1.0 rather than 1.5 for exactly
+  that reason: a 1.5 GiB guard would sit on the smallest proportional floor and quietly undo
+  the rule that free confirms rather than refuses.
+- **Every test says whether it refused.** `decide` records each test it ran - its name, what
+  would be left, the floor, and where the floor came from - so a refusal names the test that
+  refused as well as the pool it measured. "Refused by the commit test" is a fact a reader can
+  act on; "the box does not have it free" left them to guess which pool to free up.
+- **The readout does not count the step asking.** `clowder box` is normally run from inside a
+  worker's own step, so that step is in the record as running. The crew line lists it, because
+  it is; the gate lines leave it out, because they ask whether one more step of a class would
+  send, and counting the asker would subtract its cost twice. The step is found by the pane the
+  command runs in (`HERDR_PANE_ID`), which is also carried in `box --json` as `asking`.
 - **What that allows.** Two suites start together when the room covers both. A suite and a model
   leg are refused with the free figure, the held figure and the floor named. A step with no
   stated cost is never refused, and a box that cannot be read fails open with a warning - a
@@ -895,11 +928,12 @@ dedicated usage, and the page file's own use.
   that takes the box alone. This is the old one-heavy-step gate, kept where it is still true.
 - **The numbers are shown where the decision is made.** `start` and the board print each
   in-flight step's class and one line of what the box has left; a refusal prints the checks it
-  compared instead of a percentage; `clowder box` prints the whole readout - the RAM fitted and
-  the GPU's share, the GPU side with the process holding it, the CPU side with the page file,
-  and what the gate would decide now. Each line names the metric it came from. It is `box`, not
-  `capacity`: the crew already says "the box", and "capacity" suggests a configured limit where
-  this is a live reading.
+  compared instead of a percentage, and each test's own line - what it would leave, its floor,
+  and whether it refused; `clowder box` prints the whole readout - the RAM fitted and the GPU's
+  share, the GPU side with the process holding it, the CPU side with the page file, what the
+  gate would decide now, and the same test lines under it. Each line names the metric it came
+  from. It is `box`, not `capacity`: the crew already says "the box", and "capacity" suggests a
+  configured limit where this is a live reading.
 - **The readout may shell out; the gate may not.** GPU use and page-file use come from
   `typeperf` and take seconds, so `read(with_gpu=True)` is only for `clowder box`.
   `GlobalMemoryStatusEx` already fills `ullAvailPhys`, so free memory needs no second call, and

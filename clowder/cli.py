@@ -1580,9 +1580,12 @@ def _headroom_refusal(config: Config, cost: str, store: StateStore, agent: str) 
     if decision.allowed:
         return None
     lines = "\n".join(f"  {line}" for line in decision.lines)
+    refusing = decision.refused_by
+    tests = "\n".join(f"  {check.line(check.name in refusing)}" for check in decision.checks)
     return (
         f"{agent}'s {cost} step did not send: {decision.reason}.\n"
         f"{lines}\n"
+        f"{tests}\n"
         f"  Let it finish, send it as a cheaper class, or pass --force to send it "
         f"anyway. `{PROGRAM} box` prints the whole readout."
     )
@@ -1591,9 +1594,9 @@ def _headroom_refusal(config: Config, cost: str, store: StateStore, agent: str) 
 def _refuse_high_load(config: Config, args: argparse.Namespace) -> None:
     """Unix only: refuse when the 1-minute load per CPU is at or above the limit.
 
-    Windows has no load average, and its memory is the GiB floors the class gate
-    compares. This is kept for the other platform: the config key is still the way a
-    Linux box says "not while it is this busy".
+    Windows has no load average, and its memory is already covered by the floors the
+    class gate compares. This is kept for the other platform: the config key is still
+    the way a Linux box says "not while it is this busy".
     """
     if config.heavy_max_load is None or load.metric_name() != load.METRIC_LOAD:
         return
@@ -5376,10 +5379,16 @@ def cmd_box(args: argparse.Namespace) -> int:
     `clowder box` may take a few seconds, a gate may not.
     """
     config, store = _context(args)
-    running = box.steps_in_flight(store.select(open_only=True))
+    open_tasks = store.select(open_only=True)
+    running = box.steps_in_flight(open_tasks)
+    # The step asking is often one of the open steps: a worker runs `box` inside the
+    # step it is working on. Counting it as running and again as the step being
+    # considered subtracts its cost twice, so the gate lines leave it out.
+    asking = box.asking_step(open_tasks, box.asking_pane())
+    gate_steps = box.steps_for_gate(running, asking)
     reading = box.read(with_gpu=True)
-    decision_suite = box.decide(box.COST_SUITE, running, reading, config.floors)
-    decision_model = box.decide(box.COST_MODEL, running, reading, config.floors)
+    decision_suite = box.decide(box.COST_SUITE, gate_steps, reading, config.floors)
+    decision_model = box.decide(box.COST_MODEL, gate_steps, reading, config.floors)
 
     if args.json:
         _emit_json(
@@ -5399,10 +5408,16 @@ def cmd_box(args: argparse.Namespace) -> int:
                 "gpu_holder": reading.gpu_holder,
                 "unread": list(reading.unread),
                 "running": [{"id": step.id, "cost": step.cost} for step in running],
+                "asking": asking,
                 "floors": {
-                    "min_free_gib": config.floors.min_free_gib,
+                    "min_free_share": config.floors.min_free_share,
                     "min_commit_gib": config.floors.min_commit_gib,
                     "min_gpu_gib": config.floors.min_gpu_gib,
+                    "min_hard_free_gib": config.floors.min_hard_free_gib,
+                },
+                "tests": {
+                    name: [check.__dict__ for check in decision.checks]
+                    for name, decision in (("suite", decision_suite), ("model", decision_model))
                 },
                 "suite": {
                     "allowed": decision_suite.allowed,
@@ -5419,7 +5434,7 @@ def cmd_box(args: argparse.Namespace) -> int:
         return 0
 
     print(f"{PROGRAM} box")
-    for line in box.readout(reading, running, config.floors):
+    for line in box.readout(reading, running, config.floors, asking=asking):
         print(f"{INDENT}{line}")
     return 0
 
