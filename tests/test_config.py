@@ -239,8 +239,11 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(config.heavy_min_free_share, 0.10)
         self.assertEqual(config.heavy_min_commit_gib, 6.0)
         self.assertEqual(config.heavy_min_gpu_gib, 2.0)
+        # The last-resort guard: free below this much refuses whatever commit says.
+        self.assertEqual(config.heavy_min_hard_gib, 1.0)
         self.assertIsNone(config.heavy_max_load)
         self.assertEqual(config.floors.min_free_share, 0.10)
+        self.assertEqual(config.floors.min_hard_free_gib, 1.0)
 
     def test_the_floors_are_read(self) -> None:
         path = write_config(
@@ -271,6 +274,13 @@ class LoadConfigTest(unittest.TestCase):
         path.write_text("[gates]\nheavy_min_gpu_gib = 0\n", encoding="utf-8")
         config = load_config(path)
         self.assertEqual(config.heavy_min_gpu_gib, 0.0)
+
+    def test_the_hard_free_floor_is_read_and_can_be_switched_off(self) -> None:
+        path = write_config(self.root / "gates-hard.toml", gates={"heavy_min_hard_gib": 2})
+        self.assertEqual(load_config(path).floors.min_hard_free_gib, 2.0)
+        off = self.root / "gates-hard-off.toml"
+        off.write_text("[gates]\nheavy_min_hard_gib = 0\n", encoding="utf-8")
+        self.assertEqual(load_config(off).floors.min_hard_free_gib, 0.0)
 
     def test_the_retired_percent_threshold_names_its_replacement(self) -> None:
         # A config still holding it would otherwise be read as "no gate at all", which

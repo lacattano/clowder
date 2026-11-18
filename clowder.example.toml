@@ -97,9 +97,14 @@ email = "94532220+lacattano@users.noreply.github.com"
 # Retired keys are refused with a message naming the replacement, not ignored:
 # `heavy_max_memory` (a percent of a total that left out the GPU's memory) and
 # `heavy_min_free_gib` (one fixed number for boxes of different sizes).
+#
+# The hard free floor is the last-resort guard: below it the box pages itself into a
+# crawl, so free refuses on its own whatever the commit headroom says. It is set
+# below every proportional floor, so it never takes over from that test.
 # heavy_min_free_share = 0.10  # share of visible memory a step must leave behind
 # heavy_min_commit_gib = 6     # commit headroom it must leave behind
 # heavy_min_gpu_gib = 2        # of the memory the GPU reserves, for browser/model
+# heavy_min_hard_gib = 1       # free memory that must be left, whatever commit says
 # heavy_max_load = 1.0         # Unix only: 1-minute load average per CPU
 
 [repos]

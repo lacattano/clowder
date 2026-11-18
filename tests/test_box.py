@@ -198,7 +198,12 @@ class GateTest(unittest.TestCase):
         self.assertIn(box.TEST_COMMIT, refused.refused_by)
 
     def test_a_floor_of_none_switches_that_check_off(self) -> None:
-        open_floors = box.Floors(min_free_share=None, min_commit_gib=None, min_gpu_gib=None)
+        open_floors = box.Floors(
+            min_free_share=None,
+            min_commit_gib=None,
+            min_gpu_gib=None,
+            min_hard_free_gib=None,
+        )
         decision = box.decide(
             box.COST_SUITE, [], reading(available_gib=0.5, commit_gib=0.5), open_floors
         )
@@ -309,7 +314,7 @@ class FourFixtureTest(unittest.TestCase):
         decided = box.decide(box.COST_MODEL, [], measured(available_gib=2.0))
         self.assertEqual(
             [check.name for check in decided.checks],
-            [box.TEST_COMMIT, box.TEST_MEMORY, box.TEST_GPU],
+            [box.TEST_COMMIT, box.TEST_MEMORY, box.TEST_HARD_FREE, box.TEST_GPU],
         )
         for check in decided.checks:
             self.assertIsNotNone(check.left_gib)
@@ -317,6 +322,98 @@ class FourFixtureTest(unittest.TestCase):
         self.assertIn(
             "test commit: passes", "\n".join(box.readout(measured(available_gib=2.0)))
         )
+
+
+class HardFloorTest(unittest.TestCase):
+    """The last-resort guard: free can still refuse on its own, in one narrow case.
+
+    Without it, the free test only confirms a commit refusal, so a box with 1 GiB
+    free and 40 GiB of commit headroom would send a 3 GiB suite and let Windows page
+    itself into a crawl. The guard must fire there and must never fire on a box with
+    room, which is every reading this machine gives.
+    """
+
+    def test_a_box_with_1_gib_free_is_refused_by_the_hard_floor(self) -> None:
+        # 1.0 GiB free, a 3.0 GiB suite, and a comfortable 40 GiB of commit headroom:
+        # free alone is what refuses, and the refusal names the hard floor.
+        decided = box.decide(box.COST_SUITE, [], reading(available_gib=1.0, commit_gib=40.0))
+        self.assertFalse(decided.allowed)
+        self.assertEqual(decided.refused_by, (box.TEST_HARD_FREE,))
+        self.assertIn("the hard free test refused it", decided.reason)
+        self.assertIn("the hard floor of 1.0 GiB must stay free", "\n".join(decided.lines))
+        hard = next(c for c in decided.checks if c.name == box.TEST_HARD_FREE)
+        self.assertAlmostEqual(hard.left_gib, -2.0, places=1)
+        self.assertAlmostEqual(hard.floor_gib, 1.0, places=1)
+
+    def test_the_same_box_with_7_gib_free_still_sends(self) -> None:
+        decided = box.decide(box.COST_SUITE, [], reading(available_gib=7.0, commit_gib=40.0))
+        self.assertTrue(decided.allowed, decided.reason)
+        self.assertEqual(decided.refused_by, ())
+        hard = next(c for c in decided.checks if c.name == box.TEST_HARD_FREE)
+        self.assertFalse(hard.missed)
+        self.assertAlmostEqual(hard.left_gib, 4.0, places=1)
+
+    def test_the_hard_floor_does_not_fire_on_this_machine(self) -> None:
+        # Every fixture taken from this box reads 7-10 GiB free, and a 3 GiB step
+        # leaves several GiB: the guard is nowhere near.
+        for free in (7.0, 7.2, 10.1):
+            decided = box.decide(box.COST_SUITE, [], measured(available_gib=free))
+            hard = next(c for c in decided.checks if c.name == box.TEST_HARD_FREE)
+            self.assertFalse(hard.missed, f"the hard floor fired at {free} GiB free")
+
+    def test_the_hard_floor_sits_below_every_proportional_floor(self) -> None:
+        # The guard must never take over the job of the proportional test: it is a
+        # last resort, so every proportional floor, on every machine, is above it.
+        smallest = box.Floors().free_floor_gib(0.1)  # the clamp's own minimum
+        self.assertAlmostEqual(smallest, box.FREE_FLOOR_MIN_GIB, places=2)
+        self.assertLess(box.HARD_MIN_FREE_GIB, box.FREE_FLOOR_MIN_GIB)
+        self.assertEqual(box.Floors().min_hard_free_gib, box.HARD_MIN_FREE_GIB)
+
+
+class AskingStepTest(unittest.TestCase):
+    """`clowder box` must not count the step asking in the gate lines.
+
+    The asking step is still running, so it stays on the crew line; the gate lines
+    ask whether one more step of a class would send, so its cost is subtracted once,
+    not twice.
+    """
+
+    class OpenStep:
+        def __init__(self, id: str, cost: str, pane: str) -> None:
+            self.id = id
+            self.cost = cost
+            self.pane_id = pane
+            self.created_at = "2026-11-18T10:00:00Z"
+
+    def test_the_asking_step_is_the_one_in_this_pane(self) -> None:
+        tasks = [
+            self.OpenStep("t-0001", box.COST_SUITE, "wB:p5"),
+            self.OpenStep("t-0002", box.COST_READ, "wB:p6"),
+        ]
+        self.assertEqual(box.asking_step(tasks, "wB:p5"), "t-0001")
+        self.assertEqual(box.asking_step(tasks, "wB:p9"), None)
+        self.assertEqual(box.asking_step(tasks, None), None)
+
+    def test_the_gate_lines_match_a_decision_without_the_asking_step(self) -> None:
+        # 8.5 GiB free with the asking suite counted as running: 8.5 - 3.0 (itself) -
+        # 3.0 = 2.5 GiB, a refusal. With it left out, 8.5 - 3.0 = 5.5 GiB, and the
+        # numbers printed on the gate line are the numbers that decision compared.
+        live = reading(available_gib=8.5, commit_gib=40.0)
+        asking = box.StepCost("t-0001", box.COST_SUITE)
+        lines = box.readout(live, [asking], asking="t-0001")
+        gate = next(line for line in lines if line.startswith("gate now, a suite step"))
+        honest = box.decide(box.COST_SUITE, [], live)
+        self.assertIn(honest.reason, gate)
+        self.assertIn("minus 0.0 GiB held and 3.0 GiB needed", gate)
+        self.assertNotIn("3.0 GiB held", gate)
+        # The crew line still says the step is running, because it is.
+        self.assertIn("1 step(s) running", "\n".join(lines))
+
+    def test_a_gate_without_an_asking_step_keeps_every_running_step(self) -> None:
+        steps = [box.StepCost("t-0001", box.COST_SUITE)]
+        self.assertEqual(box.steps_for_gate(steps, None), steps)
+        self.assertEqual(box.steps_for_gate(steps, "t-0001"), [])
+        self.assertEqual(box.steps_for_gate(steps, "t-9999"), steps)
 
 
 class SummaryTest(unittest.TestCase):

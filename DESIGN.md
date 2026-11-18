@@ -902,10 +902,23 @@ dedicated usage, and the page file's own use.
   retired keys are refused with their replacement named - `heavy_max_memory`, a percent of a
   total that left out the GPU's memory, and `heavy_min_free_gib`, one number for boxes of every
   size - because a config holding one would otherwise read as "no gate at all".
+- **One hard floor still refuses on free alone.** A step that would leave the box below
+  `HARD_MIN_FREE_GIB` (1 GiB, `gates.heavy_min_hard_gib`) is refused whatever the commit
+  headroom says, because below that Windows pages itself into a crawl. It is a guard, not a
+  reserve: every proportional floor is at least 1.5 GiB, so the guard sits strictly below them
+  and cannot fire in ordinary operation - not on this box at 7-10 GiB free, and not on a 16 GiB
+  box whose proportional floor already does the work. It is 1.0 rather than 1.5 for exactly
+  that reason: a 1.5 GiB guard would sit on the smallest proportional floor and quietly undo
+  the rule that free confirms rather than refuses.
 - **Every test says whether it refused.** `decide` records each test it ran - its name, what
   would be left, the floor, and where the floor came from - so a refusal names the test that
   refused as well as the pool it measured. "Refused by the commit test" is a fact a reader can
   act on; "the box does not have it free" left them to guess which pool to free up.
+- **The readout does not count the step asking.** `clowder box` is normally run from inside a
+  worker's own step, so that step is in the record as running. The crew line lists it, because
+  it is; the gate lines leave it out, because they ask whether one more step of a class would
+  send, and counting the asker would subtract its cost twice. The step is found by the pane the
+  command runs in (`HERDR_PANE_ID`), which is also carried in `box --json` as `asking`.
 - **What that allows.** Two suites start together when the room covers both. A suite and a model
   leg are refused with the free figure, the held figure and the floor named. A step with no
   stated cost is never refused, and a box that cannot be read fails open with a warning - a

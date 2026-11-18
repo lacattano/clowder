@@ -41,7 +41,8 @@ THE RULE, in one sentence: a step sends when the commit headroom it leaves after
 the step and the steps already running is at least `min_commit_gib`; the free
 memory it leaves is compared with a tenth of the RAM Windows can see, held between
 1.5 and 4.0 GiB, and that test confirms a refusal only when the commit headroom is
-under its floor too. Every refusal names the test that refused.
+under its floor too - except that free below `HARD_MIN_FREE_GIB` refuses on its own,
+whatever the commit headroom says. Every refusal names the test that refused.
 
 WHY THE FREE FLOOR IS PROPORTIONAL AND CLAMPED. A fixed floor was written for one
 size of machine. 4 GiB is 12.6 percent of this box's visible 31.8 GiB and 25
@@ -59,6 +60,13 @@ with 62.8 GiB of commit headroom behind it is a box with work in it, not a box
 without room. Both numbers are printed either way, so a reader can see the pool
 that came close, and the test line says plainly when free was under its floor and
 the commit headroom covered it.
+
+THE HARD FLOOR. One narrow case still has to refuse on free alone: a step that
+would leave the box below `HARD_MIN_FREE_GIB`, where Windows pages itself into a
+crawl no matter what the commit limit promises. That is a guard, not a reserve,
+and it is set below every proportional floor (the smallest is the 1.5 GiB clamp),
+so it can never fire in ordinary operation - not on this box at 7-10 GiB free, and
+not on a small box where the proportional floor is already doing the work.
 
 `model` is the one class that takes the box alone. That is the old one-heavy-step
 state gate, kept where it is still true: the GPU counter is too slow to put in a
@@ -183,6 +191,18 @@ def heavy_flag(cost: str) -> bool:
 FREE_FLOOR_MIN_GIB = 1.5
 FREE_FLOOR_MAX_GIB = 4.0
 
+# The last-resort guard: free memory the box must have left, whatever the commit
+# headroom says. It refuses on its own, and it is the only way the free side can.
+#
+# Why 1.0 and not 1.5: every proportional floor is at least 1.5 GiB (that is the
+# clamp), so a 1.5 GiB guard would sit exactly on top of the smallest proportional
+# floor and fire in ordinary operation on a 16 GiB box, quietly undoing the rule
+# that free confirms rather than refuses. At 1.0 GiB the guard is strictly below
+# every proportional floor, so it can only fire when the box is genuinely out -
+# about the point where Windows' own allocations start to fail and every running
+# step slows to a crawl. This machine reads 7-10 GiB free, so it never comes near.
+HARD_MIN_FREE_GIB = 1.0
+
 
 @dataclass(frozen=True)
 class Floors:
@@ -196,12 +216,17 @@ class Floors:
     of a 31.8 GiB machine and 25 percent of a 16 GiB one, so it refused work on the
     box with the room. The commit and GPU floors stay GiB, because those pools are
     limits rather than memory the box has: 6 GiB of commit headroom is a promise the
-    box can still keep, and 2 GiB of the card keeps it usable after the step.
+    box can still keep, and 2 GiB of the card keeps it usable after the step. The
+    hard free floor is the one absolute reserve: below it the box pages itself into
+    a crawl, so it refuses on its own rather than confirming a commit refusal.
     """
 
     min_free_share: float | None = 0.10
     min_commit_gib: float | None = 6.0
     min_gpu_gib: float | None = 2.0
+    # The last-resort guard, below every proportional floor: free memory that must be
+    # left whatever the commit headroom says. See the constant for why it is 1.0 GiB.
+    min_hard_free_gib: float | None = HARD_MIN_FREE_GIB
 
     def free_floor_gib(self, visible_gib: float | None) -> float | None:
         """The free memory that must stay, in GiB, or None when it cannot be told.
@@ -243,6 +268,39 @@ class StepCost:
 def steps_in_flight(tasks: Sequence[object]) -> list[StepCost]:
     """The cost of each open step, for a board line, a start order or a gate."""
     return [StepCost(id=str(getattr(task, "id", "?")), cost=cost_of(task)) for task in tasks]
+
+
+# The variable the multiplexer sets inside a pane. It is how `clowder box` knows which
+# open step is asking, so that step's cost is not subtracted twice.
+ASKING_PANE_ENV = "HERDR_PANE_ID"
+
+
+def asking_pane() -> str | None:
+    """The pane this command is running in, or None when it is not in one."""
+    return os.environ.get(ASKING_PANE_ENV) or None
+
+
+def asking_step(tasks: Sequence[object], pane_id: str | None) -> str | None:
+    """The id of the open step running in this pane, or None when there is none.
+
+    `clowder box` is usually run from inside a worker's pane, so the step asking is
+    often also an open step in the record. Naming it lets the readout leave it out of
+    the gate lines, where its cost would otherwise be subtracted twice: once among the
+    running steps and once as the step being considered. The newest match wins, because
+    a pane can hold a stale open step next to the live one.
+    """
+    if not pane_id:
+        return None
+    matches = [task for task in tasks if str(getattr(task, "pane_id", "") or "") == pane_id]
+    if not matches:
+        return None
+    newest = max(matches, key=lambda task: str(getattr(task, "created_at", "") or ""))
+    return str(getattr(newest, "id", "") or "") or None
+
+
+def steps_for_gate(steps: Sequence[StepCost], asking: str | None = None) -> list[StepCost]:
+    """The running steps a gate compares: every one of them except the step asking."""
+    return [step for step in steps if step.id != asking]
 
 
 @dataclass(frozen=True)
@@ -522,6 +580,7 @@ def _gib(value: int | float | None) -> str:
 
 TEST_MEMORY = "memory"
 TEST_COMMIT = "commit"
+TEST_HARD_FREE = "hard free"
 TEST_GPU = "GPU"
 
 
@@ -760,6 +819,21 @@ def decide(
             f"({floors.free_floor_note(visible)})"
         )
 
+    # The last resort: below this much free the box pages itself into a crawl, so
+    # this test refuses on its own, whatever the commit limit promises. It sits below
+    # every proportional floor, so ordinary operation never reaches it.
+    checks.append(
+        TestResult(TEST_HARD_FREE, memory_left, floors.min_hard_free_gib, "a fixed reserve")
+    )
+    if floors.min_hard_free_gib is not None and memory_left < floors.min_hard_free_gib:
+        lines.append(
+            f"free floor: {free:.1f} GiB free, minus {memory_held:.1f} GiB held by "
+            f"{len(held)} running step(s) ({listed}), minus {need:.1f} GiB this "
+            f"{klass.name} step needs, leaves {memory_left:.1f} GiB; the hard floor of "
+            f"{floors.min_hard_free_gib:.1f} GiB must stay free whatever the commit "
+            f"headroom says"
+        )
+
     checked_gpu = False
     if klass.gpu_gib > 0 and reading.carveout_bytes is not None:
         checked_gpu = True
@@ -901,12 +975,18 @@ def readout(
     reading: BoxReading,
     steps: Sequence[StepCost] = (),
     floors: Floors = FLOORS,
+    asking: str | None = None,
 ) -> list[str]:
     """The three pools in plain words, each with the metric it came from.
 
     The order is the order to read them in: what the box has, then the GPU's share
     of it, then the part a process can use. Every line names its source, so a figure
     can be checked by hand instead of trusted.
+
+    `asking` is the id of the step that ran the command. It is listed with the crew,
+    because it is running, but left out of the gate lines: those ask whether one more
+    step of a class would send, and counting the asker as running would subtract its
+    own cost twice.
     """
     installed = _gib(reading.installed_bytes)
     carveout = _gib(reading.carveout_bytes)
@@ -981,8 +1061,9 @@ def readout(
         crew = "crew: no step is running, so the crew holds nothing"
     lines.append(crew)
 
+    gate_steps = steps_for_gate(steps, asking)
     for name, cost in (("a suite step", COST_SUITE), ("a model step", COST_MODEL)):
-        decision = decide(cost, steps, reading, floors)
+        decision = decide(cost, gate_steps, reading, floors)
         lines.append(_gate_line(name, decision))
         lines.extend(f"  {line}" for line in decision.lines)
         # Each test on its own line, so the readout says which test refused and what

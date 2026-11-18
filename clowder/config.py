@@ -84,6 +84,9 @@ class Config:
     heavy_min_free_share: float | None = 0.10
     heavy_min_commit_gib: float | None = 6.0
     heavy_min_gpu_gib: float | None = 2.0
+    # The last-resort guard: free memory that must be left whatever the commit
+    # headroom says, below every proportional floor. None switches it off.
+    heavy_min_hard_gib: float | None = 1.0
     # Unix only: the 1-minute load average per CPU. Windows has no such metric, and
     # its memory is already covered by the floors above.
     heavy_max_load: float | None = None
@@ -99,6 +102,7 @@ class Config:
             min_free_share=self.heavy_min_free_share,
             min_commit_gib=self.heavy_min_commit_gib,
             min_gpu_gib=self.heavy_min_gpu_gib,
+            min_hard_free_gib=self.heavy_min_hard_gib,
         )
 
     @property
@@ -159,6 +163,7 @@ class Config:
             "heavy_min_free_share": self.heavy_min_free_share,
             "heavy_min_commit_gib": self.heavy_min_commit_gib,
             "heavy_min_gpu_gib": self.heavy_min_gpu_gib,
+            "heavy_min_hard_gib": self.heavy_min_hard_gib,
             "heavy_max_load": self.heavy_max_load,
         }
 
@@ -326,6 +331,7 @@ def load_config(explicit: str | Path | None = None) -> Config:
         "heavy_min_free_share",
         "heavy_min_commit_gib",
         "heavy_min_gpu_gib",
+        "heavy_min_hard_gib",
         "heavy_max_load",
     }
     unknown_gates = set(gates) - known_gates
@@ -345,6 +351,9 @@ def load_config(explicit: str | Path | None = None) -> Config:
     )
     heavy_min_gpu_gib = _opt_number(
         gates.get("heavy_min_gpu_gib", 2.0), "gates.heavy_min_gpu_gib", source
+    )
+    heavy_min_hard_gib = _opt_number(
+        gates.get("heavy_min_hard_gib", 1.0), "gates.heavy_min_hard_gib", source
     )
     heavy_max_load = _opt_number(gates.get("heavy_max_load"), "gates.heavy_max_load", source)
 
@@ -372,6 +381,7 @@ def load_config(explicit: str | Path | None = None) -> Config:
         heavy_min_free_share=heavy_min_free_share,
         heavy_min_commit_gib=heavy_min_commit_gib,
         heavy_min_gpu_gib=heavy_min_gpu_gib,
+        heavy_min_hard_gib=heavy_min_hard_gib,
         heavy_max_load=heavy_max_load,
     )
 

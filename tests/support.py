@@ -14,9 +14,14 @@ FAKE_MUX = Path(__file__).with_name("fake_mux.py")
 
 @contextlib.contextmanager
 def clean_env(**extra: object):
-    """Run with no CLOWDER_* variables from the outside world, plus `extra`."""
+    """Run with none of the tool's or the multiplexer's variables, plus `extra`.
+
+    `HERDR_*` matters as much as `CLOWDER_*`: the pane id tells `clowder box` which
+    step is asking, so a suite run inside a pane would otherwise change what a test
+    sees. A test that wants a pane passes one in.
+    """
     saved = dict(os.environ)
-    for key in [k for k in os.environ if k.startswith("CLOWDER_")]:
+    for key in [k for k in os.environ if k.startswith(("CLOWDER_", "HERDR_"))]:
         del os.environ[key]
     for key, value in extra.items():
         os.environ[key] = str(value)

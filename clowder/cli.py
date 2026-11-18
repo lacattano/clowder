@@ -5379,10 +5379,16 @@ def cmd_box(args: argparse.Namespace) -> int:
     `clowder box` may take a few seconds, a gate may not.
     """
     config, store = _context(args)
-    running = box.steps_in_flight(store.select(open_only=True))
+    open_tasks = store.select(open_only=True)
+    running = box.steps_in_flight(open_tasks)
+    # The step asking is often one of the open steps: a worker runs `box` inside the
+    # step it is working on. Counting it as running and again as the step being
+    # considered subtracts its cost twice, so the gate lines leave it out.
+    asking = box.asking_step(open_tasks, box.asking_pane())
+    gate_steps = box.steps_for_gate(running, asking)
     reading = box.read(with_gpu=True)
-    decision_suite = box.decide(box.COST_SUITE, running, reading, config.floors)
-    decision_model = box.decide(box.COST_MODEL, running, reading, config.floors)
+    decision_suite = box.decide(box.COST_SUITE, gate_steps, reading, config.floors)
+    decision_model = box.decide(box.COST_MODEL, gate_steps, reading, config.floors)
 
     if args.json:
         _emit_json(
@@ -5402,10 +5408,12 @@ def cmd_box(args: argparse.Namespace) -> int:
                 "gpu_holder": reading.gpu_holder,
                 "unread": list(reading.unread),
                 "running": [{"id": step.id, "cost": step.cost} for step in running],
+                "asking": asking,
                 "floors": {
                     "min_free_share": config.floors.min_free_share,
                     "min_commit_gib": config.floors.min_commit_gib,
                     "min_gpu_gib": config.floors.min_gpu_gib,
+                    "min_hard_free_gib": config.floors.min_hard_free_gib,
                 },
                 "tests": {
                     name: [check.__dict__ for check in decision.checks]
@@ -5426,7 +5434,7 @@ def cmd_box(args: argparse.Namespace) -> int:
         return 0
 
     print(f"{PROGRAM} box")
-    for line in box.readout(reading, running, config.floors):
+    for line in box.readout(reading, running, config.floors, asking=asking):
         print(f"{INDENT}{line}")
     return 0
 

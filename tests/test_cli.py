@@ -1409,6 +1409,39 @@ class CliTest(unittest.TestCase):
         self.assertIn("GlobalMemoryStatusEx ullAvailPhys", out)
         self.assertIn("gate now, a suite step: sends", out)
 
+    def test_box_does_not_count_the_asking_step_as_running(self) -> None:
+        # A worker runs `box` from inside the step it is working on. That step really
+        # is running, so the crew line lists it, but the gate lines ask about one more
+        # step and must not subtract its cost twice - that is d-0171.
+        store = StateStore(self.state)
+        store.add(
+            Task(
+                id="t-0001",
+                question="q",
+                brief="b",
+                shape="ship",
+                agent="maker",
+                repo="myrepo",
+                repo_path=str(self.repo_path),
+                cost="suite",
+                heavy=True,
+                pane_id="wB:p5",
+            )
+        )
+        store.save()
+        with mock.patch.object(box, "read", return_value=reading(available_gib=8.5)):
+            code, out, err = self.cli("box", env=self.fake_env(HERDR_PANE_ID="wB:p5"))
+        self.assertEqual(code, 0, err)
+        gate = next(line for line in out.splitlines() if "gate now, a suite step" in line)
+        self.assertIn("minus 0.0 GiB held and 3.0 GiB needed", gate)
+        self.assertIn("1 step(s) running", out, "the crew line still lists the asker")
+        with mock.patch.object(box, "read", return_value=reading(available_gib=8.5)):
+            code, out, err = self.cli("box", "--json", env=self.fake_env(HERDR_PANE_ID="wB:p5"))
+        payload = json.loads(out)
+        self.assertEqual(payload["asking"], "t-0001")
+        self.assertTrue(payload["suite"]["allowed"])
+        self.assertEqual(payload["floors"]["min_hard_free_gib"], 1.0)
+
     def test_box_json_names_every_pool_and_the_gate(self) -> None:
         with mock.patch.object(
             box, "read", return_value=reading(available_gib=5.0, commit_gib=8.0)
