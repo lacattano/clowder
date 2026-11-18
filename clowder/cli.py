@@ -1580,9 +1580,12 @@ def _headroom_refusal(config: Config, cost: str, store: StateStore, agent: str) 
     if decision.allowed:
         return None
     lines = "\n".join(f"  {line}" for line in decision.lines)
+    refusing = decision.refused_by
+    tests = "\n".join(f"  {check.line(check.name in refusing)}" for check in decision.checks)
     return (
         f"{agent}'s {cost} step did not send: {decision.reason}.\n"
         f"{lines}\n"
+        f"{tests}\n"
         f"  Let it finish, send it as a cheaper class, or pass --force to send it "
         f"anyway. `{PROGRAM} box` prints the whole readout."
     )
@@ -1591,9 +1594,9 @@ def _headroom_refusal(config: Config, cost: str, store: StateStore, agent: str) 
 def _refuse_high_load(config: Config, args: argparse.Namespace) -> None:
     """Unix only: refuse when the 1-minute load per CPU is at or above the limit.
 
-    Windows has no load average, and its memory is the GiB floors the class gate
-    compares. This is kept for the other platform: the config key is still the way a
-    Linux box says "not while it is this busy".
+    Windows has no load average, and its memory is already covered by the floors the
+    class gate compares. This is kept for the other platform: the config key is still
+    the way a Linux box says "not while it is this busy".
     """
     if config.heavy_max_load is None or load.metric_name() != load.METRIC_LOAD:
         return
@@ -5400,9 +5403,13 @@ def cmd_box(args: argparse.Namespace) -> int:
                 "unread": list(reading.unread),
                 "running": [{"id": step.id, "cost": step.cost} for step in running],
                 "floors": {
-                    "min_free_gib": config.floors.min_free_gib,
+                    "min_free_share": config.floors.min_free_share,
                     "min_commit_gib": config.floors.min_commit_gib,
                     "min_gpu_gib": config.floors.min_gpu_gib,
+                },
+                "tests": {
+                    name: [check.__dict__ for check in decision.checks]
+                    for name, decision in (("suite", decision_suite), ("model", decision_model))
                 },
                 "suite": {
                     "allowed": decision_suite.allowed,

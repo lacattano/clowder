@@ -231,25 +231,40 @@ class LoadConfigTest(unittest.TestCase):
             load_config(path)
         self.assertIn("git.email", str(caught.exception))
 
-    def test_the_gib_floors_default_to_the_measured_numbers(self) -> None:
+    def test_the_floors_default_to_the_measured_numbers(self) -> None:
         # On by default: the old percent threshold was opt-in and unset, so nothing
-        # measured the box at all. 4 GiB free, 6 GiB of commit headroom, 2 GiB of GPU.
+        # measured the box at all. A tenth of visible memory free, 6 GiB of commit
+        # headroom, 2 GiB of GPU.
         config = load_config(self.config_path)
-        self.assertEqual(config.heavy_min_free_gib, 4.0)
+        self.assertEqual(config.heavy_min_free_share, 0.10)
         self.assertEqual(config.heavy_min_commit_gib, 6.0)
         self.assertEqual(config.heavy_min_gpu_gib, 2.0)
         self.assertIsNone(config.heavy_max_load)
-        self.assertEqual(config.floors.min_free_gib, 4.0)
+        self.assertEqual(config.floors.min_free_share, 0.10)
 
-    def test_the_gib_floors_are_read(self) -> None:
+    def test_the_floors_are_read(self) -> None:
         path = write_config(
             self.root / "gates.toml",
-            gates={"heavy_min_free_gib": 6, "heavy_min_commit_gib": 8, "heavy_max_load": 1.5},
+            gates={
+                "heavy_min_free_share": 0.2,
+                "heavy_min_commit_gib": 8,
+                "heavy_max_load": 1.5,
+            },
         )
         config = load_config(path)
-        self.assertEqual(config.heavy_min_free_gib, 6.0)
+        self.assertEqual(config.heavy_min_free_share, 0.2)
         self.assertEqual(config.heavy_min_commit_gib, 8.0)
         self.assertEqual(config.heavy_max_load, 1.5)
+
+    def test_a_free_share_that_is_not_a_share_is_refused(self) -> None:
+        # 10 would be read as ten times the visible memory, so every step would be
+        # refused. It is a config error with the meaning spelled out.
+        path = write_config(self.root / "gates-share.toml", gates={"heavy_min_free_share": 10})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        message = str(caught.exception)
+        self.assertIn("gates.heavy_min_free_share", message)
+        self.assertIn("between 0 and 1", message)
 
     def test_a_floor_of_null_switches_that_check_off(self) -> None:
         path = self.root / "gates-null.toml"
@@ -265,8 +280,18 @@ class LoadConfigTest(unittest.TestCase):
             load_config(path)
         message = str(caught.exception)
         self.assertIn("gates.heavy_max_memory is retired", message)
-        self.assertIn("gates.heavy_min_free_gib", message)
+        self.assertIn("gates.heavy_min_free_share", message)
         self.assertIn("gates.heavy_min_commit_gib", message)
+
+    def test_the_retired_free_gib_floor_names_its_replacement(self) -> None:
+        # One fixed number for boxes of different sizes is what refused a step on the
+        # box with the room, so it is refused here rather than silently rescaled.
+        path = write_config(self.root / "gates-gib.toml", gates={"heavy_min_free_gib": 4})
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        message = str(caught.exception)
+        self.assertIn("gates.heavy_min_free_gib is retired", message)
+        self.assertIn("gates.heavy_min_free_share", message)
 
     def test_an_unknown_gates_key_is_refused(self) -> None:
         path = write_config(self.root / "gatesbad.toml", gates={"heavy_max": 80})
@@ -275,10 +300,10 @@ class LoadConfigTest(unittest.TestCase):
         self.assertIn("unknown gates keys", str(caught.exception))
 
     def test_a_gates_threshold_must_be_a_number(self) -> None:
-        path = write_config(self.root / "gatesstr.toml", gates={"heavy_min_free_gib": "high"})
+        path = write_config(self.root / "gatesstr.toml", gates={"heavy_min_free_share": "high"})
         with self.assertRaises(ConfigError) as caught:
             load_config(path)
-        self.assertIn("gates.heavy_min_free_gib", str(caught.exception))
+        self.assertIn("gates.heavy_min_free_share", str(caught.exception))
 
     def test_a_negative_gates_threshold_is_refused(self) -> None:
         path = write_config(self.root / "gatesneg.toml", gates={"heavy_max_load": -1})
@@ -289,7 +314,7 @@ class LoadConfigTest(unittest.TestCase):
     def test_a_non_finite_gates_threshold_is_refused(self) -> None:
         # `nan` compares false against every load, so it would refuse every heavy
         # step; `inf` is not a threshold. Both are config errors, not numbers.
-        for key, literal in (("heavy_min_free_gib", "nan"), ("heavy_max_load", "inf")):
+        for key, literal in (("heavy_min_free_share", "nan"), ("heavy_max_load", "inf")):
             path = self.root / f"gates-{literal}.toml"
             path.write_text(f"[gates]\n{key} = {literal}\n", encoding="utf-8")
             with self.assertRaises(ConfigError) as caught:
