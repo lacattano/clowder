@@ -11,7 +11,10 @@ rows' data come from that list.
 
 from __future__ import annotations
 
+import os
 import re
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,11 +66,22 @@ LOOK_RULE = "Only opening the page counts as a look; a page that refreshes itsel
 # An open tab follows along on its own: no server, no network. The one script filters
 # the rows and refreshes on the way back from a hidden tab; it is inline, and nothing is
 # fetched.
-REFRESH_SECONDS = 30
+REFRESH_SECONDS = 15
 # How many landed changes the "Changed" section prints. His complaint was a wall of
 # text, and the first draw of an old record can hold months of merges; the newest few
 # are what he can act on, and the count is named so the cut is never hidden.
 CHANGED_CAP = 12
+
+# The window the page calls "finished": everything newer than this is on the page, and
+# everything older is behind the history toggle. One day, because that is the span he
+# can act on - an old step is history, not work.
+RECENT_HOURS = 24.0
+
+# How long a page may sit without the record changing before the "last updated" line
+# says so in a warning colour. The page is rewritten by every state change, so an age
+# beyond this is a fact about the record: nothing has happened, and the page is as
+# current as the record. It is not silently fresh.
+STALE_MINUTES = 10
 
 STYLE = """
 :root {
@@ -137,6 +151,17 @@ tbody tr:last-child td { border-bottom: 0; }
 ul { margin: 0; padding-left: 1.1rem; }
 li { margin: .25rem 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 1.5rem; }
+/* A page that has not been rewritten for a while: a warning colour and the reason. */
+#updated.stale { color: var(--warn); font-weight: 600; }
+#updated.stale .why { color: var(--warn); font-weight: 400; }
+/* One toggle for everything older than the last day. */
+details.history { margin: 0 0 1rem; }
+details.history > summary {
+  cursor: pointer; color: var(--muted); padding: .5rem .8rem; margin: 0 0 1rem;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+}
+details.history[open] > summary { margin-bottom: 1rem; }
+section.needs li { margin: .4rem 0; }
 .controls { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
 .controls label { display: flex; gap: .3rem; align-items: baseline; font-size: .8rem; }
 .controls label span { color: var(--muted); }
@@ -192,15 +217,43 @@ details.more .full { margin-top: .25rem; }
 # stored anywhere.
 FILTER_SCRIPT = """
 (function () {
-  // A page on disk cannot see the record change while it sits in a background tab, so
-  // it refreshes on the way back instead: never while it is being read, and never on a
-  // timer of its own. A tab that was hidden and comes back is where a stale copy would
-  // have been read.
-  var away = false;
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) { away = true; return; }
-    if (away) { window.location.reload(); }
+  // The page is one file on disk, rewritten by every state change, so a tab keeps up by
+  // re-reading the file. The reload is the meta refresh in the head; this keeps the
+  // place he was reading, because a page that jumps to the top every 15 seconds is a
+  // page he stops opening.
+  var place = 'clowder-scroll';
+  try {
+    var saved = window.sessionStorage.getItem(place);
+    if (saved !== null && !window.location.hash) { window.scrollTo(0, Number(saved)); }
+  } catch (err) { /* private mode: the page still works, it just loses the place */ }
+  window.addEventListener('pagehide', function () {
+    try { window.sessionStorage.setItem(place, String(window.scrollY)); } catch (err) {}
   });
+
+  // A page older than a few minutes says so, and says why: the record has not changed
+  // since it was written. A page that is stale in silence is the thing he complained
+  // about, so this line is never allowed to look fresh while it is not.
+  var updated = document.getElementById('updated');
+  if (updated) {
+    var drawn = Date.parse(updated.getAttribute('data-drawn'));
+    var staleAfter = Number(updated.getAttribute('data-stale') || '10');
+    if (!isNaN(drawn)) {
+      var minutes = Math.floor((Date.now() - drawn) / 60000);
+      var age = document.createElement('span');
+      age.className = 'age';
+      var unit = minutes === 1 ? ' minute' : ' minutes';
+      age.textContent = minutes < 1 ? ' just now' : ' (' + minutes + unit + ' ago)';
+      updated.appendChild(age);
+      if (minutes >= staleAfter) {
+        updated.classList.add('stale');
+        var why = document.createElement('span');
+        why.className = 'why';
+        why.textContent = 'Nothing has been recorded since it was written, so this page ' +
+          'is as current as the record. Reload it with the link above if you expected work.';
+        updated.appendChild(why);
+      }
+    }
+  }
 
   var bar = document.querySelector('[data-filters]');
   if (!bar) { return; }
@@ -623,9 +676,21 @@ def waiting_on_you(data: BoardData) -> list[str]:
         rereview=data.rereview,
         review_unconfirmed=data.review_unconfirmed,
     )
+    # Newest first, on his instruction of 2026-11-19: the thing he has just been asked
+    # about is the one he is looking for. The number he replies with is this page's own
+    # and moves with the line, so it always matches what is printed beside it.
     lines: list[str] = []
-    for number, item in enumerate(his, start=1):
-        detail = f"<div class='owner-detail'>{_e(item.detail)}</div>" if item.detail else ""
+    ordered = sorted(his, key=lambda item: item.since or "", reverse=True)
+    for number, item in enumerate(ordered, start=1):
+        # One line by rule: the question, the word that answers it, how long it waited.
+        # The body he was shown before - the options and what each costs - is folded
+        # behind a click, never printed on the page by default.
+        detail = (
+            f"<details class='more'><summary>the detail</summary>"
+            f"<div class='owner-detail'>{_e(item.detail)}</div></details>"
+            if item.detail
+            else ""
+        )
         lines.append(
             f"<b>{number}.</b> <span class='owner-title'>{_e(item.heading)}</span> "
             f"<span class='type'>{_e(owner_mod.answered_by(item, number))}</span>"
@@ -780,11 +845,11 @@ def running_now(data: BoardData) -> list[str]:
         quiet = ""
         if not data.live_ok and task.age_seconds >= QUIET_AFTER_SECONDS:
             quiet = (
-                f" <span class='pill bad'>nothing recorded for "
-                f"{_e(human_age(task.age_seconds))}</span>"
+                f" <span class='pill bad'>unknown for {_e(human_age(task.age_seconds))}</span>"
             )
         lines.append(
-            f"<b>{_e(task.agent)}</b> on {_full(task.question)}{klass}{quiet} "
+            f"<b>{_e(task.agent)}</b> {_id(task.id)} on {_more(task.question, 140)}"
+            f"{klass}{quiet} "
             f"<span class='age'>{_e(human_age(task.age_seconds))}</span>"
         )
     return lines
@@ -796,7 +861,7 @@ def worker_queue(data: BoardData) -> list[str]:
     for item in sorted(data.queued, key=lambda item: item.created_at):
         who = item.agent or item.role or "unassigned"
         lines.append(
-            f"<b>{_e(who)}</b> - {_full(item.question or item.brief)} "
+            f"<b>{_e(who)}</b> {_id(item.id)} - {_more(item.question or item.brief, 140)} "
             f"<span class='why'>waiting {_e(human_age(item.age_seconds))}; "
             f"why: {_e(item.why)}</span>"
         )
@@ -903,6 +968,61 @@ def _step_state_in_words(task: Task) -> str:
     if task.is_closed:
         return "closed, no answer came"
     return "in progress"
+
+
+def _finished_when(task: Task) -> float | None:
+    """When a step finished, as an epoch, or None when the record does not say.
+
+    A finished step carries one of these three moments, and the newest is when it
+    stopped being work. A step with none of them cannot be placed in time, so it is
+    not put in "the last 24 hours"; it is history, labelled unknown.
+    """
+    moments = [
+        to_epoch(value) for value in (task.reported_at, task.closed_at, task.abandoned_at)
+    ]
+    stamped = [moment for moment in moments if moment is not None]
+    return max(stamped) if stamped else None
+
+
+def finished_tasks(
+    data: BoardData, *, now: float | None = None
+) -> tuple[list[Task], list[Task]]:
+    """Finished steps split at the last day: (the last 24 hours, everything older).
+
+    Newest first in both lists. A step the record cannot place in time is history: the
+    page must not claim it finished in the last day when nothing says it did.
+    """
+    moment = now if now is not None else time.time()
+    recent: list[Task] = []
+    older: list[Task] = []
+    for task in data.tasks:
+        if task.is_open:
+            continue
+        when = _finished_when(task)
+        if when is not None and moment - when <= RECENT_HOURS * 3600:
+            recent.append(task)
+        else:
+            older.append(task)
+    recent.sort(key=lambda task: _finished_when(task) or 0.0, reverse=True)
+    older.sort(key=lambda task: _finished_when(task) or 0.0, reverse=True)
+    return recent, older
+
+
+def finished_line(task: Task) -> str:
+    """One line for a finished step: who, which step, what it was, and how long ago."""
+    when = _finished_when(task)
+    age = human_age(_time_since(when)) if when is not None else "unknown when"
+    state = _step_state_in_words(task)
+    return (
+        f"<b>{_e(task.agent)}</b> {_id(task.id)} {_more(task.question, 110)} "
+        f"<span class='pill'>{_e(state)}</span>"
+        f"<span class='age'>{_e(age)}</span>"
+    )
+
+
+def _time_since(moment: float) -> float:
+    """Seconds since an epoch, never negative: a clock skew is not a future event."""
+    return max(0.0, time.time() - moment)
 
 
 def _job_by_id(data: BoardData) -> dict[str, Job]:
@@ -1050,9 +1170,13 @@ def _id(value: str | None) -> str:
     return f"<span class='id'>{_e(value or '-')}</span>"
 
 
-def _section(title: str, count: int | None, inner: str, css: str = "") -> str:
+def _section(title: str, count: int | None, inner: str, css: str = "", ident: str = "") -> str:
+    """One titled block. `ident` is a stable anchor, so a test can name the block
+    rather than search for its heading, and a heading can be reworded without
+    breaking everything that reads the page."""
     suffix = f" <span class='count'>{count}</span>" if count is not None else ""
-    return f"<section class='{css}'><h2>{_e(title)}{suffix}</h2>{inner}</section>"
+    anchor = f" id='{ident}'" if ident else ""
+    return f"<section{anchor} class='{css}'><h2>{_e(title)}{suffix}</h2>{inner}</section>"
 
 
 def _nothing(what: str) -> str:
@@ -1128,9 +1252,12 @@ def _job_details(job: Job) -> str:
     bits: list[str] = []
     if job.effect:
         bits.append(f"effect {job.effect}")
-    bits.append(f"branch {job.branch}")
+    # A job with no branch cannot be placed: it is unknown, not "fine".
+    bits.append(f"branch {job.branch or 'unknown'}")
     if job.commit:
         bits.append(f"commit {job.commit}")
+    elif not job.branch:
+        bits.append("commit unknown")
     if job.reviewer:
         bits.append(f"reviewer {job.reviewer}")
     if job.review_verdict:
@@ -1328,43 +1455,43 @@ def _drawn_line(data: BoardData, previous_draw: str | None, previous_record: str
 def render_board(
     data: BoardData, *, previous_draw: str | None = None, previous_record: str | None = None
 ) -> str:
-    """The whole page, as one self-contained file.
+    """The whole page, as one self-contained file, in the order he reads it.
 
-    The catch-up comes first, in his words: what he has not read yet, then the four
-    record sections in the order he reads them, then the records, unchanged. The
-    catch-up section is the same text `clowder catchup` prints, so the page and the
-    command cannot say different things.
+    Top to bottom: when the page was last written, what waits on him, what is running,
+    what is queued, and what finished today. Everything else - the catch-up, the
+    warnings for the front door, the records, the filters, the history - is behind one
+    toggle, because a page whose first screen is a scroll of old records is a page he
+    stops opening.
+
+    Nothing on the first screen prints a whole brief. A step's question, a queue item's
+    text and an owner item's detail are clipped to a couple of lines, with the whole
+    text folded behind a `<details>`. Nothing is dropped, only folded.
     """
-    if data.catchup:
-        catch_html = "<ul>" + "".join(f"<li>{_e(line)}</li>" for line in data.catchup) + "</ul>"
-    else:
-        catch_html = _nothing(
-            "Nothing new since your last read. The full standing picture is one "
-            "command: clowder catchup --all"
-        )
-    if data.catchup_note:
-        catch_html += f"<p class='why'>{_e(data.catchup_note)}</p>"
     for_you = waiting_on_you(data)
     running = running_now(data)
     queue = worker_queue(data)
+    recent, older = finished_tasks(data)
     worker = waiting_for_worker(data)
     since = to_epoch(data.last_looked)
     changed = changed_for_owner(data, since=since)
-    in_flight = bool(open_tasks(data.tasks))
 
-    if for_you:
-        needs_html = "<ul>" + "".join(f"<li>{line}</li>" for line in for_you) + "</ul>"
-    else:
-        needs_html = _nothing(
+    # What waits on him. He acts on this and nothing else, so it is first, it is warm,
+    # and when it is empty it says so in one line.
+    needs_html = (
+        "<ul>" + "".join(f"<li>{line}</li>" for line in for_you) + "</ul>"
+        if for_you
+        else _nothing(
             "Nothing is recorded as waiting on you. The tool shows only what a command "
             "recorded; a report the front door holds in its words will not appear here."
         )
+    )
 
-    idle_line = "No step is open."
+    # What is running. Without a live read this is open steps, and a step that has
+    # recorded nothing for an hour says "unknown", never "working".
     running_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in running) + "</ul>"
         if running
-        else _nothing(idle_line)
+        else _nothing("No step is open.")
     )
     if data.live_ok:
         running_note = (
@@ -1375,36 +1502,34 @@ def render_board(
     else:
         running_note = (
             "These are the open steps in the record. The live state of each worker was "
-            "not read, so a step marked 'nothing recorded' has not moved for that long: "
+            "not read, so a step marked 'unknown for ...' has not moved for that long: "
             "it may be working, or it may have stopped."
         )
     running_html += f"<p class='why'>{running_note}</p>"
     if data.capacity:
         running_html += f"<p class='why'>{_e(data.capacity)}</p>"
 
-    # One record, one list, one count. The queue here is the same list the To Do column
-    # draws from the record, so both say the same number. Warnings are not queued items:
-    # they are shown below with their own count and never added to this one. Seen
-    # 2026-10-27: "38 jobs in the todo queue but 40 on the list of waiting for an agent".
+    # What is decided but not sent, oldest first: the front door's queue is answered in
+    # the order it was decided.
     queue_html = (
         "<ul>" + "".join(f"<li>{line}</li>" for line in queue) + "</ul>"
         if queue
-        else _nothing(
-            f"Nothing is queued for {front_door_label(data)}."
-            if worker
-            else f"Nothing is waiting for {front_door_label(data)}."
-        )
+        else _nothing(f"Nothing is queued for {front_door_label(data)}.")
     )
-    if worker:
-        queue_html += (
-            f"<p class='why'>Also for {front_door_label(data)}: {len(worker)} warning(s). "
-            "These are not queued items, so none of them is in the queue count above.</p>"
-            "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
-        )
 
+    # What finished in the last day, newest first, folded: a list he can open when he
+    # wants the day's shape, and will not scroll past when he does not.
+    recent_html = (
+        "<details><summary>"
+        f"{len(recent)} step(s) finished at</summary><ul>"
+        + "".join(f"<li>{finished_line(task)}</li>" for task in recent)
+        + "</ul></details>"
+        if recent
+        else _nothing("No step finished in the last 24 hours.")
+    )
+
+    # Everything older, behind one toggle with the records the page used to lead with.
     looked = _display_stamp(data.last_looked) if data.last_looked else None
-    # The section counts landed work only, and says so: a step that started is under
-    # "Running now", not here. "Nothing changed" would be false while a step runs.
     if data.last_looked and not changed:
         freshness = f"Nothing has landed since you last looked at {looked}."
     elif data.last_looked:
@@ -1415,27 +1540,25 @@ def render_board(
             "You have not looked at this page yet, so the list below is all the work "
             "that has landed on record."
         )
-    shown = changed[:CHANGED_CAP]
     changed_html = (
-        "<ul>" + "".join(f"<li>{line}</li>" for line in shown) + "</ul>"
+        "<ul>" + "".join(f"<li>{line}</li>" for line in changed[:CHANGED_CAP]) + "</ul>"
         if changed
-        else _nothing(
-            f"Nothing has landed since you last looked at {looked}."
-            if looked
-            else "Nothing has landed on record yet."
-        )
+        else _nothing(freshness)
     )
-    if len(changed) > len(shown):
+    if len(changed) > CHANGED_CAP:
         changed_html += (
-            f"<p class='why'>Showing the newest {len(shown)} of {len(changed)}; the rest "
-            "are in the record below.</p>"
+            f"<p class='why'>Showing the newest {CHANGED_CAP} of {len(changed)}.</p>"
         )
-    changed_html = (
-        "<p class='why'>This lists the work that landed since you last looked, and "
-        "nothing else: a step that started is under Running now. "
-        + _e(LOOK_RULE)
-        + "</p>"
-        + changed_html
+
+    older_html = (
+        "<ul>" + "".join(f"<li>{finished_line(task)}</li>" for task in older) + "</ul>"
+        if older
+        else _nothing("Nothing finished before the last 24 hours.")
+    )
+    warnings_html = (
+        "<ul>" + "".join(f"<li>{line}</li>" for line in worker) + "</ul>"
+        if worker
+        else _nothing(f"Nothing is waiting for {front_door_label(data)}.")
     )
 
     kanban_html = _kanban(data)
@@ -1444,9 +1567,9 @@ def render_board(
         [
             _e(agent.name),
             _e(agent.pane_id or "-"),
-            _e(agent.status or "-"),
+            _e(agent.status or "unknown"),
             _e(agent.place_label),
-            _e("yes" if agent.saved else "no") if agent.saved is not None else "-",
+            _e("yes" if agent.saved else "no") if agent.saved is not None else "unknown",
             _e(agent.space_label),
         ]
         for agent in data.agents
@@ -1487,7 +1610,7 @@ def render_board(
             _id(str(record.get("item") or "-")),
             _e(str(record.get("repo") or "-")),
             _e(str(record.get("by") or "unknown")),
-            _e(human_age(_drop_when(record))) if record.get("at") else "-",
+            _e(human_age(_drop_when(record))) if record.get("at") else "unknown",
             _more(str(record.get("question") or record.get("brief") or ""), 120),
             _more(str(record.get("reason") or record.get("why") or ""), 160),
         ]
@@ -1515,14 +1638,9 @@ def render_board(
 
     filterable = bool(data.queued or data.jobs or data.tasks)
     filters_html = (
-        _section(
-            "Filters",
-            None,
-            _filter_controls()
-            + "<p class='why'>These narrow the records below, on the page, where you "
-            "already are. What waits on you is above them and is not narrowed.</p>",
-            css="filters",
-        )
+        _filter_controls()
+        + "<p class='why'>These narrow the records in this history, on the page, where "
+        "you already are. What waits on you is above and is not narrowed.</p>"
         if filterable
         else ""
     )
@@ -1534,18 +1652,14 @@ def render_board(
         f"state {_e(data.state_path)} | roster {live}"
     )
 
-    # Reload only while something is in flight. The browser re-reads this file; the box
-    # draws nothing until a command rewrites it, so an idle timer is pure flicker. When
-    # idle, the page refreshes as it comes back from a hidden tab instead - the moment a
-    # stale copy would otherwise be read - and the script below does it.
-    refresh_meta = (
-        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if in_flight else ""
-    )
-    reload_line = (
-        f"This page reloads every {REFRESH_SECONDS}s while work is running, and stops when "
-        "nothing is running."
-        if in_flight
-        else "Nothing is running, so this page refreshes when you come back to it."
+    # The browser re-reads this file on a timer, because the page is rewritten by every
+    # state change and nothing else: no server, no command, no press. The script keeps
+    # the scroll position across the reload and says how old the page is.
+    refresh_meta = f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">'
+    updated_html = (
+        f"Last updated {_e(data.generated_at)}."
+        if data.generated_at
+        else "This page has no draw time on record."
     )
     drawn_html = _drawn_line(data, previous_draw, previous_record)
 
@@ -1563,21 +1677,30 @@ def render_board(
 <body>
 <main>
 <h1>{_e(TITLE)}</h1>
-<p class="meta">What waits on you, what is running, what is queued, and what changed.</p>
+<p class="meta" id="updated" data-drawn="{_e(data.drawn_at or "")}"
+ data-refresh="{REFRESH_SECONDS}" data-stale="{STALE_MINUTES}">{updated_html}</p>
 <p class="meta" id="drawn">{drawn_html}</p>
-<p class="meta" id="freshness">{_e(freshness)} {_e(reload_line)}</p>
-{_section("Since you last looked", len(data.catchup), catch_html, css="needs")}
-{_section("For you", len(for_you), needs_html, css="needs")}
-{_section("Running now", len(running), running_html)}
-{_section("Waiting for a worker", len(queue), queue_html)}
-{_section(CHANGED_HEADING, len(changed), changed_html)}
-{filters_html}
+{_section("Waiting on you", len(for_you), needs_html, css="needs", ident="needs")}
+{_section("Running now", len(running), running_html, ident="running")}
+{_section("Queued", len(queue), queue_html, ident="queued")}
+{_section("Finished in the last 24 hours", len(recent), recent_html, ident="finished")}
+<details class="history" id="history">
+<summary>Show all history</summary>
+{_section(CHANGED_HEADING, len(changed), changed_html, ident="changed")}
+{_section("For " + front_door_label(data), len(worker), warnings_html, ident="front-door")}
+{_section("Finished before the last 24 hours", len(older), older_html, ident="older")}
+{
+        _section("Filters", None, filters_html, css="filters", ident="filters")
+        if filters_html
+        else ""
+    }
 {kanban_html}
-{_section("Agents and spaces", len(agent_rows), agents_html)}
-{_section("Answers", len(answer_rows), answers_html)}
-{_section("Dropped from the queue", len(dropped_rows), dropped_html)}
-{_section("By model", len(rollup), models_html) if rollup else ""}
+{_section("Agents and spaces", len(agent_rows), agents_html, ident="agents")}
+{_section("Answers", len(answer_rows), answers_html, ident="answers")}
+{_section("Dropped from the queue", len(dropped_rows), dropped_html, ident="dropped")}
+{_section("By model", len(rollup), models_html, ident="models") if rollup else ""}
 <footer>{footer}</footer>
+</details>
 </main>
 <script>{FILTER_SCRIPT}</script>
 </body>
@@ -1629,5 +1752,16 @@ def write_board(data: BoardData, path: str | Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     previous_draw, previous_record = read_stamps(target)
     page = render_board(data, previous_draw=previous_draw, previous_record=previous_record)
-    target.write_text(page, encoding="utf-8")
+    # Written through a file no other writer can share, then replaced: a browser
+    # re-reading the page on its timer must never catch half of one.
+    temp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp.write_text(page, encoding="utf-8")
+        temp.replace(target)
+    finally:
+        if temp.exists():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
     return target

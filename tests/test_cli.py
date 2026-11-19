@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from clowder import audit, box, cli, gitcmd
+from clowder import audit, box, cli, gitcmd, liveboard
 from clowder import owner as owner_mod
 from clowder.board import BoardData, waiting_on_you
 from clowder.board import waiting_on_you as board_waiting_on_you
@@ -70,6 +70,18 @@ def reading(
         commit_headroom_bytes=int(commit_gib * box.GIB),
         carveout_bytes=None if carveout_gib is None else int(carveout_gib * box.GIB),
     )
+
+
+def board_part(html: str, name: str) -> str:
+    """One labelled block of the board page, by its id.
+
+    The page's headings belong to the owner and have been reworded before now; the
+    ids do not move, so a test names the block instead of searching for a sentence.
+    """
+    marker = f"<section id='{name}'"
+    start = html.index(marker)
+    start = html.index(">", start) + 1
+    return html[start : html.index("</section>", start)]
 
 
 def _start_error(code: str, message: str) -> MuxResult:
@@ -3429,7 +3441,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         page = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        owner = board_part(page, "needs")
         self.assertIn("what a customer gets back", owner)
         self.assertIn("Passing means one read-through.", owner)
         self.assertIn("Evidence: the review", owner)
@@ -3478,7 +3490,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         page = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        owner = board_part(page, "needs")
         self.assertNotIn("reply pass", owner, "not offered as a pass")
         self.assertIn("sent it back", page, "the front door sees it came back")
 
@@ -3507,7 +3519,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         page = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = page.split("For you", 1)[1].split("Running now", 1)[0]
+        owner = board_part(page, "needs")
         self.assertIn("Should the eval pass threshold be 0.8 or 0.9?", owner)
         self.assertIn("reply pass", owner, "the change is still offered")
         self.assertEqual(owner.count("owner-title"), 2, "two decisions, two lines")
@@ -3674,8 +3686,10 @@ class CliTest(unittest.TestCase):
         )
         self.cli("owner", "t-0002", "--item", "choose C or D", env=self.fake_env())
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        self.assertIn("<b>1.</b> <span class='owner-title'>choose A or B</span>", html)
-        self.assertIn("<b>2.</b> <span class='owner-title'>choose C or D</span>", html)
+        # Newest first, by his instruction of 2026-11-19: the question asked a moment
+        # ago is the one he is looking for. The word he types moves with the line.
+        self.assertIn("<b>1.</b> <span class='owner-title'>choose C or D</span>", html)
+        self.assertIn("<b>2.</b> <span class='owner-title'>choose A or B</span>", html)
 
     def test_recording_the_answer_clears_the_owner_item(self) -> None:
         self.dispatch(
@@ -3930,8 +3944,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        owner = owner.split("Filters")[0]
+        owner = board_part(owner, "needs")
         self.assertIn("moved to", owner)
         self.assertIn("the reviewer must check it again", owner)
         self.assertNotIn("waiting for your walkthrough", owner)
@@ -3944,8 +3957,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        owner = owner.split("Filters")[0]
+        owner = board_part(owner, "needs")
         self.assertIn("waiting for your walkthrough", owner)
         self.assertNotIn("moved to", owner)
 
@@ -3979,8 +3991,7 @@ class CliTest(unittest.TestCase):
             code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         owner = (self.root / "board.html").read_text(encoding="utf-8")
-        owner = owner.split("For you", 1)[1].split("Running now", 1)[0]
-        owner = owner.split("Filters")[0]
+        owner = board_part(owner, "needs")
         self.assertIn("could not be read", owner)
         self.assertNotIn("waiting for your walkthrough", owner)
 
@@ -3991,7 +4002,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = html.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertIn("t-0002", worker, "a genuinely lost commit is still at risk")
         self.assertNotIn("t-0001", worker, "a rebased-away commit is not at risk")
 
@@ -4005,7 +4016,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         worker = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = worker.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(worker, "front-door")
         self.assertNotIn("t-0001", worker, "the job's branch moved past the commit")
 
     def test_a_reported_step_on_a_merged_job_leaves_the_worker_queue(self) -> None:
@@ -4018,10 +4029,10 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertNotIn("t-0001", worker, "a reported step on a merged job is done")
         self.assertNotIn("merge commit", worker, "no stale merge warning either")
-        owner = html.split("For you", 1)[1].split("Running now", 1)[0]
+        owner = board_part(html, "needs")
         self.assertNotIn("t-0001", owner, "it is not work at risk for the owner")
 
     def test_an_orphaned_merge_commit_on_an_open_job_still_waits(self) -> None:
@@ -4033,7 +4044,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertIn("t-0001", worker)
         self.assertIn("merge commit", worker)
 
@@ -4052,7 +4063,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertIn("t-0001", worker, "a closed job did not merge the work")
         self.assertIn("merge commit", worker)
 
@@ -4064,7 +4075,7 @@ class CliTest(unittest.TestCase):
         page = (self.root / "board.html").read_text(encoding="utf-8")
         # Keeping the commit is the front door's act, so the warning is in the worker
         # section and not in his queue.
-        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(page, "front-door")
         self.assertIn("t-0001", worker)
         self.assertIn("on no branch", worker)
         self.assertIn(f"branch keep-t-0001 {lost}", worker)
@@ -4073,8 +4084,6 @@ class CliTest(unittest.TestCase):
         # A board write asks about every task that holds a commit, and each look
         # costs a git process. Two steps on one commit must ask git once.
         commit = gitcmd.head_commit(self.repo_path, short=False) or ""
-        self.write_pinned_task("t-0001", commit)
-        self.write_pinned_task("t-0002", commit)
         asked: list[str] = []
         real = gitcmd.commit_risk
 
@@ -4082,7 +4091,12 @@ class CliTest(unittest.TestCase):
             asked.append(asked_commit)
             return real(path, asked_commit)
 
+        # Patching from before the first write: each save draws the page, and the memo
+        # carries the answer from one write to the next, so one commit is one look for
+        # the whole sequence and not one look per page.
         with mock.patch.object(gitcmd, "commit_risk", counting):
+            self.write_pinned_task("t-0001", commit)
+            self.write_pinned_task("t-0002", commit)
             code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         self.assertEqual(asked.count(commit), 1, "one commit, one look")
@@ -4101,7 +4115,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         page = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(page, "front-door")
         self.assertNotIn("t-0001", worker, "on its branch, so not at risk yet")
 
         gitcmd.switch_branch(repo, "main")
@@ -4109,7 +4123,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         page = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = page.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(page, "front-door")
         self.assertIn("t-0001", worker, "the warm memo did not hide the lost commit")
 
     def test_report_does_not_flag_a_rebased_away_commit(self) -> None:
@@ -4166,10 +4180,14 @@ class CliTest(unittest.TestCase):
         html = page.read_text(encoding="utf-8")
         self.assertIn("t-0001", html)
         self.assertIn("add the refund page", html)
-        self.assertIn("For you", html, "the page keeps its first section")
+        self.assertIn("Waiting on you", html, "the page keeps its first section")
 
     def test_a_board_that_cannot_be_written_does_not_fail_the_command(self) -> None:
-        with mock.patch.object(cli, "write_board", side_effect=OSError("disk full")):
+        # The page is written from inside the state write now, so the failure happens
+        # there. The record is saved, the command succeeds, and the warning names it.
+        from clowder import board as board_mod
+
+        with mock.patch.object(board_mod, "write_board", side_effect=OSError("disk full")):
             code, out, err = self.cli(
                 "dispatch",
                 "maker",
@@ -4181,32 +4199,31 @@ class CliTest(unittest.TestCase):
             )
         self.assertEqual(code, 0, "the page is a byproduct, not the command")
         self.assertIn("t-0001 sent to maker", out)
-        self.assertIn("could not refresh the board", err)
+        self.assertIn("could not be written", err)
         self.assertIn("disk full", err)
+        self.assertTrue(StateStore(self.state).get("t-0001"), "the record is saved")
 
-    def test_only_state_changing_commands_refresh_the_board(self) -> None:
-        parser = cli.build_parser()
+    def test_a_state_change_writes_the_page_and_a_read_does_not(self) -> None:
+        # The mechanism is inside the state write, not a flag on a command, so no
+        # caller can forget it - and a read-only command does not touch the file.
+        self.assertEqual(self.cli("tasks", env=self.fake_env())[0], 0)
+        page = self.root / "board.html"
+        self.assertFalse(page.is_file(), "a read writes no page")
 
-        def refreshes(*argv: str) -> bool:
-            return bool(getattr(parser.parse_args(list(argv)), "refreshes_board", False))
+        self.queue_add("--agent", "maker")
+        self.assertTrue(page.is_file(), "the state write wrote the page")
+        first = page.read_text(encoding="utf-8")
+        self.assertIn("q-0001", board_part(first, "queued"))
 
-        self.assertTrue(refreshes("dispatch", "maker", "myrepo", "ship: x"))
-        self.assertTrue(refreshes("report", "t-0001"))
-        self.assertTrue(refreshes("ensure", "myrepo"))
-        self.assertTrue(refreshes("job", "open", "myrepo", "--label", "x"))
-        self.assertTrue(refreshes("job", "close", "j-0001"))
-        self.assertTrue(refreshes("job", "handover", "j-0001"))
-        self.assertTrue(
-            refreshes("queue", "add", "myrepo", "ship: x", "--agent", "maker", "--why", "w")
+        stamp = page.stat().st_mtime_ns
+        self.assertEqual(self.cli("tasks", env=self.fake_env())[0], 0)
+        self.assertEqual(page.stat().st_mtime_ns, stamp, "a read leaves the page alone")
+
+        code, _, err = self.cli(
+            "queue", "drop", "q-0001", "--why", "done", "--by", "topcat", env=self.fake_env()
         )
-        self.assertTrue(refreshes("queue", "send", "q-0001"))
-        self.assertTrue(refreshes("queue", "drop", "q-0001", "--why", "done"))
-        self.assertFalse(refreshes("tasks"))
-        self.assertFalse(refreshes("agents"))
-        self.assertFalse(refreshes("board"))
-        self.assertFalse(refreshes("job", "list"))
-        self.assertFalse(refreshes("queue", "list"))
-        self.assertFalse(refreshes("config"))
+        self.assertEqual(code, 0, err)
+        self.assertNotEqual(page.read_text(encoding="utf-8"), first, "the change is on it")
 
     # -- queue -------------------------------------------------------------
 
@@ -4366,11 +4383,11 @@ class CliTest(unittest.TestCase):
     def test_a_queued_item_appears_on_the_board(self) -> None:
         self.queue_add("--agent", "maker")
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        owner, worker = html.split("For you", 1)[1].split("Waiting for a worker", 1)
+        owner, queue = board_part(html, "needs"), board_part(html, "queued")
         self.assertIn("class='count'>0", owner, "the owner's count stays honest")
         self.assertNotIn("q-0001", owner, "a queued item is the front door's, not the owner's")
-        self.assertIn("q-0001", worker)
-        self.assertIn("the space holds an open job", worker)
+        self.assertIn("q-0001", queue)
+        self.assertIn("the space holds an open job", queue)
 
     def test_queue_drop_removes_the_item_and_writes_one_audit_line(self) -> None:
         self.queue_add("--agent", "maker")
@@ -4435,7 +4452,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
         self.assertIn("Dropped from the queue", html)
-        worker = html.split("Waiting for a worker", 1)[1].split("To Do", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertNotIn("q-0001", worker, "a dropped item is out of the waiting list")
         history = html.split("Dropped from the queue", 1)[1]
         self.assertIn("q-0001", history)
@@ -6015,7 +6032,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("First read", out, "a later read is a normal read")
         self.assertIn("Now live: the arrival keys are checked first", out)
 
-    def test_the_board_opens_with_the_catch_up_text(self) -> None:
+    def test_the_board_opens_with_what_waits_and_what_is_queued(self) -> None:
         self.cli(
             "queue",
             "add",
@@ -6030,8 +6047,12 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        self.assertLess(html.index("Since you last looked"), html.index("For you"))
-        self.assertIn("not sent yet: busy", html)
+        self.assertLess(
+            html.index("Waiting on you"),
+            html.index("Show all history"),
+            "what waits on him is on the first screen",
+        )
+        self.assertIn("why: busy", board_part(html, "queued"), "the queue says why it waits")
         # Drawing the page does not mark his read: only catchup does.
         code, out, _ = self.cli("catchup", env=self.fake_env())
         self.assertIn("First read", out)
@@ -7406,8 +7427,8 @@ class CliTest(unittest.TestCase):
         self.cli("defects", "add", "--line", "a quirk with no job", env=self.fake_env())
         self.cli("board", env=self.fake_env())
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        worker = html.split("Waiting for a worker", 1)[1].split("</section>", 1)[0]
-        needs = html.split("For you", 1)[1].split("</section>", 1)[0]
+        worker = board_part(html, "front-door")
+        needs = board_part(html, "needs")
         self.assertIn("seen twice, no job", worker)
         self.assertIn("d-0001", worker)
         self.assertNotIn("seen twice, no job", needs, "not the owner's act")
@@ -7737,7 +7758,12 @@ class CliTest(unittest.TestCase):
         # it replaced. The clock is moved on by five minutes so the two draws are in
         # different minutes and the ordinary wording is the one under test.
         later = to_iso(datetime.now(UTC) + timedelta(minutes=5))
-        with mock.patch.object(cli, "now_iso", return_value=later):
+        # The item is stamped by the command and the page is built by the state write,
+        # so both clocks move on: the change and the draw have to agree.
+        with (
+            mock.patch.object(cli, "now_iso", return_value=later),
+            mock.patch.object(liveboard, "now_iso", return_value=later),
+        ):
             code, _, err = self.cli(
                 "owner", "t-0001", "--item", "choose A or B", env=self.fake_env()
             )
@@ -7790,7 +7816,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        section = board_part(html, "needs")
         self.assertIn("count'>3</span>", section)
         self.assertEqual(section.count("<li>"), 3, "three lines, and the count says three")
 
@@ -7803,7 +7829,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        section = board_part(html, "needs")
         self.assertIn("count'>0</span>", section)
         self.assertIn("Nothing is recorded as waiting on you.", section)
 
@@ -7864,9 +7890,9 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        section = board_part(html, "needs")
         self.assertIn("count'>0</span>", section)
-        worker = html.split("Waiting for a worker", 1)[1].split("What landed", 1)[0]
+        worker = board_part(html, "front-door")
         self.assertIn("not yours", worker)
         self.assertIn("when CI is green", worker)
 
@@ -7918,7 +7944,7 @@ class CliTest(unittest.TestCase):
         code, _, err = self.cli("board", env=self.fake_env())
         self.assertEqual(code, 0, err)
         html = (self.root / "board.html").read_text(encoding="utf-8")
-        section = html.split("For you", 1)[1].split("Running now", 1)[0]
+        section = board_part(html, "needs")
         self.assertIn("count'>1</span>", section)
         self.assertIn("Approve one capture command", section)
         self.assertIn("type 1", section)

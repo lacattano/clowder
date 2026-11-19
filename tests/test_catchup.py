@@ -281,23 +281,24 @@ class SeenTest(unittest.TestCase):
 
 
 class BoardTest(unittest.TestCase):
-    def test_the_page_opens_with_the_catch_up(self) -> None:
+    def test_the_page_does_not_draw_the_catch_up_any_more(self) -> None:
+        # 2026-11-19: the catch-up was the first section and the first thing he
+        # scrolled past. The page now leads with what waits on him; `clowder catchup`
+        # is the command that shows what he has not read, and the page keeps the
+        # "what landed since you last looked" list for it.
         data = BoardData(
             catchup=["What landed:", "  - Now live: the refund page shows the policy"],
             catchup_note="1 new since you last looked (never).",
             tasks=[task()],
         )
         html = render_board(data)
-        first = html.index("Since you last looked")
-        self.assertLess(first, html.index("For you"), "the catch-up is the first section")
-        self.assertIn("Now live: the refund page shows the policy", html)
-        self.assertIn("1 new since you last looked", html)
-
-    def test_a_quiet_page_says_so_and_names_the_one_command(self) -> None:
-        html = render_board(BoardData(catchup=[], catchup_note="Nothing new."))
-        self.assertIn("Nothing new since your last read", html)
-        self.assertIn("clowder catchup --all", html)
-        self.assertIn("For you", html, "the record sections are still below it")
+        self.assertNotIn("Since you last looked <span", html, "no catch-up section")
+        self.assertNotIn("Now live: the refund page shows the policy", html)
+        self.assertLess(
+            html.index("Waiting on you"),
+            html.index("Show all history"),
+            "what waits on him is on the first screen",
+        )
 
 
 if __name__ == "__main__":

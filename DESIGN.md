@@ -504,7 +504,35 @@ time, leaves the answer empty, and frees its job for the next step. A missing `-
   agent, reason.
 - `--force` is kept. This replaces its routine use, not its existence.
 
-### 30. The board is rewritten by every state change, and the owner's decisions are numbered
+### 39b. The board is live, short, and shows what is happening now
+
+Seen 2026-11-19, in his words: "the board needs a live state, it's constantly behind"; "it's like a
+massive scroll of useless information"; "the only way to update it is by command, but I'm never in a
+terminal window". The page was rewritten at the end of every state-changing command, but that was a
+flag each command had to carry, and it led with a catch-up scroll and then the full records.
+
+- **The write lives in the state write.** `StateStore.save()` writes the page after the record, so
+  no caller can forget it and a new command inherits it. `state.py` builds the data through a
+  builder the CLI attaches in `_context` (which is where the config's front door name and box line
+  live); a store with no builder still writes, from the record alone. A page that cannot be written
+  is one warning on stderr: the record is saved and the command succeeds.
+- **The page is short and ordered.** Waiting on you (newest first, one line each, the word that
+  answers it, the detail folded), Running now (agent, step id, what it is doing, its age), Queued
+  (one line each with why it waits, oldest first), Finished in the last 24 hours (folded). One
+  "show all history" toggle holds everything else: the catch-up is gone from the page (its numbering
+  would contradict the newest-first list; `clowder catchup` still prints it), and the kanban,
+  filters, answers, dropped items and older finished work live behind the toggle. A page whose first
+  screen is a scroll is a page he stops opening.
+- **Nothing prints a whole brief.** A step's question, a queue item's text and an owner item's detail
+  are clipped to a couple of lines with the whole text folded into a `<details>`. Nothing is dropped.
+- **It cannot look fresh when it is not.** The head carries a 15-second meta refresh, and the script
+  keeps the scroll position across it. The "last updated" line shows its own age, and past 10
+  minutes it is drawn in the warning colour with the reason: the record has not changed since the
+  page was written, so the page is as current as the record.
+- **It does not call a thing fine when it cannot see it.** A step with no report and no live read
+  says "unknown for ...", an agent whose state was not read says "unknown", and a job with no branch
+  says "branch unknown". The word "unknown" is the page declining to guess.
+
 
 The owner reads the board, not a fast-moving chat, so the board has to be current without anyone
 remembering to refresh it, and it has to carry every decision put to him.
