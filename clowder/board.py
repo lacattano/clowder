@@ -7,6 +7,28 @@ Everything here is a pure function of what it is handed, so it can be tested
 without a browser and rendered without a multiplexer running. The filterable
 columns are declared once, in FILTERABLE_FIELDS, and both the controls and the
 rows' data come from that list.
+
+THE ORDER RULES. The page is read top to bottom, so the order of each list is a
+decision, not an accident. Each section states its own rule in its docstring; this
+is the whole set, so no section can drift without the others being checked:
+
+    Waiting on you    newest first - the question he has just been asked is the one
+                      he is looking for. The number he replies with IS this order,
+                      so "1." is the first line he reads.
+    Running now       newest first - the step that just started is the one he wants
+                      to know about.
+    Queued            oldest first - the item that has waited longest is the one the
+                      front door should send next, so it is at the top.
+    Finished today    newest first - the most recent finish is the interesting one.
+    History, older    newest first.
+    What landed       newest first.
+
+A moment can repeat: a command writes two records inside one second. String and
+stable sorts then fall back to the store's order, which is oldest first - that is
+how the same second was once numbered backwards against the heading. Every list
+that is ordered by a moment breaks a tie on the record id, descending for newest
+first, because an id is minted when the work arrives. `_newest_first` holds that
+rule in one place.
 """
 
 from __future__ import annotations
@@ -15,7 +37,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
@@ -570,6 +592,47 @@ def stamp_of(moment: datetime) -> str:
     return local.strftime("%Y-%m-%d %H:%M")
 
 
+def _moment_key[Record](
+    items: Sequence[Record],
+    when: Callable[[Record], object],
+    ident: Callable[[Record], str],
+) -> list[tuple[tuple[float, str], Record]]:
+    """Every record with its ordering key: the moment first, then the id."""
+    return [((to_epoch(when(item)) or -1.0, ident(item)), item) for item in items]
+
+
+def _newest_first[Record](
+    items: Sequence[Record],
+    when: Callable[[Record], object],
+    ident: Callable[[Record], str] | None = None,
+) -> list[Record]:
+    """Order records by a recorded moment, newest first, with the id breaking ties.
+
+    Two records can carry the same second - a command writes them in a loop - and a
+    sort on an equal key keeps the store's order, which is oldest first. That is how
+    the same second came to be numbered backwards against a heading that says "newest
+    first". On a tie the later id is the newer record, because an id is minted when
+    the work arrives.
+    """
+    keyed = _moment_key(items, when, ident or _id_of)
+    return [item for _, item in sorted(keyed, key=lambda pair: pair[0], reverse=True)]
+
+
+def _oldest_first[Record](
+    items: Sequence[Record],
+    when: Callable[[Record], object],
+    ident: Callable[[Record], str] | None = None,
+) -> list[Record]:
+    """The same ordering, the other way up: earliest first, id breaking ties."""
+    keyed = _moment_key(items, when, ident or _id_of)
+    return [item for _, item in sorted(keyed, key=lambda pair: pair[0])]
+
+
+def _id_of(record: object) -> str:
+    """A record's id, for the tie-break on a moment two records share."""
+    return str(getattr(record, "id", "") or "")
+
+
 def _flat(text: str) -> str:
     """One line: the whitespace runs in recorded text collapsed."""
     return " ".join(text.split())
@@ -665,6 +728,11 @@ def front_door_label(data: BoardData) -> str:
 def waiting_on_you(data: BoardData) -> list[str]:
     """Only what the owner must do, from the one list both views render.
 
+    Order: NEWEST FIRST, on his instruction of 2026-11-19. The number he replies with
+    is this page's own and is the reading order, so "1." is the first line he reads and
+    the last thing he was asked about; a tie on the same second breaks on the record id,
+    descending, so the newer record still comes first.
+
     The lines come from `owner.waiting_on_owner`, the same function `clowder start` uses,
     so the section and the count cannot disagree with it. One line each: the number he
     replies with, how long it has waited, the thing in his words, and the word that
@@ -676,11 +744,8 @@ def waiting_on_you(data: BoardData) -> list[str]:
         rereview=data.rereview,
         review_unconfirmed=data.review_unconfirmed,
     )
-    # Newest first, on his instruction of 2026-11-19: the thing he has just been asked
-    # about is the one he is looking for. The number he replies with is this page's own
-    # and moves with the line, so it always matches what is printed beside it.
     lines: list[str] = []
-    ordered = sorted(his, key=lambda item: item.since or "", reverse=True)
+    ordered = _newest_first(his, lambda item: item.since)
     for number, item in enumerate(ordered, start=1):
         # One line by rule: the question, the word that answers it, how long it waited.
         # The body he was shown before - the options and what each costs - is folded
@@ -835,10 +900,15 @@ def running_now(data: BoardData) -> list[str]:
 
     The class is shown rather than "heavy" because it is the thing the gate compares:
     `read` says why nothing was refused, and `model` says why a second step waits.
+
+    Order: NEWEST FIRST, by dispatch, a tie on the same second breaking on the step id
+    descending. The step that just started is the one he wants to know about.
     """
     lines: list[str] = []
-    for task in sorted(
-        open_tasks(data.tasks), key=lambda task: task.dispatched_at or task.created_at
+    for task in _newest_first(
+        open_tasks(data.tasks),
+        lambda task: task.dispatched_at or task.created_at,
+        lambda task: task.id,
     ):
         cost = cost_of(task)
         klass = "" if cost == COST_NONE else f" <span class='pill'>{_e(cost)}</span>"
@@ -856,9 +926,14 @@ def running_now(data: BoardData) -> list[str]:
 
 
 def worker_queue(data: BoardData) -> list[str]:
-    """The front door's queue, oldest first: decided, not sent."""
+    """The front door's queue, decided but not sent.
+
+    Order: OLDEST FIRST, a tie on the same second breaking on the item id ascending.
+    The item that has waited longest is the one to send next, so it is at the top -
+    the opposite rule to the owner's list, and for the opposite reason.
+    """
     lines: list[str] = []
-    for item in sorted(data.queued, key=lambda item: item.created_at):
+    for item in _oldest_first(data.queued, lambda item: item.created_at):
         who = item.agent or item.role or "unassigned"
         lines.append(
             f"<b>{_e(who)}</b> {_id(item.id)} - {_more(item.question or item.brief, 140)} "
@@ -989,8 +1064,10 @@ def finished_tasks(
 ) -> tuple[list[Task], list[Task]]:
     """Finished steps split at the last day: (the last 24 hours, everything older).
 
-    Newest first in both lists. A step the record cannot place in time is history: the
-    page must not claim it finished in the last day when nothing says it did.
+    Order: NEWEST FIRST in both lists, by when the step finished, a tie on the same
+    second breaking on the step id descending. A step the record cannot place in time
+    is history: the page must not claim it finished in the last day when nothing says
+    it did.
     """
     moment = now if now is not None else time.time()
     recent: list[Task] = []
@@ -1003,9 +1080,10 @@ def finished_tasks(
             recent.append(task)
         else:
             older.append(task)
-    recent.sort(key=lambda task: _finished_when(task) or 0.0, reverse=True)
-    older.sort(key=lambda task: _finished_when(task) or 0.0, reverse=True)
-    return recent, older
+    return (
+        _newest_first(recent, _finished_when),
+        _newest_first(older, _finished_when),
+    )
 
 
 def finished_line(task: Task) -> str:

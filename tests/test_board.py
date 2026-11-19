@@ -11,6 +11,7 @@ from clowder.board import (
     BoardAgent,
     BoardData,
     _task_fields,
+    finished_tasks,
     model_rollup,
     open_tasks,
     recent_answers,
@@ -18,6 +19,7 @@ from clowder.board import (
     running_now,
     waiting_for_worker,
     waiting_on_you,
+    worker_queue,
     write_board,
 )
 from clowder.defects import Defect
@@ -800,6 +802,55 @@ class WaitingTest(unittest.TestCase):
         # the one he is looking for. The number he replies with moves with the line.
         self.assertIn("<b>1.</b> <span class='owner-title'>choose C or D</span>", waiting[0])
         self.assertIn("<b>2.</b> <span class='owner-title'>choose A or B</span>", waiting[1])
+
+    def test_two_items_in_the_same_second_are_numbered_newest_record_first(self) -> None:
+        # The CI failure: a command writes two questions inside one second, so the
+        # moments are equal. A sort on the moment alone kept the store's order, which
+        # is oldest first, and the heading says newest first - so "1." was the older
+        # question. The id is minted when the work arrives, so it breaks the tie.
+        first = task("t-0001", owner_item="choose A or B", owner_item_at="2026-10-01T10:00:00Z")
+        second = task(
+            "t-0002", owner_item="choose C or D", owner_item_at="2026-10-01T10:00:00Z"
+        )
+        waiting = waiting_on_you(data(tasks=[first, second]))
+        self.assertIn("<b>1.</b> <span class='owner-title'>choose C or D</span>", waiting[0])
+        self.assertIn("<b>2.</b> <span class='owner-title'>choose A or B</span>", waiting[1])
+
+    def test_the_running_list_is_newest_first(self) -> None:
+        page = data(
+            tasks=[
+                task("t-0001", job=None, dispatched_at="2026-10-01T09:00:00Z"),
+                task("t-0002", job=None, dispatched_at="2026-10-01T11:00:00Z"),
+            ]
+        )
+        running = running_now(page)
+        self.assertIn("t-0002", running[0], "the step that just started is at the top")
+        self.assertIn("t-0001", running[1])
+
+    def test_the_queue_is_oldest_first(self) -> None:
+        page = data(
+            queued=[
+                queued("q-0001", created_at="2026-10-01T11:00:00Z"),
+                queued("q-0002", created_at="2026-10-01T09:00:00Z"),
+            ]
+        )
+        queue = worker_queue(page)
+        self.assertIn("q-0002", queue[0], "the item that has waited longest is at the top")
+        self.assertIn("q-0001", queue[1])
+
+    def test_finished_today_is_newest_first(self) -> None:
+        page = data(
+            tasks=[
+                task("t-0001", status=REPORTED, reported_at=now_iso()),
+                task(
+                    "t-0002",
+                    status=REPORTED,
+                    reported_at=to_iso(datetime.now(UTC) - timedelta(minutes=5)),
+                ),
+            ]
+        )
+        recent, _ = finished_tasks(page)
+        self.assertEqual([task.id for task in recent], ["t-0001", "t-0002"])
 
     def test_an_uncheckable_commit_is_a_worker_note_not_a_warning(self) -> None:
         notes = data(tasks=[task()], risk_notes={"t-0001": "unknown"})
