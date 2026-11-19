@@ -19,11 +19,11 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from . import __version__, audit, box, gitcmd, load
+from . import __version__, audit, box, gitcmd, liveboard, load
 from . import catchup as catchup_mod
 from . import handover as handover_doc
 from . import owner as owner_mod
-from .board import BoardAgent, BoardData, now_stamp, open_tasks, stamp_of, write_board
+from .board import BoardAgent, BoardData, open_tasks, write_board
 from .config import BUILT_DELIVERY_MODES, Config, load_config
 from .defects import (
     ACCEPTED,
@@ -240,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--dry-run", action="store_true", help="print the command, send nothing")
     send.add_argument("--json", action="store_true", help="machine-readable output")
-    send.set_defaults(handler=cmd_dispatch, refreshes_board=True)
+    send.set_defaults(handler=cmd_dispatch)
 
     list_tasks = sub.add_parser("tasks", help="list tasks and their state", parents=[common])
     list_tasks.add_argument("--status", choices=STATUSES)
@@ -259,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
         "inbox", help="what has reported since you last looked", parents=[common]
     )
     inbox.add_argument("--json", action="store_true")
-    inbox.set_defaults(handler=cmd_inbox, refreshes_board=True)
+    inbox.set_defaults(handler=cmd_inbox)
 
     show = sub.add_parser("report", help="read one task's report", parents=[common])
     show.add_argument("id", help="task id, e.g. t-0001")
@@ -288,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAMES",
         help="for --json: only these task fields, comma-separated (e.g. id,status,agent)",
     )
-    show.set_defaults(handler=cmd_report, refreshes_board=True)
+    show.set_defaults(handler=cmd_report)
 
     owner = sub.add_parser(
         "owner",
@@ -313,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     owner.add_argument("--clear", action="store_true", help="he has answered it; remove it")
     owner.add_argument("--json", action="store_true")
-    owner.set_defaults(handler=cmd_owner, refreshes_board=True)
+    owner.set_defaults(handler=cmd_owner)
 
     step = sub.add_parser("step", help="act on one dispatched step", parents=[common])
     step_sub = step.add_subparsers(dest="step_command", required=True)
@@ -328,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
     )
     s_abandon.add_argument("--json", action="store_true")
-    s_abandon.set_defaults(handler=cmd_step_abandon, refreshes_board=True)
+    s_abandon.set_defaults(handler=cmd_step_abandon)
 
     s_close = step_sub.add_parser(
         "close",
@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
     )
     s_close.add_argument("--json", action="store_true")
-    s_close.set_defaults(handler=cmd_step_close, refreshes_board=True)
+    s_close.set_defaults(handler=cmd_step_close)
 
     s_report = step_sub.add_parser(
         "report",
@@ -369,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="close without the For the owner: line (the report will read as incomplete)",
     )
     s_report.add_argument("--json", action="store_true")
-    s_report.set_defaults(handler=cmd_step_report, refreshes_board=True)
+    s_report.set_defaults(handler=cmd_step_report)
 
     make = sub.add_parser(
         "ensure",
@@ -398,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-create", action="store_true", help="report what is missing, make nothing"
     )
     make.add_argument("--json", action="store_true")
-    make.set_defaults(handler=cmd_ensure, refreshes_board=True)
+    make.set_defaults(handler=cmd_ensure)
 
     roster = sub.add_parser(
         "agents", help="list live agents (the roster is the tool's)", parents=[common]
@@ -423,7 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="reset even with an unreported step"
     )
     a_reset.add_argument("--json", action="store_true")
-    a_reset.set_defaults(handler=cmd_agent_reset, refreshes_board=True)
+    a_reset.set_defaults(handler=cmd_agent_reset)
 
     a_reseed = agent_sub.add_parser(
         "reseed",
@@ -446,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="reseed even with an unreported step"
     )
     a_reseed.add_argument("--json", action="store_true")
-    a_reseed.set_defaults(handler=cmd_agent_reseed, refreshes_board=True)
+    a_reseed.set_defaults(handler=cmd_agent_reseed)
 
     a_rename = agent_sub.add_parser(
         "rename",
@@ -456,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
     a_rename.add_argument("name", help="the agent's current name, as the multiplexer knows it")
     a_rename.add_argument("--to", required=True, metavar="NEW", help="the new name to give it")
     a_rename.add_argument("--json", action="store_true")
-    a_rename.set_defaults(handler=cmd_agent_rename, refreshes_board=True)
+    a_rename.set_defaults(handler=cmd_agent_rename)
 
     checkouts = sub.add_parser(
         "checkouts", help="how far behind its remote each checkout is", parents=[common]
@@ -551,7 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="switch anyway, on a dirty tree or in the main checkout",
     )
     j_open.add_argument("--json", action="store_true")
-    j_open.set_defaults(handler=cmd_job_open, refreshes_board=True)
+    j_open.set_defaults(handler=cmd_job_open)
 
     j_close = job_parser("close", "return the worktree to the agent's branch")
     j_close.add_argument("id")
@@ -562,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     j_close.add_argument("--force", action="store_true")
     j_close.add_argument("--json", action="store_true")
-    j_close.set_defaults(handler=cmd_job_close, refreshes_board=True)
+    j_close.set_defaults(handler=cmd_job_close)
 
     j_list = job_parser("list", "jobs, and where their branches live")
     j_list.add_argument("--all", action="store_true", help="closed jobs too")
@@ -592,7 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     j_hand.add_argument("--force", action="store_true")
     j_hand.add_argument("--json", action="store_true")
-    j_hand.set_defaults(handler=cmd_job_handover, refreshes_board=True)
+    j_hand.set_defaults(handler=cmd_job_handover)
 
     j_pin = job_parser("pin", "pin a job's saved commit into a reviewer's copy")
     j_pin.add_argument("id")
@@ -615,7 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     j_pin.add_argument("--force", action="store_true")
     j_pin.add_argument("--json", action="store_true")
-    j_pin.set_defaults(handler=cmd_job_pin, refreshes_board=True)
+    j_pin.set_defaults(handler=cmd_job_pin)
 
     j_pass = job_parser("pass", "record the owner's pass for a job")
     j_pass.add_argument("id")
@@ -623,7 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
     j_pass.add_argument("--answer", required=True, help="the owner's answer, in his words")
     j_pass.add_argument("--by", required=True, metavar="NAME", help="who gave the pass")
     j_pass.add_argument("--json", action="store_true")
-    j_pass.set_defaults(handler=cmd_job_pass, refreshes_board=True)
+    j_pass.set_defaults(handler=cmd_job_pass)
 
     j_verdict = job_parser("verdict", "record the review's verdict for a job")
     j_verdict.add_argument("id")
@@ -647,24 +647,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is recording it (goes in the audit line)"
     )
     j_verdict.add_argument("--json", action="store_true")
-    j_verdict.set_defaults(handler=cmd_job_verdict, refreshes_board=True)
+    j_verdict.set_defaults(handler=cmd_job_verdict)
 
     j_word = job_parser("word", "record the owner's merge word for a job")
     j_word.add_argument("id")
     j_word.add_argument("--word", required=True, help="the owner's merge word, in his words")
     j_word.add_argument("--by", required=True, metavar="NAME", help="who gave the merge word")
     j_word.add_argument("--json", action="store_true")
-    j_word.set_defaults(handler=cmd_job_word, refreshes_board=True)
+    j_word.set_defaults(handler=cmd_job_word)
 
     j_sync = job_parser("sync", "merge origin/<base> into the job branch, without rewriting it")
     j_sync.add_argument("id")
     j_sync.add_argument("--json", action="store_true")
-    j_sync.set_defaults(handler=cmd_job_sync, refreshes_board=True)
+    j_sync.set_defaults(handler=cmd_job_sync)
 
     j_publish = job_parser("publish", "push the job's branch, once the owner has passed it")
     j_publish.add_argument("id")
     j_publish.add_argument("--json", action="store_true")
-    j_publish.set_defaults(handler=cmd_job_publish, refreshes_board=True)
+    j_publish.set_defaults(handler=cmd_job_publish)
 
     j_park = job_parser(
         "park", "free the space of a published job that waits on the merge word"
@@ -674,13 +674,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is parking it (goes in the audit line)"
     )
     j_park.add_argument("--json", action="store_true")
-    j_park.set_defaults(handler=cmd_job_park, refreshes_board=True)
+    j_park.set_defaults(handler=cmd_job_park)
 
     j_merge = job_parser("merge", "merge the job's pull request, once the owner has said so")
     j_merge.add_argument("id")
     j_merge.add_argument("--pr", required=True, help="the pull request number or URL")
     j_merge.add_argument("--json", action="store_true")
-    j_merge.set_defaults(handler=cmd_job_merge, refreshes_board=True)
+    j_merge.set_defaults(handler=cmd_job_merge)
 
     queue = sub.add_parser(
         "queue",
@@ -733,7 +733,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     q_add.add_argument("--job", metavar="ID", help="the job it belongs to, if any")
     q_add.add_argument("--json", action="store_true")
-    q_add.set_defaults(handler=cmd_queue_add, refreshes_board=True)
+    q_add.set_defaults(handler=cmd_queue_add)
 
     q_list = queue_parser("list", "what is decided and still waiting to go")
     q_list.add_argument("--json", action="store_true")
@@ -758,7 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print what would be sent, and send nothing"
     )
     q_send.add_argument("--json", action="store_true")
-    q_send.set_defaults(handler=cmd_queue_send, refreshes_board=True)
+    q_send.set_defaults(handler=cmd_queue_send)
 
     q_drop = queue_parser("drop", "drop an item that is already done or will never be sent")
     q_drop.add_argument("id")
@@ -767,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is dropping it (required; goes in the audit line)"
     )
     q_drop.add_argument("--json", action="store_true")
-    q_drop.set_defaults(handler=cmd_queue_drop, refreshes_board=True)
+    q_drop.set_defaults(handler=cmd_queue_drop)
 
     paths = sub.add_parser("config", help="show resolved settings and paths", parents=[common])
     paths.add_argument("--json", action="store_true")
@@ -803,7 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="the whole standing picture, not only what is new"
     )
     catch.add_argument("--json", action="store_true")
-    catch.set_defaults(handler=cmd_catchup, refreshes_board=True)
+    catch.set_defaults(handler=cmd_catchup)
 
     start = sub.add_parser(
         "start",
@@ -873,7 +873,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="read the detail body from a file, for a long one",
     )
     d_add.add_argument("--json", action="store_true")
-    d_add.set_defaults(handler=cmd_defects_add, refreshes_board=True)
+    d_add.set_defaults(handler=cmd_defects_add)
 
     d_correct = defects_parser(
         "correct", "rewrite a defect's one line, keeping its count and its links"
@@ -900,7 +900,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is correcting it (goes in the audit line)"
     )
     d_correct.add_argument("--json", action="store_true")
-    d_correct.set_defaults(handler=cmd_defects_correct, refreshes_board=True)
+    d_correct.set_defaults(handler=cmd_defects_correct)
 
     d_list = defects_parser("list", "every known defect, or only the ones needing action")
     d_list.add_argument(
@@ -921,13 +921,13 @@ def build_parser() -> argparse.ArgumentParser:
     d_link.add_argument("id", help="defect id, e.g. d-0007")
     d_link.add_argument("--job", required=True, metavar="ID", help="the job that fixes it")
     d_link.add_argument("--json", action="store_true")
-    d_link.set_defaults(handler=cmd_defects_link, refreshes_board=True)
+    d_link.set_defaults(handler=cmd_defects_link)
 
     d_unlink = defects_parser("unlink", "drop a link that named the wrong job")
     d_unlink.add_argument("id", help="defect id, e.g. d-0007")
     d_unlink.add_argument("--job", required=True, metavar="ID", help="the job to drop")
     d_unlink.add_argument("--json", action="store_true")
-    d_unlink.set_defaults(handler=cmd_defects_unlink, refreshes_board=True)
+    d_unlink.set_defaults(handler=cmd_defects_unlink)
 
     d_show = defects_parser("show", "one defect, in full")
     d_show.add_argument("id", help="defect id, e.g. d-0001")
@@ -964,7 +964,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", metavar="NAME", help="who is doing it (goes in the audit line)"
     )
     s_repair.add_argument("--json", action="store_true")
-    s_repair.set_defaults(handler=cmd_state_repair, refreshes_board=True)
+    s_repair.set_defaults(handler=cmd_state_repair)
 
     return parser
 
@@ -975,7 +975,12 @@ def build_parser() -> argparse.ArgumentParser:
 def _context(args: argparse.Namespace) -> tuple[Config, StateStore]:
     config = load_config(args.config)
     state_path = args.state or config.state_path
-    return config, StateStore(state_path)
+    store = StateStore(state_path)
+    # Every state write redraws the page from inside the store. This is where the
+    # config's own detail is attached - the front door's name, the box's line - so a
+    # save with no config still draws, from the record alone.
+    store.board_page = lambda saved: _board_data(config, saved)
+    return config, store
 
 
 def _read_brief(args: argparse.Namespace) -> str:
@@ -1986,10 +1991,10 @@ def cmd_report(args: argparse.Namespace) -> int:
         if task.commit and task.worktree:
             job = store.get_job(task.job) if task.job else None
             stranded = False
-            if not _work_has_landed(task, job):
+            if not liveboard.work_has_landed(task, job):
                 stranded = gitcmd.commit_risk(task.worktree, task.commit) == gitcmd.LOST
                 if stranded:
-                    stranded = not _job_moved_past(task, job)
+                    stranded = not liveboard.job_moved_past(task, job)
         # A step that closed itself on its report keeps its status: a read is not a
         # second event, and it must not reopen a closed step.
         if (
@@ -4464,35 +4469,12 @@ def cmd_checkouts(args: argparse.Namespace) -> int:
 
 def _board_path(store: StateStore) -> Path:
     """Where the page lives when nobody asked for a different place."""
-    return store.path.parent / "board.html"
+    return liveboard.page_path(store.path)
 
 
 def _risk_memo_path(store: StateStore) -> Path:
     """The memo of at-risk answers, beside the state it describes."""
     return store.path.parent / gitcmd.RISK_MEMO_FILENAME
-
-
-def _job_review_state(job: Job) -> tuple[str, str | None]:
-    """Where a held candidate's work is: held, moved, or unknown.
-
-    The branch tip is the job's current work; the held ref is what remains when the
-    branch is gone. "held" means a readable ref still points at the reviewed
-    commit, "moved" means a readable ref points elsewhere, and "unknown" means no
-    ref could be read - which must never be reported as held.
-    """
-    resolved = False
-    for ref in (job.branch, job.held_ref):
-        if not ref:
-            continue
-        tip = gitcmd.commit_of(job.repo_path, ref)
-        if tip is None:
-            continue
-        resolved = True
-        if tip != job.review_commit:
-            return "moved", tip
-    if resolved:
-        return "held", job.review_commit
-    return "unknown", None
 
 
 def _job_state_word(job: Job, tasks: list[Task]) -> str:
@@ -4505,52 +4487,13 @@ def _job_state_word(job: Job, tasks: list[Task]) -> str:
     it.
     """
     if job.is_open and job.reviewer and job.review_commit and not job.has_pass:
-        state, tip = _job_review_state(job)
+        state, tip = liveboard.job_review_state(job)
         state = job.state_in_words_at(tip, unreadable=(state == "unknown"))
     else:
         state = job.state_in_words
     if state in OWNER_GATE_WORDS and step_in_flight(job, tasks):
         return "under review"
     return state
-
-
-def _job_moved_past(task: Task, job: Job | None) -> bool:
-    """Has the task's job branch or held ref moved past the step's commit?
-
-    A job's branch or held ref holds the job's current work. A step commit that is
-    no longer reachable from it is an earlier, rewritten version: the job moved
-    past it, so it is superseded and not work at risk. A ref that is behind the
-    commit (a reset) has not moved past it, so that stays at risk.
-    """
-    if job is None or not task.commit:
-        return False
-    for ref in (job.branch, job.held_ref):
-        if not ref:
-            continue
-        tip = gitcmd.commit_of(job.repo_path, ref)
-        if not tip:
-            continue
-        if gitcmd.is_ancestor(job.repo_path, tip, task.commit):
-            continue  # the ref is behind the commit, so it has not moved past it
-        return True
-    return False
-
-
-def _work_has_landed(task: Task, job: Job | None) -> bool:
-    """Is this step's work already in the job's history, so its commit is moot?
-
-    A note about a commit on no branch exists to catch work that could be lost
-    before it lands. Once the step has reported and its job is merged, the change
-    is in the history the owner merged. A later rebase can leave the recorded
-    commit on no branch, but that is not a reason to keep chasing it. The claim
-    keys off the step's status and the merge, not the commit's reachability alone.
-
-    A closed job is not enough. Closing can release a space whose commit never
-    merged, so a closed-but-unmerged commit stays at risk.
-    """
-    if task.is_open or job is None:
-        return False
-    return bool(job.merged_at)
 
 
 def _board_data(
@@ -4560,116 +4503,41 @@ def _board_data(
     live: bool = False,
     mux_timeout_s: float = BOARD_LIVE_MUX_TIMEOUT_S,
 ) -> BoardData:
-    """Everything the page is drawn from.
+    """Everything the page is drawn from, with the config's own detail added.
 
-    The roster is built from the state file unless `live` is set. That is what makes a
-    board render cheap: the multiplexer read (and a git look per agent) cost seconds,
-    and twenty-six commands rewrite the page on every state change. A state-only
-    roster says so, in `live_ok` and in one line on the page.
+    The roster and the record come from `liveboard`, which is also what a save with no
+    config uses; this wrapper adds the three things only the CLI knows: the front
+    door's name, the box's one-line summary, and, when asked, a live roster. A
+    state-only roster says so on the page.
     """
     if live:
         agents, live_ok, note = _board_agents(config, timeout_s=mux_timeout_s)
     else:
-        agents = _board_agents_from_state(store)
-        live_ok = False
-        note = (
-            "The agent roster was not read live; this is what the state file records. "
-            f"Run `{PROGRAM} board --live` for the live list."
-        )
+        agents, live_ok, note = liveboard.agents_from_state(store), False, None
 
-    tasks = store.all()
-    jobs = store.all_jobs()
-    jobs_by_id = {job.id: job for job in jobs}
-    # The defects record fails open here: the page is drawn from state, and a note in
-    # the worker section names the file and the fault. `defects list` is the refusing
-    # command, so a broken record never hides the page that says what is happening.
-    defect_entries, defects_note = read_defects(_defect_store(config))
-    open_job_ids = [job.id for job in jobs if job.is_open]
-    # A held change whose branch or held ref has moved past the reviewed commit is
-    # not ready for the owner's walk: the reviewer checked an older commit. Record
-    # the current tip so the board asks for a re-review, with both commits named.
-    # A ref that cannot be read is not called held; it is called unconfirmed.
-    rereview: dict[str, str] = {}
-    review_unconfirmed: set[str] = set()
-    for job in jobs:
-        if not (job.is_open and job.reviewer and job.review_commit and not job.has_pass):
-            continue
-        state, tip = _job_review_state(job)
-        if state == "moved" and tip:
-            rereview[job.id] = tip
-        elif state == "unknown":
-            review_unconfirmed.add(job.id)
-    # A commit on no branch is only at risk when its change is on no branch either.
-    # A rebase rewrites the hash but keeps the patch-id, so the old commit is
-    # superseded, not lost. When the change cannot be compared, say so instead of
-    # raising a false alarm. So does a job that moved past the commit: its branch
-    # or held ref holds the later work, and the old hash is a superseded version.
-    # So does a step that has reported on a job that is merged or closed: the
-    # change has landed, and the step no longer waits for a worker.
-    #
-    # The answer is a pure function of the commit and the refs that hold it, and
-    # asking git costs a process each time, so it is memoised: one look per commit
-    # inside a write, and across writes while the refs have not moved.
-    stranded: set[str] = set()
-    risk_notes: dict[str, str] = {}
-    memo = gitcmd.RiskMemo(_risk_memo_path(store))
-    memo.load()
-    for task in tasks:
-        if not (task.commit and task.worktree):
-            continue
-        task_job = jobs_by_id.get(task.job or "")
-        if _work_has_landed(task, task_job):
-            continue  # the change is merged or closed; the commit is moot
-        risk = memo.risk(task.worktree, task.commit)
-        if risk == gitcmd.LOST:
-            if _job_moved_past(task, task_job):
-                continue
-            stranded.add(task.id)
-        elif risk in (gitcmd.EMPTY, gitcmd.MERGE, gitcmd.UNKNOWN):
-            risk_notes[task.id] = risk
-    memo.save()
-
-    activity = handover_doc.last_activity(store)
-    # The catch-up, in his words, at the top of the page. It is built now, from the
-    # record; drawing does not mark it read.
-    catchup_items = _catchup_items(config, store)
-    unseen = catchup_mod.unseen(catchup_items, store.seen())
-    return BoardData(
-        capacity=box.summary(box.read(), box.steps_in_flight(open_tasks(tasks)), config.floors),
-        catchup=catchup_mod.lines(unseen),
-        catchup_note=catchup_mod.summary_note(
-            len(unseen), len(catchup_items), store.catchup_at
+    return liveboard.build(
+        store,
+        defects_path_override=config.defects_path,
+        front_door_name=config.front_door_name,
+        capacity=box.summary(
+            box.read(), box.steps_in_flight(open_tasks(store.all())), config.floors
         ),
-        tasks=tasks,
-        jobs=jobs,
-        queued=store.all_queued(),
         agents=agents,
-        state_path=str(store.path),
-        generated_at=now_stamp(),
-        # The same draw at whole seconds, so the next draw can compare it with the
-        # record's last change without falling back to minutes.
-        drawn_at=now_iso(),
-        last_looked=store.catchup_at,
-        last_change=stamp_of(activity) if activity is not None else None,
-        last_change_at=activity.isoformat() if activity is not None else None,
         live_ok=live_ok,
         note=note,
-        front_door_name=config.front_door_name,
-        stranded=stranded,
-        risk_notes=risk_notes,
-        rereview=rereview,
-        review_unconfirmed=review_unconfirmed,
-        dropped=audit.read_actions(store.path, "queue-drop"),
-        repeated_defects=[
-            defect for defect in defect_entries if defect.needs_action(open_job_ids)
-        ],
-        defects_note=defects_note,
     )
 
 
 def cmd_board(args: argparse.Namespace) -> int:
     config, store = _context(args)
     target = Path(args.out).expanduser() if args.out else _board_path(store)
+    # A look is recorded before the page is drawn, because the save below writes the
+    # record-only page itself: drawing last means the page the owner opens is the one
+    # just built, live roster and all.
+    looked = bool(args.open or args.looked)
+    if looked:
+        _record_look(store, _catchup_items(config, store), at=now_iso())
+        store.save()
     data = _board_data(config, store, live=args.live)
     written = write_board(data, target)
 
@@ -4700,67 +4568,7 @@ def cmd_board(args: argparse.Namespace) -> int:
         print(f"{PROGRAM}: note: {data.note}", file=sys.stderr)
     if args.open:
         webbrowser.open(written.resolve().as_uri())
-    if args.open or args.looked:
-        # Opening the page, or relaying it, is the owner looking. A plain draw is not.
-        _record_look(store, _catchup_items(config, store), at=now_iso())
-        store.save()
     return RECORD_UNREADABLE if data.defects_note else 0
-
-
-def _board_agents_from_state(store: StateStore) -> list[BoardAgent]:
-    """The roster as the state file knows it, with no multiplexer call.
-
-    The record says who work was dispatched to, and which space a job lives in; it does
-    not say whether a pane is running or idle now. Every field the state cannot know is
-    left empty, so the page can show "-" and say the roster was not read live. The
-    newest step to an agent wins its space and pane; an open job fills a gap.
-    """
-    spaces: dict[str, str] = {}
-    panes: dict[str, str] = {}
-    own_checkout: dict[str, bool] = {}
-    for task in store.all():  # oldest first, so the newest step wins
-        if not task.agent:
-            continue
-        if task.worktree:
-            spaces[task.agent] = task.worktree
-            # The state records both folders, so "this is the main checkout" can be
-            # answered without the live list, which is the one thing about the space
-            # that costs nothing to know.
-            own_checkout[task.agent] = bool(task.repo_path) and normalise(
-                task.worktree
-            ) == normalise(task.repo_path)
-        if task.pane_id:
-            panes[task.agent] = task.pane_id
-    for job in store.all_jobs():
-        for name in (job.agent, job.reviewer):
-            if name and job.worktree and name not in spaces:
-                spaces[name] = job.worktree
-
-    agents: list[BoardAgent] = []
-    for name in sorted(spaces):
-        space = spaces[name]
-        holding = next(
-            (
-                job
-                for job in store.open_jobs()
-                if normalise(job.worktree) == normalise(space) and job.agent == name
-            ),
-            None,
-        )
-        agents.append(
-            BoardAgent(
-                name=name,
-                pane_id=panes.get(name),
-                status=None,
-                space=space,
-                branch=holding.branch if holding else None,
-                commit=holding.commit if holding else None,
-                saved=None,
-                main_checkout=own_checkout.get(name, False),
-                detached=False,
-            )
-        )
-    return agents
 
 
 def _board_agents(config: Config, timeout_s: float = 15.0):
@@ -4792,22 +4600,6 @@ def _board_agents(config: Config, timeout_s: float = 15.0):
             )
         )
     return agents, True, None
-
-
-def _refresh_board(args: argparse.Namespace) -> None:
-    """Rewrite the page after a command that changed state.
-
-    Best effort by design: when the page cannot be written it warns on stderr and
-    the command still succeeds. It draws from the state file and never asks the
-    multiplexer, so a state change pays for a page, not for a live roster.
-    """
-    try:
-        config, store = _context(args)
-        target = _board_path(store)
-        data = _board_data(config, store)
-        write_board(data, target)
-    except Exception as exc:  # the board must never fail the command it follows
-        print(f"{PROGRAM}: could not refresh the board: {exc}", file=sys.stderr)
 
 
 def cmd_state_repair(args: argparse.Namespace) -> int:
@@ -5701,22 +5493,14 @@ def main(argv: list[str] | None = None) -> int:
             reconfigure(errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
-    code = 1
     try:
-        try:
-            code = args.handler(args)
-        except ClowderError as exc:
-            print(f"{PROGRAM}: {exc}", file=sys.stderr)
-            code = exc.exit_code
-        except KeyboardInterrupt:
-            print(f"{PROGRAM}: interrupted", file=sys.stderr)
-            code = 130
-    finally:
-        # A command that changes state rewrites the page, whichever way it ended,
-        # so an open tab never shows a stale board. It never fails the command.
-        if getattr(args, "refreshes_board", False):
-            _refresh_board(args)
-    return code
+        return args.handler(args)
+    except ClowderError as exc:
+        print(f"{PROGRAM}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except KeyboardInterrupt:
+        print(f"{PROGRAM}: interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

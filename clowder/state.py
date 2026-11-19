@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -546,6 +546,10 @@ class StateStore:
         # True while `reserved()` holds the file lock, so a save inside that block
         # writes without taking it a second time.
         self._in_file_lock = False
+        # The function that builds the page after every save, set by the CLI where the
+        # config lives. None means the record-only page, which is what a bare store
+        # gets: it still writes, so no caller can forget the board.
+        self.board_page: Callable[[StateStore], object] | None = None
 
     # -- io ----------------------------------------------------------------
 
@@ -658,11 +662,35 @@ class StateStore:
             # A reservation already holds the lock and read the file inside it, so
             # there is nothing to fold in and nothing to wait for.
             self._write_locked()
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._thread_lock, file_lock(self._lock_file()):
-            self._fold_in_other_writers()
-            self._write_locked()
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._thread_lock, file_lock(self._lock_file()):
+                self._fold_in_other_writers()
+                self._write_locked()
+        self._write_page()
+
+    def _write_page(self) -> None:
+        """Rewrite the board page from this record. Never raises.
+
+        Every state change goes through `save`, so this is the one place the page can
+        be kept current and no caller has to remember a command. It reads the record
+        and the files beside it and never asks the multiplexer, so a save pays for a
+        page and not for a probe. A page that cannot be written is one warning: the
+        record is saved, and a failed board must never fail the command that changed
+        it.
+        """
+        from . import board, liveboard
+
+        try:
+            build = self.board_page if self.board_page is not None else liveboard.build
+            data = build(self)
+            board.write_board(data, liveboard.page_path(self.path))  # type: ignore[arg-type]
+        except Exception as exc:  # the page must never fail the command it follows
+            print(
+                f"clowder: the board could not be written ({exc}); "
+                "the record is saved and the page is older than it",
+                file=sys.stderr,
+            )
 
     @contextlib.contextmanager
     def reserved(self) -> Iterator[Reservation]:

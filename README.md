@@ -59,15 +59,20 @@ Add `.worktrees/` to each repo's `.gitignore`.
 
 ### The board
 
-`clowder board --open` writes one HTML file next to the state file and opens it. It reads the
-state file only: no multiplexer call, so a draw is a fraction of a second, and the twenty-six
-commands that rewrite it after a state change pay that, not a live roster. `clowder board --live`
-adds the live roster when you want it, and the page says which one it shows.
+`clowder board --open` writes one HTML file next to the state file and opens it. Every state
+change rewrites that file from inside the state write itself, so no command has to remember it,
+and a browser tab re-reads it every 15 seconds: there is no server and nothing to press. The
+page is drawn from the state file only. It never asks the multiplexer, so a save pays for a page
+and not for a probe; `clowder board --live` adds the live roster when you want it.
 
-It leads with four sections in the order you read them: what waits on you (one line each, the
-number to reply with, and how long it has waited), what is running now, the front door's queue,
-and what landed since you last looked - one sentence each, in your words, no handles. Opening
-the page records the look; a draw by another command does not.
+It leads with four sections in the order you read them: what waits on you (one line each, newest
+first, the number to reply with, and how long it has waited), what is running now (agent, step,
+what it is doing, how long), the front door's queue (one line each, with why it waits), and what
+finished in the last 24 hours. Everything older - the kanban, the answers, the dropped items, the
+filters, the full history - is behind one "show all history" toggle, and no brief is printed on
+the first screen: long text is clipped to a couple of lines and folded behind a click. A step or
+a job whose state cannot be read says "unknown", never "fine". Opening the page records the look;
+a draw by another command does not.
 The records follow: the filterable cards, agents and their spaces, answers, dropped queue items,
 and the model rollup.
 
@@ -90,7 +95,7 @@ changed since a given time. It needs no server.
 
 ## Status
 
-**Steps 1 to 4 are built: the CLI, the dispatching-work skill, spaces and jobs, and the board.** 1029
+**Steps 1 to 4 are built: the CLI, the dispatching-work skill, spaces and jobs, and the board.** 1040
 tests, no dependencies. `/calm` is not built yet. The design, the decisions and the reasoning are
 in [DESIGN.md](DESIGN.md).
 
